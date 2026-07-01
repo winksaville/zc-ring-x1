@@ -28,19 +28,15 @@ by the "plan" — a bulleted list of the development "ladder":
  detail goes in `notes/chores/chores-NN.md` design
  subsections (link via `[N]` ref).
 
-
-- chore: dummy chore (TBD) [[2]]
+1. Design a zero-copy ring buffer in no_std rust and use
+   googles zerocopy crate to transmut structs into and out of
+   the buffer. The system will be suitable for inter/intra
+   process communication.
 
 ## Done
 
 Completed tasks are moved from `## Todo` to here, `## Done`, as they are completed
 and older `## Done` sections are moved to [done.md](done.md) to keep this file small.
 
-- docs: completed dummy chore (0.1.0) [[1]]
-- docs: versioning SSOT + generic conventions [[3]]
 
 # References
-
-[1]: chores/chores-01.md#docs-completed-dummy-chore-010
-[2]: chores/chores-01.md#chore-dummy-chore-tbd
-[3]: chores/chores-01.md#docs-versioning-ssot--generic-conventions

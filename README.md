@@ -1,51 +1,11 @@
 # zc-ring-x1
 
+Zero copy ring buffer experiment 1
+
 This is the main repo of a dual-repo convention for using
-a bot to help develop a project — code, but equally prose, an
-image, a song, a screenplay, anything the bot generates from a
-conversation. The goal is that this main repo contains the
-"what" (the artifact), while the partner bot repo contains the
-"why" and "how" (the conversation). The key to the convention is
-each change is cross-referenced to the other. Thus there is a
-coherent story of the development of the project across time.
+a bot to help develop a the code.
 
-The beginnings of that tool is [vc-x1](https://github.com/winksaville/vc-x1)
-which currently does achieve this goal, but is being used as a
-first test bed.
-
-## This is a template — customize freely
-
-`CLAUDE.md` and this `README.md` are just starting points.
-Read both and edit either to match the conventions you want for your
-project. In particular, decisions like the `cargo install` behavior
-(default re-resolve vs `--locked`) under [Releasing](#releasing) are
-yours to make — pick what fits and update the docs (and the
-per-commit cargo cycle) so the choice is recorded for future readers.
-
-## Assumptions
-
-- **The convention is medium-agnostic.** The artifact can be
-  code, prose, an image, a song, a screenplay — anything the bot
-  generates from a conversation. The docs use a Rust crate as the
-  running example (the per-commit cargo cycle, `Cargo.toml`
-  versioning); substitute your medium's equivalents. This repo
-  itself ships docs and notes only — no build system — so its
-  version lives in [`version.toml`](version.toml) and it skips
-  the cargo cycle.
-- **The `vc-x1` companion tool.** Steps that invoke `vc-x1`
-  (`fix-todo`, `validate-todo`, `chid`, `push`, `finalize`) need
-  [vc-x1](https://github.com/winksaville/vc-x1) installed; the
-  underlying jj steps are documented so the flow also works
-  without it.
-
-## Cloning
-
-**TBD.** Earlier text here described the bot session repo as a git
-submodule; that is stale — it is a standalone repo, cloned with
-`jj git clone`, not a submodule. Bootstrapping a new project from a
-template is moving to `vc-x1 init <template-url>`, which reads a
-`.init-file-list.txt` from the template to lay down the generic
-files. This section will be rewritten once that lands.
+The beginnings of a tool to help is [vc-x1](https://github.com/winksaville/vc-x1)
 
 ## Releasing
 

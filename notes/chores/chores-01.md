@@ -35,3 +35,16 @@ push-approval carve-out.
 - `AGENTS.md` absorbs fc's generic blocks (Committing-vs-pushing,
   one-command-per-invocation, Use-jj, Conventional-commit shape)
   and drops the `(<version>)` title suffix.
+
+## docs: template cleanup
+
+Commits:
+
+Strip the vc-template-x1 boilerplate so the repo reads as its own
+project rather than a template.
+
+- `README.md` loses the template/cloning/assumptions sections and
+  gains a one-line project intro (zero-copy ring buffer
+  experiment 1).
+- `notes/todo.md` drops the dummy template entries and their
+  references; the ring-buffer design task becomes Todo #1.
