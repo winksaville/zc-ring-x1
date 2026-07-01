@@ -312,6 +312,13 @@ The title is **identical** across all three for a given step, so a
 step's ladder entry, its chores `##` header, and its commit title
 line up verbatim — pick the commit title first and reuse it.
 
+That identity is **per step**, not per cycle: each step in a
+cycle gets its own distinct descriptive title — never one shared
+cycle title uniquified by a step marker. The cycle's chores
+section header carries the anticipated *close-out* title. To keep
+a cycle's commits collectable with one `git log --grep`, give the
+step titles a common greppable stem (e.g. `ring buffer`).
+
 ## Notes file conventions
 
 Conventions the bot follows when writing notes files

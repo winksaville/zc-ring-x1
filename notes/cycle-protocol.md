@@ -252,6 +252,13 @@ titles don't carry one.
 - Common types: `feat`, `fix`, `refactor`, `test`,
   `docs`, `chore`.
 - Favor terse phrasings.
+- **Distinct per step** — each of a cycle's commits gets its
+  own descriptive title (no shared cycle title with a step
+  marker). Share a greppable stem across the cycle's titles
+  (e.g. `ring buffer`) so `git log --grep` collects them; the
+  chores section header matches the close-out title. See
+  AGENTS.md
+  [Conventional-commit shape](../AGENTS.md#conventional-commit-shape-ladder--chores--commit).
 
 ### Body
 

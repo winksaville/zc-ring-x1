@@ -6,13 +6,18 @@ uses links or reference links for more details.
 
 ## In Progress
 
-When a `## Todo` item is picked up, its text moves here: the
-problem overview and its list of things to do. That is followed
-by the "plan" — a bulleted list of the development "ladder":
-   - 0.xx.y-0 blah (done)
-   - 0.xx.y-1 blah blah (current)
-   - 0.xx.y-2 blah blah blah
-   - 0.xx.y close-out and validation
+**docs: zero-copy ring buffer design**
+
+Design a zero-copy ring buffer in no_std Rust using the
+zerocopy crate to transmute structs into and out of the
+buffer, suitable for inter- and intra-process communication.
+
+Plan:
+- 0.3.0-0 docs: pick up zero-copy ring buffer design (done)
+- 0.3.0-1 docs: ring buffer requirements + constraints
+- 0.3.0-2 docs: ring buffer API + memory-layout design
+- 0.3.0-3 feat: ring buffer prototype crate
+- 0.3.0 docs: zero-copy ring buffer design
 
 ## Todo
 
@@ -28,10 +33,6 @@ by the "plan" — a bulleted list of the development "ladder":
  detail goes in `notes/chores/chores-NN.md` design
  subsections (link via `[N]` ref).
 
-1. Design a zero-copy ring buffer in no_std rust and use
-   googles zerocopy crate to transmut structs into and out of
-   the buffer. The system will be suitable for inter/intra
-   process communication.
 
 ## Done
 

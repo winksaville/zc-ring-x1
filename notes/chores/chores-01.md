@@ -48,3 +48,7 @@ project rather than a template.
   experiment 1).
 - `notes/todo.md` drops the dummy template entries and their
   references; the ring-buffer design task becomes Todo #1.
+
+## docs: zero-copy ring buffer design
+
+Commits:
