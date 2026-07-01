@@ -1,0 +1,7 @@
+# This project's version, advanced through the cycle's X.Y.Z-N
+# phases (see notes/cycle-protocol.md). vc-template-x1 has no
+# build system carrying a version, so it lives here. Other
+# projects record the version wherever their medium fits — Rust
+# in Cargo.toml, a book in frontmatter, a song in export
+# metadata, etc.
+version = "0.2.0"
