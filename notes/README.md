@@ -14,7 +14,7 @@ Project design docs:
 
 - [ring-buffer-design.md](ring-buffer-design.md) — the
   zero-copy ring buffer (requirements, layout, API,
-  validation), kept in sync with `src/lib.rs`.
+  validation), kept in sync with `src/`.
 
 
 Examples chore file:

@@ -4,7 +4,10 @@ Design notes for the zero-copy ring buffer. This file uses
 [Prose form](../AGENTS.md#prose-form). It covers requirements,
 constraints, the memory layout, the API, and the validation
 ladder, and is kept in sync with the implementation in
-`src/lib.rs` (as-built).
+`src/` (as-built): `lib.rs` holds the region-level machinery
+(header, init/attach/split, geometry helpers) and re-exports
+the endpoint modules `producer.rs` (Producer, WriteSlot,
+Full) and `consumer.rs` (Consumer, ReadSlot, Empty).
 
 ## Goal
 

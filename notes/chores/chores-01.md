@@ -120,7 +120,7 @@ shape: `reserve_slot` → guard → commit / release.
 
 ## docs: commit-and-push is not a review waiver
 
-Commits:
+Commits: [[11]]
 
 Clarify the push-delegation policy after a real slip: the bot
 read "run miri then commit and push" as a scoped delegation
@@ -137,6 +137,29 @@ have applied.
   (committed there separately), keeping the shared files
   verbatim copies.
 
+## refactor: ring buffer endpoint modules
+
+Commits:
+
+Split the single-file crate so each endpoint lives with its
+guard: the Producer/WriteSlot and Consumer/ReadSlot pairings
+are structural (one module each) rather than positional in
+one long file. API-neutral — the crate root re-exports both
+modules, so every existing path still works.
+
+- `src/lib.rs` keeps the region-level machinery: Header,
+  Error, Ring (init/attach/split), geometry helpers, and the
+  test module.
+- `src/producer.rs`: Producer, WriteSlot, Full.
+  `src/consumer.rs`: Consumer, ReadSlot, Empty.
+- `Ring::split` builds the endpoints via `pub(crate)`
+  constructors — a parent module cannot construct a child's
+  private-field struct directly.
+- Motivated by the reserve_slot rename discussion: commit /
+  release cannot move onto the endpoints (the guard holds the
+  endpoint's `&mut` borrow), so cohesion lands at the module
+  level instead.
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"
@@ -149,3 +172,4 @@ have applied.
 [8]: https://github.com/winksaville/zc-ring-x1/commit/573bb0ac5b19 "573bb0ac5b19dba8dd158a73eadc19ba3ba6f416"
 [9]: https://github.com/winksaville/zc-ring-x1/commit/69a00921a2eb "69a00921a2eb112d2ae2833da112159283c95c5c"
 [10]: https://github.com/winksaville/zc-ring-x1/commit/d8bcb77af33b "d8bcb77af33bd6f551e3dd848613ec8b2e70e7cc"
+[11]: https://github.com/winksaville/zc-ring-x1/commit/af563403aa46 "af563403aa46d029f6f7cf1465a67f28aab2beea"

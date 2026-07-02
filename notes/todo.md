@@ -41,6 +41,15 @@ _No cycle currently in progress._
   `occupancy()` / `is_empty()` accessors.
 - Packed-slot variant (drop the cache-line-multiple slot
   constraint) for small-message space efficiency.
+- Shared `Geometry` struct (`slot_size`, `capacity`, `mask`)
+  held by Ring and passed whole to the endpoint
+  constructors, slimming their signatures and Ring's fields.
+- Black-box test split: move the public-API protocol tests
+  (roundtrip, abandoned guards, threaded stress) to
+  `tests/protocol.rs`; white-box tests (u32 wrap, attach
+  header internals) stay in lib.rs. Do it when a trybuild
+  compile-fail harness lands there too (pins the
+  "second reserve_slot does not compile" guarantee).
 
 ## Done
 
@@ -50,9 +59,11 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 - docs: zero-copy ring buffer design [[1]]
 - refactor: ring buffer symmetric reserve_slot API [[2]]
 - docs: commit-and-push is not a review waiver [[3]]
+- refactor: ring buffer endpoint modules [[4]]
 
 # References
 
 [1]: chores/chores-01.md#docs-zero-copy-ring-buffer-design
 [2]: chores/chores-01.md#refactor-ring-buffer-symmetric-reserve_slot-api
 [3]: chores/chores-01.md#docs-commit-and-push-is-not-a-review-waiver
+[4]: chores/chores-01.md#refactor-ring-buffer-endpoint-modules

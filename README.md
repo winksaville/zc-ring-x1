@@ -19,7 +19,7 @@ layout works between threads and, via shared memory, between
 processes. The full design — requirements, memory layout, index
 scheme, API, validation — lives in
 [notes/ring-buffer-design.md](notes/ring-buffer-design.md), kept
-in sync with `src/lib.rs`.
+in sync with `src/`.
 
 - M slots × N bytes, both caller-chosen: M a power of two, N a
   cache-line multiple, every slot cache-line aligned.

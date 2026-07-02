@@ -19,9 +19,13 @@
 
 use core::marker::PhantomData;
 use core::mem::size_of;
-use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, Ordering};
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+mod consumer;
+mod producer;
+
+pub use consumer::{Consumer, Empty, ReadSlot};
+pub use producer::{Full, Producer, WriteSlot};
 
 /// Cache-line size the layout is built around.
 ///
@@ -88,16 +92,6 @@ pub enum Error {
     /// Attach: layout version mismatch.
     BadLayoutVersion,
 }
-
-/// `reserve_slot` failed: every slot holds an
-/// uncommitted-or-unread
-/// message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Full;
-
-/// `reserve_slot` failed: no unread messages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Empty;
 
 /// A validated view over a ring region; split into the two
 /// endpoint handles with [`Ring::split`].
@@ -218,21 +212,14 @@ impl<'a> Ring<'a> {
     ///   one consuming process is the SPSC contract.
     pub fn split(self) -> (Producer<'a>, Consumer<'a>) {
         (
-            Producer {
-                header: self.header,
-                slots: self.slots,
-                slot_size: self.slot_size,
-                capacity: self.capacity,
-                mask: self.mask,
-                _region: PhantomData,
-            },
-            Consumer {
-                header: self.header,
-                slots: self.slots,
-                slot_size: self.slot_size,
-                mask: self.mask,
-                _region: PhantomData,
-            },
+            Producer::new(
+                self.header,
+                self.slots,
+                self.slot_size,
+                self.capacity,
+                self.mask,
+            ),
+            Consumer::new(self.header, self.slots, self.slot_size, self.mask),
         )
     }
 }
@@ -304,200 +291,10 @@ fn slot_ptr(slots: *mut u8, idx: u32, mask: u32, slot_size: u32) -> *mut u8 {
     unsafe { slots.add(pos * slot_size as usize) }
 }
 
-/// The producing endpoint: `reserve_slot`, write in place,
-/// `commit`.
-pub struct Producer<'a> {
-    /// The ring's control block.
-    header: &'a Header,
-    /// Base of the slot array.
-    slots: *mut u8,
-    /// Geometry snapshot (see [`Ring`]).
-    slot_size: u32,
-    /// Geometry snapshot (see [`Ring`]).
-    capacity: u32,
-    /// Slot-position mask (`capacity - 1`).
-    mask: u32,
-    _region: PhantomData<&'a [u8]>,
-}
-
-// SAFETY: the handle owns the producer role; the shared state it
-// touches (indices) is atomic, and slot writes are handed off
-// with Release/Acquire ordering.
-unsafe impl Send for Producer<'_> {}
-
-impl<'a> Producer<'a> {
-    /// Reserve the next free slot as a `&mut T`, or [`Full`].
-    ///
-    /// - Only one slot may be reserved at a time: the guard
-    ///   holds the `&mut Producer` borrow, so a second
-    ///   `reserve_slot` before the guard is dropped or
-    ///   committed does not compile.
-    /// - Dropping the guard without [`WriteSlot::commit`]
-    ///   abandons the reservation (nothing published).
-    pub fn reserve_slot<T>(&mut self) -> Result<WriteSlot<'_, T>, Full>
-    where
-        T: FromBytes + IntoBytes + KnownLayout,
-    {
-        check_type::<T>(self.slot_size);
-        let p = self.header.producer_idx.load(Ordering::Relaxed);
-        let c = self.header.consumer_idx.load(Ordering::Acquire);
-        // `>=`, not `==`: a peer-corrupted consumer_idx makes
-        // occupancy look huge — fail Full, never hand out a
-        // slot the protocol doesn't own.
-        if p.wrapping_sub(c) >= self.capacity {
-            return Err(Full);
-        }
-        // Raw pointer, not `&mut T`: a reference field would be
-        // argument-protected for the whole `commit(self)` call,
-        // while commit's Release store lets the consumer read
-        // the slot inside that window — UB (Miri-verified).
-        // Deref mints short-lived references instead.
-        let msg = slot_ptr(self.slots, p, self.mask, self.slot_size) as *mut T;
-        Ok(WriteSlot {
-            header: self.header,
-            msg,
-            next_idx: p.wrapping_add(1),
-            _slot: PhantomData,
-        })
-    }
-}
-
-/// A reserved write slot: `DerefMut` to write the message, then
-/// [`commit`](WriteSlot::commit).
-pub struct WriteSlot<'p, T> {
-    /// The ring's control block (for the commit store).
-    header: &'p Header,
-    /// The slot, viewed as the message type. Raw on purpose —
-    /// see the comment in [`Producer::reserve_slot`].
-    msg: *mut T,
-    /// Value `producer_idx` takes on commit.
-    next_idx: u32,
-    /// Owns the `&'p mut` borrow of the producer.
-    _slot: PhantomData<&'p mut T>,
-}
-
-impl<T> Deref for WriteSlot<'_, T> {
-    type Target = T;
-    /// Read access to the in-slot message.
-    fn deref(&self) -> &T {
-        // SAFETY: msg is in-bounds and aligned (check_type +
-        // cache-line slot base), any byte pattern is a valid T
-        // (FromBytes bound at reserve_slot), and the index
-        // protocol
-        // gives this guard exclusive slot access until commit.
-        unsafe { &*self.msg }
-    }
-}
-
-impl<T> DerefMut for WriteSlot<'_, T> {
-    /// Write access to the in-slot message.
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as in deref; &mut self gives exclusivity of
-        // the minted reference.
-        unsafe { &mut *self.msg }
-    }
-}
-
-impl<T> WriteSlot<'_, T> {
-    /// Publish the slot to the consumer
-    /// (`producer_idx + 1`, `Release`).
-    pub fn commit(self) {
-        self.header
-            .producer_idx
-            .store(self.next_idx, Ordering::Release);
-    }
-}
-
-/// The consuming endpoint: `reserve_slot` the oldest unread
-/// slot, read in place, `release`.
-pub struct Consumer<'a> {
-    /// The ring's control block.
-    header: &'a Header,
-    /// Base of the slot array.
-    slots: *mut u8,
-    /// Geometry snapshot (see [`Ring`]).
-    slot_size: u32,
-    /// Slot-position mask (`capacity - 1`).
-    mask: u32,
-    _region: PhantomData<&'a [u8]>,
-}
-
-// SAFETY: the handle owns the consumer role; see the Producer
-// Send rationale.
-unsafe impl Send for Consumer<'_> {}
-
-impl<'a> Consumer<'a> {
-    /// Reserve the oldest unread slot as a `&T`, or [`Empty`].
-    ///
-    /// - Only one slot may be reserved at a time: the guard
-    ///   holds the `&mut Consumer` borrow, so a second
-    ///   `reserve_slot` before the guard is dropped or released
-    ///   does not compile.
-    /// - Dropping the guard without [`ReadSlot::release`]
-    ///   leaves the slot unread — the next `reserve_slot`
-    ///   returns it again.
-    pub fn reserve_slot<T>(&mut self) -> Result<ReadSlot<'_, T>, Empty>
-    where
-        T: FromBytes + KnownLayout + Immutable,
-    {
-        check_type::<T>(self.slot_size);
-        let c = self.header.consumer_idx.load(Ordering::Relaxed);
-        let p = self.header.producer_idx.load(Ordering::Acquire);
-        if p == c {
-            return Err(Empty);
-        }
-        // Raw pointer, not `&T`, for the same reason as in the
-        // producer's reserve_slot: release's store frees the
-        // slot for producer writes while a reference field
-        // would still be argument-protected.
-        let msg = slot_ptr(self.slots, c, self.mask, self.slot_size) as *const T;
-        Ok(ReadSlot {
-            header: self.header,
-            msg,
-            next_idx: c.wrapping_add(1),
-            _slot: PhantomData,
-        })
-    }
-}
-
-/// A reserved read slot: `Deref` to read the message, then
-/// [`release`](ReadSlot::release).
-pub struct ReadSlot<'c, T> {
-    /// The ring's control block (for the release store).
-    header: &'c Header,
-    /// The slot, viewed as the message type. Raw on purpose —
-    /// see the comment in [`Consumer::reserve_slot`].
-    msg: *const T,
-    /// Value `consumer_idx` takes on release.
-    next_idx: u32,
-    /// Owns the `&'c` borrow of the consumer.
-    _slot: PhantomData<&'c T>,
-}
-
-impl<T> Deref for ReadSlot<'_, T> {
-    type Target = T;
-    /// Read access to the in-slot message.
-    fn deref(&self) -> &T {
-        // SAFETY: msg is in-bounds and aligned (check_type +
-        // cache-line slot base), any byte pattern is a valid T
-        // (FromBytes bound at reserve_slot), and the index
-        // protocol gives this guard read access until release.
-        unsafe { &*self.msg }
-    }
-}
-
-impl<T> ReadSlot<'_, T> {
-    /// Free the slot for reuse (`consumer_idx + 1`, `Release`).
-    pub fn release(self) {
-        self.header
-            .consumer_idx
-            .store(self.next_idx, Ordering::Release);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
     /// Test message; two words so a torn write would be visible.
     #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Debug, PartialEq)]
