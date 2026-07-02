@@ -7,9 +7,11 @@
 //! - Indices are free-running `AtomicU32`s, masked only at slot
 //!   access; full is `p - c == M`, no sacrificial slot.
 //! - Messages move in place: the producer writes through a
-//!   [`Reserved`] `&mut T`, the consumer reads through a
-//!   [`Peeked`] `&T` — zerocopy traits bound `T`, no
-//!   serialization step.
+//!   [`WriteSlot`] `&mut T`, the consumer reads through a
+//!   [`ReadSlot`] `&T` — zerocopy traits bound `T`, no
+//!   serialization step. Each side reserves at most one slot at
+//!   a time; the guard holds the endpoint borrow until commit /
+//!   release (or drop).
 //!
 //! [notes/ring-buffer-design.md]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/ring-buffer-design.md
 
@@ -87,12 +89,13 @@ pub enum Error {
     BadLayoutVersion,
 }
 
-/// `reserve` failed: every slot holds an uncommitted-or-unread
+/// `reserve_slot` failed: every slot holds an
+/// uncommitted-or-unread
 /// message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Full;
 
-/// `peek` failed: no unread messages.
+/// `reserve_slot` failed: no unread messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Empty;
 
@@ -277,7 +280,8 @@ fn validate_geometry(slot_size: u32, capacity: u32) -> Result<(), Error> {
     Ok(())
 }
 
-/// Check `T` fits a slot; called once per reserve/peek.
+/// Check `T` fits a slot; called once per `reserve_slot` (both
+/// endpoints).
 ///
 /// - Panics on a type-geometry mismatch — that is a programming
 ///   error, not a runtime condition.
@@ -300,7 +304,7 @@ fn slot_ptr(slots: *mut u8, idx: u32, mask: u32, slot_size: u32) -> *mut u8 {
     unsafe { slots.add(pos * slot_size as usize) }
 }
 
-/// The producing endpoint: `reserve` a slot, write in place,
+/// The producing endpoint: `reserve_slot`, write in place,
 /// `commit`.
 pub struct Producer<'a> {
     /// The ring's control block.
@@ -324,9 +328,13 @@ unsafe impl Send for Producer<'_> {}
 impl<'a> Producer<'a> {
     /// Reserve the next free slot as a `&mut T`, or [`Full`].
     ///
-    /// - Dropping the guard without [`Reserved::commit`]
+    /// - Only one slot may be reserved at a time: the guard
+    ///   holds the `&mut Producer` borrow, so a second
+    ///   `reserve_slot` before the guard is dropped or
+    ///   committed does not compile.
+    /// - Dropping the guard without [`WriteSlot::commit`]
     ///   abandons the reservation (nothing published).
-    pub fn reserve<T>(&mut self) -> Result<Reserved<'_, T>, Full>
+    pub fn reserve_slot<T>(&mut self) -> Result<WriteSlot<'_, T>, Full>
     where
         T: FromBytes + IntoBytes + KnownLayout,
     {
@@ -345,7 +353,7 @@ impl<'a> Producer<'a> {
         // the slot inside that window — UB (Miri-verified).
         // Deref mints short-lived references instead.
         let msg = slot_ptr(self.slots, p, self.mask, self.slot_size) as *mut T;
-        Ok(Reserved {
+        Ok(WriteSlot {
             header: self.header,
             msg,
             next_idx: p.wrapping_add(1),
@@ -354,13 +362,13 @@ impl<'a> Producer<'a> {
     }
 }
 
-/// A reserved slot: `DerefMut` to write the message, then
-/// [`commit`](Reserved::commit).
-pub struct Reserved<'p, T> {
+/// A reserved write slot: `DerefMut` to write the message, then
+/// [`commit`](WriteSlot::commit).
+pub struct WriteSlot<'p, T> {
     /// The ring's control block (for the commit store).
     header: &'p Header,
     /// The slot, viewed as the message type. Raw on purpose —
-    /// see the comment in [`Producer::reserve`].
+    /// see the comment in [`Producer::reserve_slot`].
     msg: *mut T,
     /// Value `producer_idx` takes on commit.
     next_idx: u32,
@@ -368,19 +376,20 @@ pub struct Reserved<'p, T> {
     _slot: PhantomData<&'p mut T>,
 }
 
-impl<T> Deref for Reserved<'_, T> {
+impl<T> Deref for WriteSlot<'_, T> {
     type Target = T;
     /// Read access to the in-slot message.
     fn deref(&self) -> &T {
         // SAFETY: msg is in-bounds and aligned (check_type +
         // cache-line slot base), any byte pattern is a valid T
-        // (FromBytes bound at reserve), and the index protocol
+        // (FromBytes bound at reserve_slot), and the index
+        // protocol
         // gives this guard exclusive slot access until commit.
         unsafe { &*self.msg }
     }
 }
 
-impl<T> DerefMut for Reserved<'_, T> {
+impl<T> DerefMut for WriteSlot<'_, T> {
     /// Write access to the in-slot message.
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: as in deref; &mut self gives exclusivity of
@@ -389,7 +398,7 @@ impl<T> DerefMut for Reserved<'_, T> {
     }
 }
 
-impl<T> Reserved<'_, T> {
+impl<T> WriteSlot<'_, T> {
     /// Publish the slot to the consumer
     /// (`producer_idx + 1`, `Release`).
     pub fn commit(self) {
@@ -399,8 +408,8 @@ impl<T> Reserved<'_, T> {
     }
 }
 
-/// The consuming endpoint: `peek` the oldest unread slot, read
-/// in place, `release`.
+/// The consuming endpoint: `reserve_slot` the oldest unread
+/// slot, read in place, `release`.
 pub struct Consumer<'a> {
     /// The ring's control block.
     header: &'a Header,
@@ -418,11 +427,16 @@ pub struct Consumer<'a> {
 unsafe impl Send for Consumer<'_> {}
 
 impl<'a> Consumer<'a> {
-    /// View the oldest unread slot as a `&T`, or [`Empty`].
+    /// Reserve the oldest unread slot as a `&T`, or [`Empty`].
     ///
-    /// - Dropping the guard without [`Peeked::release`] leaves
-    ///   the slot unread — the next peek returns it again.
-    pub fn peek<T>(&mut self) -> Result<Peeked<'_, T>, Empty>
+    /// - Only one slot may be reserved at a time: the guard
+    ///   holds the `&mut Consumer` borrow, so a second
+    ///   `reserve_slot` before the guard is dropped or released
+    ///   does not compile.
+    /// - Dropping the guard without [`ReadSlot::release`]
+    ///   leaves the slot unread — the next `reserve_slot`
+    ///   returns it again.
+    pub fn reserve_slot<T>(&mut self) -> Result<ReadSlot<'_, T>, Empty>
     where
         T: FromBytes + KnownLayout + Immutable,
     {
@@ -432,12 +446,12 @@ impl<'a> Consumer<'a> {
         if p == c {
             return Err(Empty);
         }
-        // Raw pointer, not `&T`, for the same reason as in
-        // reserve: release's store frees the slot for producer
-        // writes while a reference field would still be
-        // argument-protected.
+        // Raw pointer, not `&T`, for the same reason as in the
+        // producer's reserve_slot: release's store frees the
+        // slot for producer writes while a reference field
+        // would still be argument-protected.
         let msg = slot_ptr(self.slots, c, self.mask, self.slot_size) as *const T;
-        Ok(Peeked {
+        Ok(ReadSlot {
             header: self.header,
             msg,
             next_idx: c.wrapping_add(1),
@@ -446,13 +460,13 @@ impl<'a> Consumer<'a> {
     }
 }
 
-/// A peeked slot: `Deref` to read the message, then
-/// [`release`](Peeked::release).
-pub struct Peeked<'c, T> {
+/// A reserved read slot: `Deref` to read the message, then
+/// [`release`](ReadSlot::release).
+pub struct ReadSlot<'c, T> {
     /// The ring's control block (for the release store).
     header: &'c Header,
     /// The slot, viewed as the message type. Raw on purpose —
-    /// see the comment in [`Consumer::peek`].
+    /// see the comment in [`Consumer::reserve_slot`].
     msg: *const T,
     /// Value `consumer_idx` takes on release.
     next_idx: u32,
@@ -460,19 +474,19 @@ pub struct Peeked<'c, T> {
     _slot: PhantomData<&'c T>,
 }
 
-impl<T> Deref for Peeked<'_, T> {
+impl<T> Deref for ReadSlot<'_, T> {
     type Target = T;
     /// Read access to the in-slot message.
     fn deref(&self) -> &T {
         // SAFETY: msg is in-bounds and aligned (check_type +
         // cache-line slot base), any byte pattern is a valid T
-        // (FromBytes bound at peek), and the index protocol
-        // gives this guard read access until release.
+        // (FromBytes bound at reserve_slot), and the index
+        // protocol gives this guard read access until release.
         unsafe { &*self.msg }
     }
 }
 
-impl<T> Peeked<'_, T> {
+impl<T> ReadSlot<'_, T> {
     /// Free the slot for reuse (`consumer_idx + 1`, `Release`).
     pub fn release(self) {
         self.header
@@ -564,20 +578,20 @@ mod tests {
         // Fill: producer_idx runs MAX-1, MAX, 0, 1 — masked
         // slot positions 2, 3, 0, 1.
         for i in 0..4u64 {
-            let mut slot = prod.reserve::<Msg>().unwrap();
+            let mut slot = prod.reserve_slot::<Msg>().unwrap();
             slot.seq = i;
             slot.val = i;
             slot.commit();
         }
-        assert!(prod.reserve::<Msg>().is_err());
+        assert!(prod.reserve_slot::<Msg>().is_err());
 
         // Drain in order across the wrap.
         for i in 0..4u64 {
-            let msg = cons.peek::<Msg>().unwrap();
+            let msg = cons.reserve_slot::<Msg>().unwrap();
             assert_eq!(msg.seq, i);
             msg.release();
         }
-        assert!(cons.peek::<Msg>().is_err());
+        assert!(cons.reserve_slot::<Msg>().is_err());
     }
 
     #[test]
@@ -586,20 +600,20 @@ mod tests {
         let (mut prod, mut cons) = Ring::init(&mut r.0, 64, 4).unwrap().split();
 
         // Empty at start.
-        assert!(cons.peek::<Msg>().is_err());
+        assert!(cons.reserve_slot::<Msg>().is_err());
 
         // Fill all 4 slots, then Full.
         for i in 0..4u64 {
-            let mut slot = prod.reserve::<Msg>().unwrap();
+            let mut slot = prod.reserve_slot::<Msg>().unwrap();
             slot.seq = i;
             slot.val = i * 10;
             slot.commit();
         }
-        assert!(prod.reserve::<Msg>().is_err());
+        assert!(prod.reserve_slot::<Msg>().is_err());
 
         // Drain in order; wrap: slot 0 is reused by seq 4.
         for i in 0..4u64 {
-            let msg = cons.peek::<Msg>().unwrap();
+            let msg = cons.reserve_slot::<Msg>().unwrap();
             assert_eq!(
                 *msg,
                 Msg {
@@ -609,13 +623,13 @@ mod tests {
             );
             msg.release();
         }
-        assert!(cons.peek::<Msg>().is_err());
+        assert!(cons.reserve_slot::<Msg>().is_err());
 
         // One more write lands in the masked-around slot 0.
-        let mut slot = prod.reserve::<Msg>().unwrap();
+        let mut slot = prod.reserve_slot::<Msg>().unwrap();
         slot.seq = 4;
         slot.commit();
-        let msg = cons.peek::<Msg>().unwrap();
+        let msg = cons.reserve_slot::<Msg>().unwrap();
         assert_eq!(msg.seq, 4);
         msg.release();
     }
@@ -629,19 +643,20 @@ mod tests {
         let (mut prod, mut cons) = Ring::init(&mut r.0, 64, 4).unwrap().split();
 
         // Reserve then drop: nothing published.
-        let mut slot = prod.reserve::<Msg>().unwrap();
+        let mut slot = prod.reserve_slot::<Msg>().unwrap();
         slot.seq = 99;
         drop(slot);
-        assert!(cons.peek::<Msg>().is_err());
+        assert!(cons.reserve_slot::<Msg>().is_err());
 
-        // Commit one, peek then drop: still unread, re-peekable.
-        let mut slot = prod.reserve::<Msg>().unwrap();
+        // Commit one, reserve_slot then drop: still unread, the
+        // next reserve_slot returns it again.
+        let mut slot = prod.reserve_slot::<Msg>().unwrap();
         slot.seq = 1;
         slot.commit();
-        let msg = cons.peek::<Msg>().unwrap();
+        let msg = cons.reserve_slot::<Msg>().unwrap();
         assert_eq!(msg.seq, 1);
         drop(msg);
-        let msg = cons.peek::<Msg>().unwrap();
+        let msg = cons.reserve_slot::<Msg>().unwrap();
         assert_eq!(msg.seq, 1);
         msg.release();
     }
@@ -658,7 +673,7 @@ mod tests {
             s.spawn(move || {
                 for i in 0..COUNT {
                     loop {
-                        match prod.reserve::<Msg>() {
+                        match prod.reserve_slot::<Msg>() {
                             Ok(mut slot) => {
                                 slot.seq = i;
                                 slot.val = i * 3;
@@ -673,7 +688,7 @@ mod tests {
             s.spawn(move || {
                 for i in 0..COUNT {
                     loop {
-                        match cons.peek::<Msg>() {
+                        match cons.reserve_slot::<Msg>() {
                             Ok(msg) => {
                                 assert_eq!(msg.seq, i);
                                 assert_eq!(msg.val, i * 3);

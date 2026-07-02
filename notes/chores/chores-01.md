@@ -51,7 +51,7 @@ project rather than a template.
 
 ## docs: zero-copy ring buffer design
 
-Commits: [[2]],[[3]],[[4]],[[5]],[[6]],[[7]],[[8]]
+Commits: [[2]],[[3]],[[4]],[[5]],[[6]],[[7]],[[8]],[[9]]
 
 Design a zero-copy ring buffer in no_std Rust using the
 zerocopy crate to transmute structs into and out of the
@@ -94,6 +94,30 @@ Design notes: [ring-buffer-design.md](../ring-buffer-design.md)
   endpoints as Todo 1/2; wakeup story, loom, polish, and
   packed slots under Ideas.
 
+## refactor: ring buffer symmetric reserve_slot API
+
+Commits:
+
+Rename the guard API so both endpoints use the same verb.
+`peek` read as a free look — it hid that the consumer holds
+an exclusive one-at-a-time guard, mirror image of the
+producer's reservation. Both sides now run the identical
+shape: `reserve_slot` → guard → commit / release.
+
+- `producer.reserve_slot::<T>()` → `WriteSlot<'_, T>` →
+  write via `&mut T` → `commit()`.
+- `consumer.reserve_slot::<T>()` → `ReadSlot<'_, T>` →
+  read via `&T` → `release()`.
+- The one-slot-at-a-time rule is now stated in the doc
+  comments and the design doc: the guard holds the
+  endpoint's `&mut` borrow, so a second `reserve_slot`
+  while a guard is live is a compile error (verified with
+  a scratch E0499 negative test), not a runtime state.
+- Direction lives in the closing verb and the guard type,
+  not the reserve verb — commit publishes a write, release
+  frees a read.
+- Breaking API rename, so 0.3.0 → 0.4.0.
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"
@@ -104,3 +128,4 @@ Design notes: [ring-buffer-design.md](../ring-buffer-design.md)
 [6]: https://github.com/winksaville/zc-ring-x1/commit/dc28bcc0fce5 "dc28bcc0fce5d704145c6a444608c46ad68b0f78"
 [7]: https://github.com/winksaville/zc-ring-x1/commit/828250ae38ec "828250ae38ec9bcef18fceaef0c3f420d60f5927"
 [8]: https://github.com/winksaville/zc-ring-x1/commit/573bb0ac5b19 "573bb0ac5b19dba8dd158a73eadc19ba3ba6f416"
+[9]: https://github.com/winksaville/zc-ring-x1/commit/69a00921a2eb "69a00921a2eb112d2ae2833da112159283c95c5c"

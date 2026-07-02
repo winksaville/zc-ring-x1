@@ -29,11 +29,11 @@ _No cycle currently in progress._
    [details](ring-buffer-design.md#resolved-questions).
 2. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
-   reserve/peek [details](ring-buffer-design.md#api).
+   reserve_slot [details](ring-buffer-design.md#api).
 
 ## Ideas
 
-- Blocking/wakeup story for reserve/peek (futex, eventfd);
+- Blocking/wakeup story for reserve_slot (futex, eventfd);
   spin-only today.
 - loom-based exhaustive ordering exploration of the SPSC
   protocol.
@@ -48,7 +48,9 @@ Completed tasks are moved from `## Todo` to here, `## Done`, as they are complet
 and older `## Done` sections are moved to [done.md](done.md) to keep this file small.
 
 - docs: zero-copy ring buffer design [[1]]
+- refactor: ring buffer symmetric reserve_slot API [[2]]
 
 # References
 
 [1]: chores/chores-01.md#docs-zero-copy-ring-buffer-design
+[2]: chores/chores-01.md#refactor-ring-buffer-symmetric-reserve_slot-api

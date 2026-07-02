@@ -35,12 +35,14 @@ inter-process (shared memory).
   via atomic producer/consumer indices. MPMC is out of scope
   for this cycle;
   the layout should not preclude adding it later.
-- **In-place access API** — reserve/commit on the producer side
-  and peek/release on the consumer side, exposing references
-  into the buffer rather than returning values by move.
+- **In-place access API** — `reserve_slot` on either endpoint,
+  then commit (producer) or release (consumer), exposing
+  references into the buffer rather than returning values by
+  move.
 - **Safety** — all `unsafe` encapsulated inside the crate with
-  documented invariants. The message path (reserve/commit,
-  peek/release) is fully safe; the one `unsafe` public entry
+  documented invariants. The message path (reserve_slot, then
+  commit / release) is fully safe; the one `unsafe` public
+  entry
   is `Ring::attach` — see [API](#api) for why it cannot be
   made safe.
 
@@ -154,7 +156,7 @@ Index scheme (resolves the atomic-width question):
   - producer commits 4 messages: `p = 4, c = 0` — occupancy
     4 == M, full; slot positions written were 0, 1, 2, 3
   - consumer releases 1: `p = 4, c = 1` — occupancy 3, one
-    slot free; the next reserve writes slot `4 & 3 == 0`
+    slot free; the next reserve_slot writes slot `4 & 3 == 0`
 
 Ordering: the producer loads `consumer_idx` with `Acquire`
 and publishes `producer_idx` with `Release`; the consumer
@@ -192,25 +194,32 @@ Construction (resolves the foreign-memory question):
   with the all-atomic header, a hostile peer can degrade the
   ring to garbage messages or spurious Full/Empty — never UB.
 
-Producer — reserve/commit, in place:
+Producer — reserve_slot/commit, in place:
 
-- `producer.reserve::<T>() -> Result<Reserved<'_, T>, Full>`
-  — next free slot as `&mut T` (zerocopy `FromBytes +
-  IntoBytes + KnownLayout`); `T` geometry is asserted against
-  the slot size on each call (a mismatch is a programming
-  error, so it panics; typed endpoints that check once are a
-  follow-on — see [todo.md](todo.md)).
-- `Reserved::commit(self)` — publishes the slot
+- `producer.reserve_slot::<T>() ->
+  Result<WriteSlot<'_, T>, Full>` — next free slot as `&mut T`
+  (zerocopy `FromBytes + IntoBytes + KnownLayout`); `T`
+  geometry is asserted against the slot size on each call (a
+  mismatch is a programming error, so it panics; typed
+  endpoints that check once are a follow-on — see
+  [todo.md](todo.md)).
+- `WriteSlot::commit(self)` — publishes the slot
   (`producer_idx + 1`, `Release`). Dropping without commit
   abandons the reservation (nothing published).
 
-Consumer — peek/release, in place:
+Consumer — reserve_slot/release, in place:
 
-- `consumer.peek::<T>() -> Result<Peeked<'_, T>, Empty>` —
-  oldest unread slot as `&T`.
-- `Peeked::release(self)` — frees the slot
+- `consumer.reserve_slot::<T>() ->
+  Result<ReadSlot<'_, T>, Empty>` — oldest unread slot as
+  `&T`.
+- `ReadSlot::release(self)` — frees the slot
   (`consumer_idx + 1`, `Release`). Dropping without release
-  leaves the slot unread — the next peek returns it again.
+  leaves the slot unread — the next reserve_slot returns it
+  again.
+
+Each side reserves at most **one slot at a time**: the guard
+holds the endpoint's `&mut` borrow, so a second `reserve_slot`
+while a guard is live is a compile error, not a runtime state.
 
 Guard internals: both guards hold **raw slot pointers** and
 mint `&T` / `&mut T` per access via Deref. A reference *field*

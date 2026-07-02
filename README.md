@@ -25,8 +25,8 @@ in sync with `src/lib.rs`.
   cache-line multiple, every slot cache-line aligned.
 - Free-running `AtomicU32` indices, masked only at slot access;
   no sacrificial slot; lock-free with Acquire/Release pairing.
-- Guard API: `reserve::<T>()` → write → `commit()` on the
-  producer side; `peek::<T>()` → read → `release()` on the
+- Guard API: `reserve_slot::<T>()` on either endpoint — write →
+  `commit()` on the producer side, read → `release()` on the
   consumer side; dropping a guard abandons cleanly.
 - IPC-ready: one contiguous region, no internal pointers, an
   init/attach handshake (magic published last, Release), and an
@@ -55,12 +55,12 @@ let mut region = Region([0; 448]);
 let (mut producer, mut consumer) =
     Ring::init(&mut region.0, 64, 4).unwrap().split();
 
-let mut slot = producer.reserve::<Msg>().unwrap();
+let mut slot = producer.reserve_slot::<Msg>().unwrap();
 slot.seq = 1;
 slot.val = 42;
 slot.commit(); // publish to the consumer
 
-let msg = consumer.peek::<Msg>().unwrap();
+let msg = consumer.reserve_slot::<Msg>().unwrap();
 assert_eq!(msg.val, 42);
 msg.release(); // slot is free for reuse
 ```
