@@ -212,6 +212,14 @@ Consumer — peek/release, in place:
   (`consumer_idx + 1`, `Release`). Dropping without release
   leaves the slot unread — the next peek returns it again.
 
+Guard internals: both guards hold **raw slot pointers** and
+mint `&T` / `&mut T` per access via Deref. A reference *field*
+would be argument-protected (noalias) for the entire
+`commit`/`release` call, but the store inside that call hands
+the slot to the other side, which may access it while the
+protector is still live — an aliasing race Miri flags
+(found in 0.3.0-6 by the threaded test).
+
 Batch release (resolves the batching question): deferred —
 the guard API leaves room for a `release_n(n)` later; the
 single-slot guard is the whole surface this cycle.
@@ -220,11 +228,13 @@ single-slot guard is the whole surface this cycle.
 
 Per-commit, alongside the cargo cycle:
 
-- `cargo +nightly miri test -- --skip threaded` — Miri caught
-  a real Stacked Borrows violation in `init` (0.3.0-4); the
-  non-threaded suite runs clean and stays in the ladder. The
-  threaded stress test is skipped (100k spin-loop iterations
-  under an interpreter).
+- `cargo +nightly miri test` — the full suite, threaded test
+  included (its message count is reduced under `cfg(miri)`;
+  interpreted spin loops are slow). Miri has caught two real
+  Stacked Borrows violations: the init retag (0.3.0-4) and
+  the guard argument-protector race (0.3.0-6). The latter
+  reproduces only when the threaded test runs, so the full
+  suite — not a non-threaded subset — stays in the ladder.
 - `indices_survive_u32_wrap` pins the free-running-index wrap
   argument (fill/drain across `u32::MAX` with masked
   positions intact).

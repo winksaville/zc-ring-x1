@@ -7,8 +7,14 @@ By default there are chores/chores-*.md and todo.md. Chores are general notes
 about tasks and todo.md contains short term tasks and their status.
 The chores-NN files are numbered in sequence; as a chores file grows
 large the next one is opened ([chores/chores-01.md](chores/chores-01.md)
-is the active one in this template), and earlier ones are closed and
+is the active one), and earlier ones are closed and
 kept for history.
+
+Project design docs:
+
+- [ring-buffer-design.md](ring-buffer-design.md) — the
+  zero-copy ring buffer (requirements, layout, API,
+  validation), kept in sync with `src/lib.rs`.
 
 
 Examples chore file:
@@ -51,8 +57,8 @@ Per-cycle workflow lives in
   cargo cycle (`fmt` / `clippy` / `test` / `install`),
   work + commit description review gates.
 - [Commit description](cycle-protocol.md#commit-description)
-  — Conventional Commits + `(version)` suffix; body shape
-  per app vs `.claude` repo.
+  — Conventional Commits title rules (no version suffix,
+  distinct per step); body shape per app vs `.claude` repo.
 - [Pushing](cycle-protocol.md#pushing) — push policy,
   close-out shape, `.claude` cadence.
 

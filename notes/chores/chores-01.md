@@ -51,7 +51,7 @@ project rather than a template.
 
 ## docs: zero-copy ring buffer design
 
-Commits: [[2]],[[3]],[[4]],[[5]],[[6]]
+Commits: [[2]],[[3]],[[4]],[[5]],[[6]],[[7]]
 
 # References
 
@@ -61,3 +61,4 @@ Commits: [[2]],[[3]],[[4]],[[5]],[[6]]
 [4]: https://github.com/winksaville/zc-ring-x1/commit/8d6dd8f000e4 "8d6dd8f000e4cc7d43bd11783489f4123abf94a5"
 [5]: https://github.com/winksaville/zc-ring-x1/commit/734a618a21c5 "734a618a21c5bcce39b549dac247164fd320a8e6"
 [6]: https://github.com/winksaville/zc-ring-x1/commit/dc28bcc0fce5 "dc28bcc0fce5d704145c6a444608c46ad68b0f78"
+[7]: https://github.com/winksaville/zc-ring-x1/commit/828250ae38ec "828250ae38ec9bcef18fceaef0c3f420d60f5927"

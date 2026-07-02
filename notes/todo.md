@@ -20,6 +20,7 @@ Plan:
 - 0.3.0-3 feat: ring buffer prototype crate (done)
 - 0.3.0-4 fix: ring buffer soundness + attach handshake (done)
 - 0.3.0-5 docs: sync ring buffer design doc to as-built (done)
+- 0.3.0-6 fix: ring buffer guard aliasing under Miri (done)
 - 0.3.0 docs: zero-copy ring buffer design
 
 ## Todo

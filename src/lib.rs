@@ -339,19 +339,17 @@ impl<'a> Producer<'a> {
         if p.wrapping_sub(c) >= self.capacity {
             return Err(Full);
         }
-        let bytes = slot_ptr(self.slots, p, self.mask, self.slot_size);
-        // SAFETY: index protocol gives the producer exclusive
-        // access to this slot until commit; range validated at
-        // init/attach.
-        let bytes = unsafe { core::slice::from_raw_parts_mut(bytes, self.slot_size as usize) };
-        #[allow(clippy::unwrap_used)]
-        // OK: check_type guarantees size, slot base guarantees
-        // alignment, so the prefix cast cannot fail.
-        let (msg, _) = T::mut_from_prefix(bytes).unwrap();
+        // Raw pointer, not `&mut T`: a reference field would be
+        // argument-protected for the whole `commit(self)` call,
+        // while commit's Release store lets the consumer read
+        // the slot inside that window — UB (Miri-verified).
+        // Deref mints short-lived references instead.
+        let msg = slot_ptr(self.slots, p, self.mask, self.slot_size) as *mut T;
         Ok(Reserved {
             header: self.header,
             msg,
             next_idx: p.wrapping_add(1),
+            _slot: PhantomData,
         })
     }
 }
@@ -361,24 +359,33 @@ impl<'a> Producer<'a> {
 pub struct Reserved<'p, T> {
     /// The ring's control block (for the commit store).
     header: &'p Header,
-    /// The slot, viewed as the message type.
-    msg: &'p mut T,
+    /// The slot, viewed as the message type. Raw on purpose —
+    /// see the comment in [`Producer::reserve`].
+    msg: *mut T,
     /// Value `producer_idx` takes on commit.
     next_idx: u32,
+    /// Owns the `&'p mut` borrow of the producer.
+    _slot: PhantomData<&'p mut T>,
 }
 
 impl<T> Deref for Reserved<'_, T> {
     type Target = T;
     /// Read access to the in-slot message.
     fn deref(&self) -> &T {
-        self.msg
+        // SAFETY: msg is in-bounds and aligned (check_type +
+        // cache-line slot base), any byte pattern is a valid T
+        // (FromBytes bound at reserve), and the index protocol
+        // gives this guard exclusive slot access until commit.
+        unsafe { &*self.msg }
     }
 }
 
 impl<T> DerefMut for Reserved<'_, T> {
     /// Write access to the in-slot message.
     fn deref_mut(&mut self) -> &mut T {
-        self.msg
+        // SAFETY: as in deref; &mut self gives exclusivity of
+        // the minted reference.
+        unsafe { &mut *self.msg }
     }
 }
 
@@ -425,20 +432,16 @@ impl<'a> Consumer<'a> {
         if p == c {
             return Err(Empty);
         }
-        let bytes = slot_ptr(self.slots, c, self.mask, self.slot_size);
-        // SAFETY: index protocol gives the consumer exclusive
-        // access to this slot until release; range validated at
-        // init/attach.
-        let bytes =
-            unsafe { core::slice::from_raw_parts(bytes as *const u8, self.slot_size as usize) };
-        #[allow(clippy::unwrap_used)]
-        // OK: check_type guarantees size, slot base guarantees
-        // alignment, so the prefix cast cannot fail.
-        let (msg, _) = T::ref_from_prefix(bytes).unwrap();
+        // Raw pointer, not `&T`, for the same reason as in
+        // reserve: release's store frees the slot for producer
+        // writes while a reference field would still be
+        // argument-protected.
+        let msg = slot_ptr(self.slots, c, self.mask, self.slot_size) as *const T;
         Ok(Peeked {
             header: self.header,
             msg,
             next_idx: c.wrapping_add(1),
+            _slot: PhantomData,
         })
     }
 }
@@ -448,17 +451,24 @@ impl<'a> Consumer<'a> {
 pub struct Peeked<'c, T> {
     /// The ring's control block (for the release store).
     header: &'c Header,
-    /// The slot, viewed as the message type.
-    msg: &'c T,
+    /// The slot, viewed as the message type. Raw on purpose —
+    /// see the comment in [`Consumer::peek`].
+    msg: *const T,
     /// Value `consumer_idx` takes on release.
     next_idx: u32,
+    /// Owns the `&'c` borrow of the consumer.
+    _slot: PhantomData<&'c T>,
 }
 
 impl<T> Deref for Peeked<'_, T> {
     type Target = T;
     /// Read access to the in-slot message.
     fn deref(&self) -> &T {
-        self.msg
+        // SAFETY: msg is in-bounds and aligned (check_type +
+        // cache-line slot base), any byte pattern is a valid T
+        // (FromBytes bound at peek), and the index protocol
+        // gives this guard read access until release.
+        unsafe { &*self.msg }
     }
 }
 
@@ -638,7 +648,9 @@ mod tests {
 
     #[test]
     fn threaded_spsc() {
-        const COUNT: u64 = 100_000;
+        // Reduced under Miri: interpreted spin loops are slow,
+        // and its scheduler explores interleavings at any count.
+        const COUNT: u64 = if cfg!(miri) { 200 } else { 100_000 };
         let mut r = Region::new();
         let (mut prod, mut cons) = Ring::init(&mut r.0, 64, 4).unwrap().split();
 
