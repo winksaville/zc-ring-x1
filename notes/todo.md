@@ -19,7 +19,7 @@ Plan:
 - 0.3.0-2 docs: ring buffer API + memory-layout design (done)
 - 0.3.0-3 feat: ring buffer prototype crate (done)
 - 0.3.0-4 fix: ring buffer soundness + attach handshake (done)
-- 0.3.0-5 docs: sync ring buffer design doc to as-built
+- 0.3.0-5 docs: sync ring buffer design doc to as-built (done)
 - 0.3.0 docs: zero-copy ring buffer design
 
 ## Todo
@@ -36,6 +36,25 @@ Plan:
  detail goes in `notes/chores/chores-NN.md` design
  subsections (link via `[N]` ref).
 
+1. Endpoint claims word: CAS-claimed producer/consumer roles
+   in the ring header so a second attach/split claimant gets
+   an error instead of silently violating SPSC; costs a
+   layout_version bump (or spends `_pad0`)
+   [details](ring-buffer-design.md#resolved-questions).
+2. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+   `T`'s geometry once at split instead of asserting on every
+   reserve/peek [details](ring-buffer-design.md#api).
+
+## Ideas
+
+- Blocking/wakeup story for reserve/peek (futex, eventfd);
+  spin-only today.
+- loom-based exhaustive ordering exploration of the SPSC
+  protocol.
+- Polish: `Error` implements `Display` + `core::error::Error`;
+  `occupancy()` / `is_empty()` accessors.
+- Packed-slot variant (drop the cache-line-multiple slot
+  constraint) for small-message space efficiency.
 
 ## Done
 
