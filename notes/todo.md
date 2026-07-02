@@ -18,6 +18,8 @@ Plan:
 - 0.3.0-1 docs: ring buffer requirements + constraints (done)
 - 0.3.0-2 docs: ring buffer API + memory-layout design (done)
 - 0.3.0-3 feat: ring buffer prototype crate (done)
+- 0.3.0-4 fix: ring buffer soundness + attach handshake (done)
+- 0.3.0-5 docs: sync ring buffer design doc to as-built
 - 0.3.0 docs: zero-copy ring buffer design
 
 ## Todo
