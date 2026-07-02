@@ -51,7 +51,48 @@ project rather than a template.
 
 ## docs: zero-copy ring buffer design
 
-Commits: [[2]],[[3]],[[4]],[[5]],[[6]],[[7]]
+Commits: [[2]],[[3]],[[4]],[[5]],[[6]],[[7]],[[8]]
+
+Design a zero-copy ring buffer in no_std Rust using the
+zerocopy crate to transmute structs into and out of the
+buffer, suitable for inter- and intra-process communication.
+Design notes: [ring-buffer-design.md](../ring-buffer-design.md)
+(kept in sync with `src/lib.rs`).
+
+### As-built ladder
+
+- 0.3.0-0 docs: pick up zero-copy ring buffer design
+- 0.3.0-1 docs: ring buffer requirements + constraints
+- 0.3.0-2 docs: ring buffer API + memory-layout design
+- 0.3.0-3 feat: ring buffer prototype crate
+- 0.3.0-4 fix: ring buffer soundness + attach handshake
+- 0.3.0-5 docs: sync ring buffer design doc to as-built
+- 0.3.0-6 fix: ring buffer guard aliasing under Miri
+- 0.3.0 docs: zero-copy ring buffer design (close-out)
+
+### Outcome
+
+- Landed the design doc plus the no_std SPSC crate: M×N
+  cache-line slots, free-running AtomicU32 indices,
+  reserve/commit + peek/release guards over zerocopy-bounded
+  typed views; 6 tests including a threaded stress and a
+  u32-wrap proof; README overview with a compiled example.
+- A max-effort review between -3 and -4 found three real
+  issues — a Miri-confirmed Stacked Borrows violation in
+  init, a 32-bit region-size overflow reachable from safe
+  code, and an init/attach publish race — fixed in -4.
+- The user running the *full* Miri suite found a fourth: the
+  guards' reference fields are argument-protected during
+  commit/release while the handoff store races them — fixed
+  in -6 (guards hold raw pointers, references minted per
+  access).
+- Lesson recorded: -4's `--skip threaded` Miri run was a
+  coverage hole — the only concurrency test was excluded from
+  the only aliasing checker. The ladder now runs the full
+  Miri suite (threaded count reduced under `cfg(miri)`).
+- Follow-ons recorded: endpoint claims word and typed
+  endpoints as Todo 1/2; wakeup story, loom, polish, and
+  packed slots under Ideas.
 
 # References
 
@@ -62,3 +103,4 @@ Commits: [[2]],[[3]],[[4]],[[5]],[[6]],[[7]]
 [5]: https://github.com/winksaville/zc-ring-x1/commit/734a618a21c5 "734a618a21c5bcce39b549dac247164fd320a8e6"
 [6]: https://github.com/winksaville/zc-ring-x1/commit/dc28bcc0fce5 "dc28bcc0fce5d704145c6a444608c46ad68b0f78"
 [7]: https://github.com/winksaville/zc-ring-x1/commit/828250ae38ec "828250ae38ec9bcef18fceaef0c3f420d60f5927"
+[8]: https://github.com/winksaville/zc-ring-x1/commit/573bb0ac5b19 "573bb0ac5b19dba8dd158a73eadc19ba3ba6f416"

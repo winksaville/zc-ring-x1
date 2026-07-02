@@ -6,22 +6,7 @@ uses links or reference links for more details.
 
 ## In Progress
 
-**docs: zero-copy ring buffer design**
-
-Design a zero-copy ring buffer in no_std Rust using the
-zerocopy crate to transmute structs into and out of the
-buffer, suitable for inter- and intra-process communication.
-Design notes: [ring-buffer-design.md](ring-buffer-design.md).
-
-Plan:
-- 0.3.0-0 docs: pick up zero-copy ring buffer design (done)
-- 0.3.0-1 docs: ring buffer requirements + constraints (done)
-- 0.3.0-2 docs: ring buffer API + memory-layout design (done)
-- 0.3.0-3 feat: ring buffer prototype crate (done)
-- 0.3.0-4 fix: ring buffer soundness + attach handshake (done)
-- 0.3.0-5 docs: sync ring buffer design doc to as-built (done)
-- 0.3.0-6 fix: ring buffer guard aliasing under Miri (done)
-- 0.3.0 docs: zero-copy ring buffer design
+_No cycle currently in progress._
 
 ## Todo
 
@@ -62,5 +47,8 @@ Plan:
 Completed tasks are moved from `## Todo` to here, `## Done`, as they are completed
 and older `## Done` sections are moved to [done.md](done.md) to keep this file small.
 
+- docs: zero-copy ring buffer design [[1]]
 
 # References
+
+[1]: chores/chores-01.md#docs-zero-copy-ring-buffer-design
