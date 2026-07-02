@@ -38,7 +38,7 @@ push-approval carve-out.
 
 ## docs: template cleanup
 
-Commits:
+Commits: [[1]]
 
 Strip the vc-template-x1 boilerplate so the repo reads as its own
 project rather than a template.
@@ -51,4 +51,9 @@ project rather than a template.
 
 ## docs: zero-copy ring buffer design
 
-Commits:
+Commits: [[2]]
+
+# References
+
+[1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"
+[2]: https://github.com/winksaville/zc-ring-x1/commit/a559e999f998 "a559e999f998bdeb8a0b0c44643ef1699953beb6"

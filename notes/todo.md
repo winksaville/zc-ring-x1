@@ -11,10 +11,11 @@ uses links or reference links for more details.
 Design a zero-copy ring buffer in no_std Rust using the
 zerocopy crate to transmute structs into and out of the
 buffer, suitable for inter- and intra-process communication.
+Design notes: [ring-buffer-design.md](ring-buffer-design.md).
 
 Plan:
 - 0.3.0-0 docs: pick up zero-copy ring buffer design (done)
-- 0.3.0-1 docs: ring buffer requirements + constraints
+- 0.3.0-1 docs: ring buffer requirements + constraints (done)
 - 0.3.0-2 docs: ring buffer API + memory-layout design
 - 0.3.0-3 feat: ring buffer prototype crate
 - 0.3.0 docs: zero-copy ring buffer design
