@@ -341,7 +341,12 @@ continues past each push to the next step. Conditions:
 
 - **Explicit grant** — never inferred from a task merely being
   well-scoped; the user's words must authorize unattended
-  completion.
+  completion. "Commit and push" (or "then push") names the
+  destination, not a waiver: it authorizes the push *after*
+  the normal work review and description review, not skipping
+  them. Only wording that explicitly waives the stops ("don't
+  check in", "no need to review", "carry it through
+  unattended") waives them.
 - **Bounded goal** — covers the named task only; does not carry
   to the next task or a vaguer follow-on.
 - **Destructive ops still pause** — delegation covers the task's

@@ -96,7 +96,7 @@ Design notes: [ring-buffer-design.md](../ring-buffer-design.md)
 
 ## refactor: ring buffer symmetric reserve_slot API
 
-Commits:
+Commits: [[10]]
 
 Rename the guard API so both endpoints use the same verb.
 `peek` read as a free look — it hid that the consumer holds
@@ -118,6 +118,25 @@ shape: `reserve_slot` → guard → commit / release.
   frees a read.
 - Breaking API rename, so 0.3.0 → 0.4.0.
 
+## docs: commit-and-push is not a review waiver
+
+Commits:
+
+Clarify the push-delegation policy after a real slip: the bot
+read "run miri then commit and push" as a scoped delegation
+and pushed without the work review or the description review.
+The protocol's own fallback ("when in doubt, ask") should
+have applied.
+
+- The **Explicit grant** bullet now states that "commit and
+  push" names the destination, not a waiver — it authorizes
+  the push *after* the normal reviews; only wording that
+  explicitly waives the stops ("don't check in", "no need to
+  review") waives them.
+- Same wording copied to vc-template-x1's cycle-protocol.md
+  (committed there separately), keeping the shared files
+  verbatim copies.
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"
@@ -129,3 +148,4 @@ shape: `reserve_slot` → guard → commit / release.
 [7]: https://github.com/winksaville/zc-ring-x1/commit/828250ae38ec "828250ae38ec9bcef18fceaef0c3f420d60f5927"
 [8]: https://github.com/winksaville/zc-ring-x1/commit/573bb0ac5b19 "573bb0ac5b19dba8dd158a73eadc19ba3ba6f416"
 [9]: https://github.com/winksaville/zc-ring-x1/commit/69a00921a2eb "69a00921a2eb112d2ae2833da112159283c95c5c"
+[10]: https://github.com/winksaville/zc-ring-x1/commit/d8bcb77af33b "d8bcb77af33bd6f551e3dd848613ec8b2e70e7cc"

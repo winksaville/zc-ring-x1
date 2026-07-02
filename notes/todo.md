@@ -49,8 +49,10 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 
 - docs: zero-copy ring buffer design [[1]]
 - refactor: ring buffer symmetric reserve_slot API [[2]]
+- docs: commit-and-push is not a review waiver [[3]]
 
 # References
 
 [1]: chores/chores-01.md#docs-zero-copy-ring-buffer-design
 [2]: chores/chores-01.md#refactor-ring-buffer-symmetric-reserve_slot-api
+[3]: chores/chores-01.md#docs-commit-and-push-is-not-a-review-waiver
