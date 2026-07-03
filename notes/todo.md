@@ -6,36 +6,7 @@ uses links or reference links for more details.
 
 ## In Progress
 
-**feat: message pool allocator**
-
-Todo #1 picked up: decouple "get a message" from "send it"
-with a message pool — self-describing attach-validated
-region, fixed-size cache-aligned buffers, intrusive LIFO
-free-stack (single-popper Treiber, validated pops), one
-owning allocator, anyone frees. Strive for simplicity: the
-smallest API that lets us hone the shape and gives iiac-perf
-a baseline —
-
-- buffer header is the next-link alone for now; provenance
-  (pool id) and any length/type tag land with the
-  descriptor-queue cycle, via a pool layout_version bump
-  (conscious deferral of the design doc's settle-early note).
-- API mirrors the ring: `Pool::init` / `unsafe Pool::attach`,
-  a single allocator handle, typed zerocopy access to
-  buffers.
-
-Ladder:
-
-- 0.6.0-0 chore: open message pool cycle (done)
-- 0.6.0-1 feat: message pool layout + init/attach (done)
-- 0.6.0-2 feat: message pool alloc/free (done)
-- 0.6.0-3 docs: message pool usage model — roles (ring:
-  one producer + one consumer; pool: one allocator + any
-  freers), buffer lifecycle states (free → allocated →
-  in-flight → freed) and who may touch a buffer in each,
-  what "send" means before descriptor queues exist (done)
-- 0.6.0-4 test: message pool protocol tests (done)
-- 0.6.0 feat: message pool allocator (close-out)
+_No cycle currently in progress._
 
 ## Todo
 
@@ -136,8 +107,10 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 
 - feat: ring buffer user line + blocking contract [[5]]
 - docs: messaging layer design (pools + queues) [[6]]
+- feat: message pool allocator [[7]]
 
 # References
 
 [5]: chores/chores-01.md#feat-ring-buffer-user-line--blocking-contract
 [6]: chores/chores-01.md#docs-messaging-layer-design-pools--queues
+[7]: chores/chores-01.md#feat-message-pool-allocator

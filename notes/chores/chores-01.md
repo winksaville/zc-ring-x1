@@ -234,7 +234,48 @@ section; todo.md gains the matching ranked entries and Ideas.
 
 ## feat: message pool allocator
 
-Commits: [[15]],[[16]],[[17]],[[18]]
+Commits: [[15]],[[16]],[[17]],[[18]],[[19]]
+
+Todo #1 (decouple "get a message" from "send it"): the ring's
+reserve_slot fuses allocation, queue position, and a
+publication window, so getting a buffer implied sending it
+now. The pool is the allocation half of the messaging layer —
+simplicity-first, to hone the API and give iiac-perf a
+baseline.
+
+- Region shape mirrors the ring: all-atomic two-line
+  PoolHeader (cold geometry / contended `first_free_idx`),
+  magic "ZCP1", magic-last init/attach handshake, geometry
+  snapshots, hostile-peer posture (validated pops fail toward
+  Exhausted, never out of bounds).
+- Intrusive LIFO free-stack with zero per-buffer overhead: a
+  free buffer's first word is its next-link; allocated
+  buffers carry no header. Pool-id provenance deferred to the
+  descriptor-queue cycle (pool layout_version bump).
+- Ownership decoupling: `BufSlot` borrows the region
+  lifetime, not the pool handle — many live guards at once;
+  `alloc` takes `&mut self` as the single-popper token (no
+  ABA); `free(self)` is the MPSC push, callable wherever the
+  guard moved; drop-without-free leaks (RAII alternative
+  recorded in Ideas).
+- Usage model written before the tests (README: roles, buffer
+  lifecycle, what "send" means pre-descriptor-queues) and the
+  tests pin it: 11 pool tests incl. cross-magic attach
+  rejection, corruption-repair, type edges (mixed sizes,
+  align(32), too-big panics, ZST), threaded allocator/freer
+  split; all under Miri.
+- Naming honed in review: `cache_line_size` (verb-free),
+  `first_free_idx`, `next_buf_idx`, `CACHE_LINE_SIZE` /
+  `TEST_CACHE_LINE_SIZE`.
+
+Ladder (all shipped, Keep separate):
+
+- 0.6.0-0 chore: open message pool cycle
+- 0.6.0-1 feat: message pool layout + init/attach
+- 0.6.0-2 feat: message pool alloc/free
+- 0.6.0-3 docs: message pool usage model
+- 0.6.0-4 test: message pool protocol tests
+- 0.6.0 feat: message pool allocator (close-out)
 
 # References
 
@@ -256,3 +297,4 @@ Commits: [[15]],[[16]],[[17]],[[18]]
 [16]: https://github.com/winksaville/zc-ring-x1/commit/2b09687ddebd "2b09687ddebd4e6bdc0d68a12cff57ea580b959d"
 [17]: https://github.com/winksaville/zc-ring-x1/commit/2069384698df "2069384698dfa62860193cea58aea62c4c5462c0"
 [18]: https://github.com/winksaville/zc-ring-x1/commit/9f3ce4bc87bd "9f3ce4bc87bd86faa9941a7d40007674529dcc80"
+[19]: https://github.com/winksaville/zc-ring-x1/commit/6177323244b4 "6177323244b4d80fe07a9efaa6d8647ca31b4787"
