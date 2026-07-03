@@ -201,7 +201,7 @@ layered-blocking contract built on it.
 
 ## docs: messaging layer design (pools + queues)
 
-Commits:
+Commits: [[14]]
 
 Design (notes-only) for the layer above the ring, born from
 the observation that `reserve_slot` fuses three acts a
@@ -232,6 +232,10 @@ section; todo.md gains the matching ranked entries and Ideas.
   project distinct (no_std floor, hostile-peer posture,
   primitives-not-framework).
 
+## feat: message pool allocator
+
+Commits:
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"
@@ -247,3 +251,4 @@ section; todo.md gains the matching ranked entries and Ideas.
 [11]: https://github.com/winksaville/zc-ring-x1/commit/af563403aa46 "af563403aa46d029f6f7cf1465a67f28aab2beea"
 [12]: https://github.com/winksaville/zc-ring-x1/commit/0cdcfd95859c "0cdcfd95859c8c6c7fd3f64d3c77e401f78dcd9e"
 [13]: https://github.com/winksaville/zc-ring-x1/commit/c814e98c6168 "c814e98c6168b83b4c66398e03aa505a801f0db9"
+[14]: https://github.com/winksaville/zc-ring-x1/commit/20633c31fb18 "20633c31fb187e5b947422e2292b7d996dc73e6a"

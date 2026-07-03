@@ -6,7 +6,31 @@ uses links or reference links for more details.
 
 ## In Progress
 
-_No cycle currently in progress._
+**feat: message pool allocator**
+
+Todo #1 picked up: decouple "get a message" from "send it"
+with a message pool — self-describing attach-validated
+region, fixed-size cache-aligned buffers, intrusive LIFO
+free-stack (single-popper Treiber, validated pops), one
+owning allocator, anyone frees. Strive for simplicity: the
+smallest API that lets us hone the shape and gives iiac-perf
+a baseline —
+
+- buffer header is the next-link alone for now; provenance
+  (pool id) and any length/type tag land with the
+  descriptor-queue cycle, via a pool layout_version bump
+  (conscious deferral of the design doc's settle-early note).
+- API mirrors the ring: `Pool::init` / `unsafe Pool::attach`,
+  a single allocator handle, typed zerocopy access to
+  buffers.
+
+Ladder:
+
+- 0.6.0-0 chore: open message pool cycle (current)
+- 0.6.0-1 feat: message pool layout + init/attach
+- 0.6.0-2 feat: message pool alloc/free
+- 0.6.0-3 test: message pool protocol tests
+- 0.6.0 feat: message pool allocator (close-out)
 
 ## Todo
 
@@ -22,23 +46,17 @@ _No cycle currently in progress._
  detail goes in `notes/chores/chores-NN.md` design
  subsections (link via `[N]` ref).
 
-1. Message pools: decouple "get a message" from "send it" —
-   self-describing arbitrary-geometry pools, offset-based
-   `(pool id, offset)` provenance in a per-buffer header,
-   intrusive LIFO free-stack (single-popper Treiber, validated
-   pops); one owning allocator per pool for now
-   [details](ring-buffer-design.md#messaging-layer-pools-and-descriptor-queues).
-2. Descriptor queues: carry `(pool id, buffer offset)`
+1. Descriptor queues: carry `(pool id, buffer offset)`
    descriptors over the existing SPSC ring so any message
    travels over any queue; per-process pool registry to
    resolve ids
    [details](ring-buffer-design.md#messaging-layer-pools-and-descriptor-queues).
-3. Endpoint claims word: CAS-claimed producer/consumer roles
+2. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
    [details](ring-buffer-design.md#resolved-questions).
-4. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+3. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot [details](ring-buffer-design.md#api).
 
@@ -97,18 +115,10 @@ _No cycle currently in progress._
 Completed tasks are moved from `## Todo` to here, `## Done`, as they are completed
 and older `## Done` sections are moved to [done.md](done.md) to keep this file small.
 
-- docs: zero-copy ring buffer design [[1]]
-- refactor: ring buffer symmetric reserve_slot API [[2]]
-- docs: commit-and-push is not a review waiver [[3]]
-- refactor: ring buffer endpoint modules [[4]]
 - feat: ring buffer user line + blocking contract [[5]]
 - docs: messaging layer design (pools + queues) [[6]]
 
 # References
 
-[1]: chores/chores-01.md#docs-zero-copy-ring-buffer-design
-[2]: chores/chores-01.md#refactor-ring-buffer-symmetric-reserve_slot-api
-[3]: chores/chores-01.md#docs-commit-and-push-is-not-a-review-waiver
-[4]: chores/chores-01.md#refactor-ring-buffer-endpoint-modules
 [5]: chores/chores-01.md#feat-ring-buffer-user-line--blocking-contract
 [6]: chores/chores-01.md#docs-messaging-layer-design-pools--queues
