@@ -322,6 +322,184 @@ Per-commit, alongside the cargo cycle:
 - [loom](https://docs.rs/loom) for exhaustive ordering
   exploration is a possible follow-on (Ideas).
 
+## Messaging layer: pools and descriptor queues
+
+Design for the layer above the ring — not yet built; the
+sections above remain the as-built record of the ring itself.
+
+The ring's `reserve_slot` fuses three acts that a messaging
+system needs separated: it allocates message memory (the slot),
+assigns queue position (the reservation is the ring head), and
+opens a publication window (the guard exclusively borrows the
+endpoint, blocking all other sends). Getting a message must not
+imply sending it now — or ever. The fix is a layer, not a ring
+rework: pools own message memory, queues carry small
+descriptors, and the existing ring is the unchanged primitive
+underneath (reserve-to-commit becomes a momentary act, where
+the fusion is harmless).
+
+### Layer requirements
+
+- **Decoupled get/hold/send/free** — allocate a message, hold
+  it indefinitely, send it over any queue later, forward it,
+  or free it unsent.
+- **Any quantity of queues and pools** in a system, and any
+  message can travel over any queue.
+- **Inter- and intra-process** — processes share queue ends,
+  and message payloads zero-copy across process boundaries.
+  The embedded single-address-space case is the degenerate
+  mapping where all peers share one base.
+- **Heterogeneous pools** — pools differ arbitrarily in buffer
+  size and count; each meets the alignment constraints and
+  self-describes its geometry.
+- **Phasing** — queues are SPSC rings now, an MPSC ring is a
+  future sibling primitive; pools have a single allocator
+  now, shared allocation eventually.
+
+### Provenance and descriptors
+
+- **Offsets only, everywhere** — different per-process
+  mappings mean no pointers in any shared structure; this
+  also serves the single-address-space case unchanged.
+- **Message provenance** — every buffer begins with a small
+  header naming its pool `(pool id, offset)`; whoever holds a
+  message last must free it to the right pool, so provenance
+  travels with the message.
+- **Descriptors** — a queue entry is a uniform small
+  `(pool id, buffer offset)` regardless of message size; the
+  receiver resolves the pool id and learns geometry from the
+  pool's own header.
+- **Pool self-description** — each pool region starts with a
+  header (magic, layout version, buffer size, count,
+  alignment), attach-validated exactly like the ring header.
+- **Pool-id resolution** — each process keeps a local registry
+  mapping pool id to its own mapping of that pool's region.
+  "Any message over any queue" carries the precondition that
+  both endpoints have the message's pool mapped.
+- **Trust** — offsets and indices arriving through shared
+  memory are untrusted: bounds- and alignment-checked against
+  the receiver's own view before use, same discipline as the
+  ring's geometry snapshot.
+
+### Free path: intrusive LIFO free-stack
+
+Freeing must be cheap for many freers and allocation must be
+O(1) with no searching (a per-buffer available-flag makes free
+trivial but alloc a scan). The free operation is itself the
+marking: push the buffer onto the pool's free-stack.
+
+- **Intrusive** — a freed buffer's header holds the next-link
+  as an offset; the free-list needs no extra storage.
+- **LIFO on purpose** — we think a stack beats a free-ring on
+  cache behavior: FIFO cycles through every buffer (maximum
+  working set), LIFO reuses the most-recently-freed few, and
+  the small working set also helps the TLB. The full
+  same-thread malloc-style hot-reuse win is diluted because
+  the freer and allocator are different cores; the
+  working-set effect stands regardless.
+- **Single-popper Treiber stack** — free = CAS the head to
+  your buffer's offset (MPSC push side: any thread or process
+  frees into any pool); alloc = the one owning allocator pops
+  the head. A single popper eliminates classic Treiber ABA:
+  no node leaves the list under a competing pop, pushes just
+  retry the CAS.
+- **Validated pops** — head and next-links are untrusted;
+  the popper bounds/alignment-checks each offset and caps
+  pops per attempt, so a corrupt peer can lose buffers or
+  cycle the list but never make the allocator read outside
+  the pool.
+- **CAS note** — the free-stack is the first structure to
+  need CAS; the ring protocol itself stays load/store-only,
+  so the atomic floor rises only for pool users.
+
+### Pool topology and phasing
+
+- **One owning allocator per pool** (invariant, phase 1) — a
+  single thread allocates; any party frees. Per-thread pools
+  are the performance default and satisfy this trivially.
+- **Shared pools already exist in phase 1** — shared for
+  reading, forwarding, and freeing; only allocation is
+  single-owner.
+- **Shared allocation (phase 2)** — per-thread pools cost
+  memory; N threads sharing one pool's capacity needs
+  multi-popper alloc, which needs an ABA-proof head:
+  pack `(offset, generation)` in one `AtomicU64` and CAS
+  both together. A contained per-pool variant (opt-in flag),
+  not a redesign; hot paths keep the cheap single-popper
+  version. Heterogeneity mitigates meanwhile: a small private
+  hot-path pool plus a big shared fallback pool.
+- **MPSC ring (future sibling)** — multi-producer queues need
+  a different ring protocol (CAS-claimed producer index,
+  per-slot sequence state); it slots in as a sibling
+  primitive under the same descriptor layer. The endpoint
+  claims word should model role slots, not a single producer
+  bit, so N producer claims fit later without a layout
+  rethink.
+
+### Overflow FIFO (future)
+
+When a queue's ring is Full, the sender appends the message to
+a pending FIFO instead of failing — "send" then always
+succeeds while pool memory lasts.
+
+- **Intrusive, zero-allocation** — the FIFO links through the
+  same embedded next-link offset the free-stack uses. A
+  buffer is on at most one list at a time (free stack,
+  pending FIFO, in flight in a ring, held by an owner), so
+  one link field serves every state.
+- **Sender-private** — the pending list belongs to the
+  producer endpoint: head + tail offsets for O(1) append, no
+  shared mutation, no CAS. Order discipline: the producer
+  drains the FIFO oldest-first before ring-sending anything
+  new, or FIFO order breaks. Draining happens on subsequent
+  send attempts and/or an explicit flush.
+- **Validated traversal** — the links live in shared pool
+  memory a peer can scribble; the drainer bounds- and
+  alignment-checks each offset as the free-stack popper does.
+- **Naturally bounded** — messages come from pools, so the
+  FIFO cannot outgrow total pool capacity; backpressure
+  reappears as allocation failure rather than queue Full.
+
+### Prior art: iceoryx2
+
+[iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2) is a
+Rust-native zero-copy IPC library implementing most of this
+layer: publishers loan uninitialized samples from a pool
+allocator, write in place, and send later or never (get/send
+decoupled); receivers get offsets they resolve against their
+own mappings; events, request-response, and multi-producer
+patterns exist. Study its loan/send API and pool-offset
+machinery before implementing the pools — its lessons are
+cheaper stolen than rediscovered.
+
+What keeps this project distinct from it:
+
+- iceoryx2 is service-oriented middleware (discovery, naming,
+  configuration) for Linux/macOS/Windows/QNX-class platforms;
+  this crate is a small set of composable primitives.
+- No `no_std` / load-store-only floor — our ring reaches
+  `thumbv6m`, with CAS confined to the pool layer.
+- Trust posture: our attach-validated
+  hostile-peer-cannot-cause-UB discipline versus cooperating
+  participants within a framework.
+
+### Open questions
+
+- **Pool-id allocation** — coordinator-assigned versus derived
+  from the shm object's identity.
+- **Setup plane** — how a process discovers and maps a pool it
+  hasn't seen: pre-arranged at init (embedded-friendly,
+  allocation-free after startup) versus fd-passing over a
+  Unix socket (Linux-friendly, dynamic); likely both, as
+  profiles.
+- **Message header shape** — minimum provenance is
+  `(pool id, offset)`; whether length or a type tag joins it
+  is undecided. Settle this early — the embedded next-link
+  is load-bearing for three states (free-stack, pending
+  FIFO, future lists), so the link, provenance, and any
+  length/type tag should be laid out together before the
+  first pool implementation lands.
+
 ## Resolved questions
 
 - **Cross-process trust** — resolved in 0.3.0-4: the

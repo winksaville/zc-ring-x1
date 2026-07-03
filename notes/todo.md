@@ -22,17 +22,46 @@ _No cycle currently in progress._
  detail goes in `notes/chores/chores-NN.md` design
  subsections (link via `[N]` ref).
 
-1. Endpoint claims word: CAS-claimed producer/consumer roles
+1. Message pools: decouple "get a message" from "send it" —
+   self-describing arbitrary-geometry pools, offset-based
+   `(pool id, offset)` provenance in a per-buffer header,
+   intrusive LIFO free-stack (single-popper Treiber, validated
+   pops); one owning allocator per pool for now
+   [details](ring-buffer-design.md#messaging-layer-pools-and-descriptor-queues).
+2. Descriptor queues: carry `(pool id, buffer offset)`
+   descriptors over the existing SPSC ring so any message
+   travels over any queue; per-process pool registry to
+   resolve ids
+   [details](ring-buffer-design.md#messaging-layer-pools-and-descriptor-queues).
+3. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
    [details](ring-buffer-design.md#resolved-questions).
-2. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+4. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot [details](ring-buffer-design.md#api).
 
 ## Ideas
 
+- Perf benches live in
+  [iiac-perf](https://github.com/winksaville/iiac-perf)
+  (sibling repo `../iiac-perf`), not here — its calibrated
+  harness compares zc-ring against mpsc et al. directly
+  (`zcring-1t`/`zcring-2t` mirroring `mpsc_1t`/`mpsc_2t`).
+  An in-repo bench only if per-commit regression tracking
+  proves necessary.
+
+- Study [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2)
+  before implementing message pools — battle-tested loan/send
+  decoupling and pool-offset machinery; how it differs from
+  this project in
+  [Prior art: iceoryx2](ring-buffer-design.md#prior-art-iceoryx2).
+- Overflow FIFO: when a queue's ring is Full, append the
+  message to a sender-private intrusive pending list (same
+  embedded next-link the free-stack uses; zero allocation,
+  naturally bounded by pool capacity)
+  [details](ring-buffer-design.md#overflow-fifo-future).
 - Blocking layer above the crate (futex, eventfd, async
   wakers) built on the header's user line — mechanism and
   contracts in
@@ -73,6 +102,7 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 - docs: commit-and-push is not a review waiver [[3]]
 - refactor: ring buffer endpoint modules [[4]]
 - feat: ring buffer user line + blocking contract [[5]]
+- docs: messaging layer design (pools + queues) [[6]]
 
 # References
 
@@ -81,3 +111,4 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 [3]: chores/chores-01.md#docs-commit-and-push-is-not-a-review-waiver
 [4]: chores/chores-01.md#refactor-ring-buffer-endpoint-modules
 [5]: chores/chores-01.md#feat-ring-buffer-user-line--blocking-contract
+[6]: chores/chores-01.md#docs-messaging-layer-design-pools--queues
