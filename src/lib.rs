@@ -22,9 +22,11 @@ use core::mem::{align_of, size_of};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 mod consumer;
+mod pool;
 mod producer;
 
 pub use consumer::{Consumer, Empty, ReadSlot};
+pub use pool::{Pool, PoolHeader};
 pub use producer::{Full, Producer, WriteSlot};
 
 /// Cache-line size the layout is built around.
@@ -94,7 +96,7 @@ pub struct Header {
     /// is a layout parameter (padding, offsets, slot granule),
     /// so builds must agree; attach validates it like the rest
     /// of the geometry.
-    cache_line: AtomicU32,
+    cache_line_size: AtomicU32,
     /// Free-running count of messages committed.
     producer_idx: CacheAligned<AtomicU32>,
     /// Free-running count of messages released.
@@ -107,19 +109,26 @@ pub struct Header {
 
 const _: () = assert!(size_of::<Header>() == 4 * CACHE_LINE);
 
-/// Errors from [`Ring::init`] / [`Ring::attach`] region
-/// validation.
+/// Errors from region validation — [`Ring::init`] /
+/// [`Ring::attach`] and [`Pool::init`] / [`Pool::attach`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// Region is not [`CACHE_LINE`]-aligned.
     Misaligned,
-    /// Region is smaller than header + slots.
+    /// Region is smaller than header + slots/buffers.
     TooSmall,
     /// Slot size is zero or not a [`CACHE_LINE`] multiple.
     BadSlotSize,
     /// Capacity is zero, not a power of two, or `> 2^31`.
     BadCapacity,
-    /// Attach: magic mismatch — not a ring region.
+    /// Pool: buffer size is zero or not a [`CACHE_LINE`]
+    /// multiple.
+    BadBufSize,
+    /// Pool: buffer count is zero or `u32::MAX` (the
+    /// free-stack NIL sentinel).
+    BadBufCount,
+    /// Attach: magic mismatch — not a region of the expected
+    /// kind.
     BadMagic,
     /// Attach: layout version mismatch.
     BadLayoutVersion,
@@ -178,7 +187,7 @@ impl<'a> Ring<'a> {
         header.slot_size.store(slot_size, Ordering::Relaxed);
         header.capacity.store(capacity, Ordering::Relaxed);
         header
-            .cache_line
+            .cache_line_size
             .store(CACHE_LINE as u32, Ordering::Relaxed);
         header.producer_idx.store(0, Ordering::Relaxed);
         header.consumer_idx.store(0, Ordering::Relaxed);
@@ -226,7 +235,7 @@ impl<'a> Ring<'a> {
         if header.layout_version.load(Ordering::Relaxed) != LAYOUT_VERSION {
             return Err(Error::BadLayoutVersion);
         }
-        if header.cache_line.load(Ordering::Relaxed) != CACHE_LINE as u32 {
+        if header.cache_line_size.load(Ordering::Relaxed) != CACHE_LINE as u32 {
             return Err(Error::BadCacheLine);
         }
         // Snapshot geometry once; per-op paths never re-read it.
@@ -407,7 +416,7 @@ mod tests {
         assert_eq!(ring.mask, 3);
         // A region built with a different CACHE_LINE (simulated
         // by editing the recorded value) is rejected.
-        ring.header.cache_line.store(128, Ordering::Relaxed);
+        ring.header.cache_line_size.store(128, Ordering::Relaxed);
         let err = unsafe { Ring::attach(r.0.as_mut_ptr(), r.0.len()) }
             .err()
             .unwrap();

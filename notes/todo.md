@@ -26,8 +26,8 @@ a baseline —
 
 Ladder:
 
-- 0.6.0-0 chore: open message pool cycle (current)
-- 0.6.0-1 feat: message pool layout + init/attach
+- 0.6.0-0 chore: open message pool cycle (done)
+- 0.6.0-1 feat: message pool layout + init/attach (done)
 - 0.6.0-2 feat: message pool alloc/free
 - 0.6.0-3 test: message pool protocol tests
 - 0.6.0 feat: message pool allocator (close-out)

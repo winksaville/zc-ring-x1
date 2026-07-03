@@ -103,7 +103,7 @@ struct Header {
     layout_version: AtomicU32, // bumped on any layout change
     slot_size: AtomicU32,      // N in bytes, cache-line multiple
     capacity: AtomicU32,       // M, power of two; index mask is M - 1
-    cache_line: AtomicU32,     // CACHE_LINE the region was built with
+    cache_line_size: AtomicU32, // CACHE_LINE the region was built with
     // line 1 — producer-owned
     producer_idx: CacheAligned<AtomicU32>, // written by producer only
     // line 2 — consumer-owned
@@ -149,7 +149,7 @@ offset size_of::<Header>()  slots: M × N bytes
   prefetcher is why crossbeam pads 128 on x86_64 too) the
   padding under-separates — a perf question for the bench
   work, not correctness. Since layout v2 the header records
-  the build's `cache_line` and attach rejects a mismatch
+  the build's `cache_line_size` and attach rejects a mismatch
   (`BadCacheLine`), so the constant can become per-target
   (cfg) or shrink for cache-less embedded tiers without any
   silent cross-build corruption.
