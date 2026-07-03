@@ -3,10 +3,10 @@
 
 use core::marker::PhantomData;
 use core::ops::Deref;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU32, Ordering};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
-use crate::{Header, check_type, slot_ptr};
+use crate::{Header, USER_WORDS, check_type, slot_ptr};
 
 /// `reserve_slot` failed: no unread messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +41,17 @@ impl<'a> Consumer<'a> {
             mask,
             _region: PhantomData,
         }
+    }
+
+    /// The header's app-owned scratch line: zeroed at init,
+    /// never touched by the crate again.
+    ///
+    /// - Shared with the peer: treat contents as untrusted
+    ///   data — store values, never addresses to dereference.
+    /// - See the design doc's "Blocking and user words" for
+    ///   the wakeup-protocol contract it exists to host.
+    pub fn user(&self) -> &[AtomicU32; USER_WORDS] {
+        &self.header.user
     }
 
     /// Reserve the oldest unread slot as a `&T`, or [`Empty`].

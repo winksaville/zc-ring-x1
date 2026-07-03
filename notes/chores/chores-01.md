@@ -139,7 +139,7 @@ have applied.
 
 ## refactor: ring buffer endpoint modules
 
-Commits:
+Commits: [[12]]
 
 Split the single-file crate so each endpoint lives with its
 guard: the Producer/WriteSlot and Consumer/ReadSlot pairings
@@ -160,6 +160,45 @@ modules, so every existing path still works.
   endpoint's `&mut` borrow), so cohesion lands at the module
   level instead.
 
+## feat: ring buffer user line + blocking contract
+
+Commits:
+
+Give apps a shared-memory home for wakeup protocols without
+the crate ever blocking or spinning. The header gains a
+fourth, app-owned cache line of 16 `AtomicU32` user words —
+zeroed at init, exposed via `user()` on both endpoints, never
+interpreted by the crate — and the design doc gains the
+layered-blocking contract built on it.
+
+- Blocking is policy and lives above the crate:
+  `reserve_slot` returning Full/Empty stays the entire core
+  API. The design doc's new "Blocking and user words" section
+  records the lost-wakeup discipline (set flag → re-check →
+  sleep; commit → check flag → wake), values-not-addresses,
+  and timeouts-for-dead-peers.
+- User line is **last** so an app overrun walks into its own
+  slot data, not an index line; geometry line 0 is cold
+  (handles snapshot it), so ordering ours-then-theirs costs
+  nothing.
+- Header alignment is now expressed per-field via a
+  `CacheAligned<T>` wrapper (Deref to the inner value);
+  compiler computes inter-line padding, replacing hand-counted
+  `_pad` arrays. `repr(align(N))` takes only integer literals,
+  so const asserts tie the literal 64 to `CACHE_LINE`.
+- Layout change: header 192 → 256 bytes, `LAYOUT_VERSION` 2.
+- The header also records the build's `cache_line`, validated
+  at attach (`BadCacheLine`): assume nothing, verify at the
+  boundary. This makes a future per-target or embedded-tier
+  `CACHE_LINE` safe — mismatched builds error instead of
+  silently disagreeing on offsets.
+- Embedded observation recorded in the design doc: the
+  protocol is atomic load/store only (no CAS), so the floor
+  reaches thumbv6m today; per-target line sizes and index
+  widths are Ideas entries.
+- We think the endpoint-claims Todo can spend line 0's spare
+  44 bytes when it lands, bumping to layout v3.
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"
@@ -173,3 +212,4 @@ modules, so every existing path still works.
 [9]: https://github.com/winksaville/zc-ring-x1/commit/69a00921a2eb "69a00921a2eb112d2ae2833da112159283c95c5c"
 [10]: https://github.com/winksaville/zc-ring-x1/commit/d8bcb77af33b "d8bcb77af33bd6f551e3dd848613ec8b2e70e7cc"
 [11]: https://github.com/winksaville/zc-ring-x1/commit/af563403aa46 "af563403aa46d029f6f7cf1465a67f28aab2beea"
+[12]: https://github.com/winksaville/zc-ring-x1/commit/0cdcfd95859c "0cdcfd95859c8c6c7fd3f64d3c77e401f78dcd9e"

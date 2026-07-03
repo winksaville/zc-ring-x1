@@ -84,35 +84,50 @@ inter-process (shared memory).
 
 One contiguous `#[repr(C)]` region, mappable into multiple
 address spaces: a `Header` struct followed by the slot array.
-The `Header` is one struct spanning three cache lines, so each
-concurrently-written index owns its own line:
+The `Header` spans four cache lines; each concurrently-written
+index owns its own line, and alignment is expressed on exactly
+the fields that need it via a `CacheAligned` wrapper (the
+compiler computes the inter-line padding):
 
 ```rust
+/// Cache-line-aligned wrapper granting its field sole
+/// ownership of the line.
 #[repr(C, align(64))]
+struct CacheAligned<T>(T);
+
+#[repr(C)]
 struct Header {
     // line 0 — geometry; written by init (magic last), then
-    // read-only
+    // read-only. Cold: per-op paths use handle snapshots.
     magic: AtomicU32,          // layout marker; init/attach handshake
     layout_version: AtomicU32, // bumped on any layout change
     slot_size: AtomicU32,      // N in bytes, cache-line multiple
     capacity: AtomicU32,       // M, power of two; index mask is M - 1
-    _pad0: [u8; 48],
+    cache_line: AtomicU32,     // CACHE_LINE the region was built with
     // line 1 — producer-owned
-    producer_idx: AtomicU32, // written by producer only
-    _pad1: [u8; 60],
+    producer_idx: CacheAligned<AtomicU32>, // written by producer only
     // line 2 — consumer-owned
-    consumer_idx: AtomicU32, // written by consumer only
-    _pad2: [u8; 60],
+    consumer_idx: CacheAligned<AtomicU32>, // written by consumer only
+    // line 3 — app-owned scratch; zeroed at init, never
+    // touched by the crate again
+    user: CacheAligned<[AtomicU32; 16]>,
 }
 ```
 
 ```
-offset 0                    Header (192 bytes, 3 cache lines)
+offset 0                    Header (256 bytes, 4 cache lines)
 offset size_of::<Header>()  slots: M × N bytes
 ```
 
 - One type owns the whole control-block layout:
   `size_of::<Header>()` is the slot-array offset.
+- **User line last, on purpose** — an app-side overrun walking
+  forward out of `user` lands in slot 0 (the app's own message
+  data), not in an index line.
+- **`repr(align(N))` takes only an integer literal** — it
+  cannot name `CACHE_LINE`, so the `64` is written out and
+  const asserts tie `align_of::<CacheAligned<AtomicU32>>()`
+  and `size_of::<Header>()` back to the constant.
 - **Every field is atomic** — the region may be mapped by a
   peer at any time, so even "immutable" geometry must be free
   of data races; a peer scribbling on plain fields would be
@@ -129,11 +144,22 @@ offset size_of::<Header>()  slots: M × N bytes
   aligned (N is a line multiple, so alignment follows from
   the array base).
 - **`CACHE_LINE = 64` plays two roles** — a layout-ABI
-  constant (baked into layout_version 1, frozen) and a
-  false-sharing pad. On CPUs with 128-byte effective line
-  pitch (e.g. some aarch64) the padding under-separates; a
-  future layout_version could widen it without touching the
-  ABI role.
+  constant and a false-sharing pad. On CPUs with 128-byte
+  effective line pitch (Apple M-series; Intel's adjacent-line
+  prefetcher is why crossbeam pads 128 on x86_64 too) the
+  padding under-separates — a perf question for the bench
+  work, not correctness. Since layout v2 the header records
+  the build's `cache_line` and attach rejects a mismatch
+  (`BadCacheLine`), so the constant can become per-target
+  (cfg) or shrink for cache-less embedded tiers without any
+  silent cross-build corruption.
+- **Assume nothing beyond `AtomicU32` load/store** — the
+  protocol uses no CAS/RMW, so it reaches
+  load/store-only targets (e.g. `thumbv6m`/Cortex-M0).
+  Features that want CAS (endpoint claims) should degrade or
+  gate rather than raise the floor. 8/16-bit targets (AVR,
+  MSP430 — no `AtomicU32`) would need index-width
+  genericization; out of scope, recorded in Ideas.
 
 Index scheme (resolves the atomic-width question):
 
@@ -224,6 +250,10 @@ Each side reserves at most **one slot at a time**: the guard
 holds the endpoint's `&mut` borrow, so a second `reserve_slot`
 while a guard is live is a compile error, not a runtime state.
 
+Both endpoints also expose `user() -> &[AtomicU32; 16]` — the
+header's app-owned scratch line; see
+[Blocking and user words](#blocking-and-user-words).
+
 Guard internals: both guards hold **raw slot pointers** and
 mint `&T` / `&mut T` per access via Deref. A reference *field*
 would be argument-protected (noalias) for the entire
@@ -235,6 +265,45 @@ protector is still live — an aliasing race Miri flags
 Batch release (resolves the batching question): deferred —
 the guard API leaves room for a `release_n(n)` later; the
 single-slot guard is the whole surface this cycle.
+
+## Blocking and user words
+
+The crate never blocks and never spins. `reserve_slot`
+returning [`Full`]/[`Empty`] immediately is the entire API;
+what to do about it — spin, yield, park, await — is policy,
+and policy belongs to the layer above (an embedded caller may
+WFE on an interrupt, an async runtime wants a waker, a pinned
+busy-poll thread wants a pure spin; no single crate-blessed
+hybrid fits all three).
+
+What the crate provides is mechanism: the header's `user`
+line — 16 `AtomicU32` words, zeroed by `Ring::init`, exposed
+via `user()` on both endpoints, and never read, written, or
+interpreted by the crate afterwards. It is the well-known
+shared-memory home where independently written peers can
+build a wakeup protocol (waiter flags, futex words, sequence
+numbers). `AtomicU32` deliberately: futex-shaped, portable to
+targets without 64-bit atomics, race-free under concurrent
+peer access.
+
+Contracts and cautions for that layer:
+
+- **Lost-wakeup discipline** — the sleep side must re-check
+  the ring *after* publishing its "wake me" flag and before
+  sleeping (`set flag → reserve_slot once more → sleep`), and
+  the wake side checks the flag *after* its commit/release
+  (`commit → check flag → wake`). Skipping the re-check races
+  a commit landing between flag-set and sleep: the waker saw
+  no flag, the sleeper saw no message — it sleeps forever.
+  futex-style primitives exist precisely to make the final
+  check-and-sleep atomic.
+- **Values, not addresses** — a pointer stored in the region
+  is meaningless in the peer's address space (and a
+  dereference of peer-writable bytes besides). Store data;
+  keep pointers on your side of the wall.
+- **Timeouts** — a peer can die while you sleep; every wait
+  should carry a timeout so a dead producer degrades the
+  consumer to periodic polling, not a hang.
 
 ## Validation
 

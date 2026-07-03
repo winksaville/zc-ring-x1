@@ -1,9 +1,9 @@
 //! Zero-copy no_std SPSC ring buffer over a caller-provided
 //! memory region, per [notes/ring-buffer-design.md]:
 //!
-//! - One `#[repr(C, align(64))]` [`Header`] spanning three cache
-//!   lines (immutable geometry, producer index, consumer index),
-//!   followed by M slots of N bytes.
+//! - One `#[repr(C)]` [`Header`] spanning four cache lines
+//!   (immutable geometry, producer index, consumer index, app
+//!   user words), followed by M slots of N bytes.
 //! - Indices are free-running `AtomicU32`s, masked only at slot
 //!   access; full is `p - c == M`, no sacrificial slot.
 //! - Messages move in place: the producer writes through a
@@ -18,7 +18,7 @@
 #![cfg_attr(not(test), no_std)]
 
 use core::marker::PhantomData;
-use core::mem::size_of;
+use core::mem::{align_of, size_of};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 mod consumer;
@@ -38,21 +38,47 @@ pub const CACHE_LINE: usize = 64;
 const MAGIC: u32 = 0x5A43_5231; // "ZCR1"
 
 /// Bumped on any change to the region layout.
-const LAYOUT_VERSION: u32 = 1;
+const LAYOUT_VERSION: u32 = 2;
+
+/// Number of `AtomicU32` words in the header's app-owned
+/// `user` line.
+pub const USER_WORDS: usize = 16;
+
+/// Cache-line-aligned wrapper granting its field sole
+/// ownership of the line.
+///
+/// - `repr(align(N))` accepts only an integer literal — it
+///   cannot name [`CACHE_LINE`] — so the `64` is written out
+///   and a const assert ties them back together.
+#[repr(C, align(64))]
+struct CacheAligned<T>(T);
+
+const _: () = assert!(align_of::<CacheAligned<AtomicU32>>() == CACHE_LINE);
+
+impl<T> core::ops::Deref for CacheAligned<T> {
+    type Target = T;
+    /// Access the wrapped value.
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
 
 /// Control block at offset 0 of the region — one struct spanning
-/// three cache lines so each concurrently-written index owns its
+/// four cache lines so each concurrently-written index owns its
 /// own line.
 ///
 /// - line 0: geometry, written by [`Ring::init`] with `magic`
-///   last (`Release`), read-only thereafter.
+///   last (`Release`), read-only thereafter. Cold: per-op
+///   paths use the handles' snapshots.
 /// - line 1: `producer_idx`, written only by the producer.
 /// - line 2: `consumer_idx`, written only by the consumer.
+/// - line 3: `user`, app-owned scratch — last, so an app
+///   overrun walks into its own slot data, not an index line.
 /// - Every field is atomic: the region may be mapped by a peer
 ///   at any time, so even "immutable" fields must be free of
 ///   data races. `AtomicU32` has the same layout as `u32`, so
 ///   this does not affect `layout_version`.
-#[repr(C, align(64))]
+#[repr(C)]
 pub struct Header {
     /// Layout marker ([`MAGIC`]); stored last by init
     /// (`Release`), loaded first by attach (`Acquire`), so a
@@ -64,16 +90,22 @@ pub struct Header {
     slot_size: AtomicU32,
     /// Slot count M — a power of two `<= 2^31`.
     capacity: AtomicU32,
-    _pad0: [u8; 48],
+    /// [`CACHE_LINE`] this region was built with. The line size
+    /// is a layout parameter (padding, offsets, slot granule),
+    /// so builds must agree; attach validates it like the rest
+    /// of the geometry.
+    cache_line: AtomicU32,
     /// Free-running count of messages committed.
-    producer_idx: AtomicU32,
-    _pad1: [u8; 60],
+    producer_idx: CacheAligned<AtomicU32>,
     /// Free-running count of messages released.
-    consumer_idx: AtomicU32,
-    _pad2: [u8; 60],
+    consumer_idx: CacheAligned<AtomicU32>,
+    /// App-owned scratch line ([`USER_WORDS`] words): zeroed by
+    /// init, then never read, written, or interpreted by the
+    /// crate. See the design doc's "Blocking and user words".
+    user: CacheAligned<[AtomicU32; USER_WORDS]>,
 }
 
-const _: () = assert!(size_of::<Header>() == 3 * CACHE_LINE);
+const _: () = assert!(size_of::<Header>() == 4 * CACHE_LINE);
 
 /// Errors from [`Ring::init`] / [`Ring::attach`] region
 /// validation.
@@ -91,6 +123,8 @@ pub enum Error {
     BadMagic,
     /// Attach: layout version mismatch.
     BadLayoutVersion,
+    /// Attach: region built with a different [`CACHE_LINE`].
+    BadCacheLine,
 }
 
 /// A validated view over a ring region; split into the two
@@ -143,8 +177,14 @@ impl<'a> Ring<'a> {
             .store(LAYOUT_VERSION, Ordering::Relaxed);
         header.slot_size.store(slot_size, Ordering::Relaxed);
         header.capacity.store(capacity, Ordering::Relaxed);
+        header
+            .cache_line
+            .store(CACHE_LINE as u32, Ordering::Relaxed);
         header.producer_idx.store(0, Ordering::Relaxed);
         header.consumer_idx.store(0, Ordering::Relaxed);
+        for word in header.user.iter() {
+            word.store(0, Ordering::Relaxed);
+        }
         // Published last: a peer that pre-mapped the region must
         // never observe MAGIC before the geometry it validates.
         // (Re-initializing a region a peer is already attached
@@ -185,6 +225,9 @@ impl<'a> Ring<'a> {
         }
         if header.layout_version.load(Ordering::Relaxed) != LAYOUT_VERSION {
             return Err(Error::BadLayoutVersion);
+        }
+        if header.cache_line.load(Ordering::Relaxed) != CACHE_LINE as u32 {
+            return Err(Error::BadCacheLine);
         }
         // Snapshot geometry once; per-op paths never re-read it.
         let slot_size = header.slot_size.load(Ordering::Relaxed);
@@ -304,13 +347,16 @@ mod tests {
         val: u64,
     }
 
-    /// Cache-line-aligned backing store: header + 4 × 64B slots.
+    /// Test region size: header + (4 slots × 1 line each).
+    const REGION_BYTES: usize = size_of::<Header>() + (4 * CACHE_LINE);
+
+    /// Cache-line-aligned backing store for the tests' rings.
     #[repr(C, align(64))]
-    struct Region([u8; 3 * CACHE_LINE + 4 * CACHE_LINE]);
+    struct Region([u8; REGION_BYTES]);
 
     impl Region {
         fn new() -> Self {
-            Region([0; 3 * CACHE_LINE + 4 * CACHE_LINE])
+            Region([0; REGION_BYTES])
         }
     }
 
@@ -359,6 +405,33 @@ mod tests {
         assert_eq!(ring.slot_size, 64);
         assert_eq!(ring.capacity, 4);
         assert_eq!(ring.mask, 3);
+        // A region built with a different CACHE_LINE (simulated
+        // by editing the recorded value) is rejected.
+        ring.header.cache_line.store(128, Ordering::Relaxed);
+        let err = unsafe { Ring::attach(r.0.as_mut_ptr(), r.0.len()) }
+            .err()
+            .unwrap();
+        assert_eq!(err, Error::BadCacheLine);
+    }
+
+    #[test]
+    fn user_words_zeroed_and_shared() {
+        let mut r = Region::new();
+        // Dirty the region so init's zeroing is observable.
+        r.0.fill(0xAA);
+        let ring = Ring::init(&mut r.0, 64, 4).unwrap();
+        let (prod, mut cons) = ring.split();
+        assert!(prod.user().iter().all(|w| w.load(Ordering::Relaxed) == 0));
+        // Both endpoints see the same line; a producer-side
+        // store is visible through the consumer's accessor.
+        prod.user()[0].store(7, Ordering::Release);
+        assert_eq!(cons.user()[0].load(Ordering::Acquire), 7);
+        // The user line must not alias ring state: scribbling
+        // all of it leaves the ring empty and functional.
+        for w in cons.user().iter() {
+            w.store(u32::MAX, Ordering::Relaxed);
+        }
+        assert!(cons.reserve_slot::<Msg>().is_err());
     }
 
     #[test]

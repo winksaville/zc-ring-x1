@@ -32,6 +32,10 @@ in sync with `src/`.
   init/attach handshake (magic published last, Release), and an
   all-atomic header so a misbehaving peer can corrupt data but
   never cause UB.
+- An app-owned scratch line in the header (`user()` on both
+  endpoints, 16 `AtomicU32`s): the crate zeroes it at init and
+  never touches it again — a shared-memory home for app wakeup
+  protocols; the crate itself never blocks or spins.
 - Validated by tests (including a threaded stress and a
   u32-index-wrap proof) and [Miri](https://github.com/rust-lang/miri)
   on the non-threaded suite.
@@ -47,10 +51,10 @@ struct Msg {
     val: u64,
 }
 
-// Cache-line-aligned region: 192 B header + 4 slots × 64 B.
+// Cache-line-aligned region: 256 B header + 4 slots × 64 B.
 #[repr(C, align(64))]
-struct Region([u8; 448]);
-let mut region = Region([0; 448]);
+struct Region([u8; 512]);
+let mut region = Region([0; 512]);
 
 let (mut producer, mut consumer) =
     Ring::init(&mut region.0, 64, 4).unwrap().split();

@@ -12,10 +12,10 @@ struct Msg {
 
 /// Runs the README snippet.
 fn main() {
-    // Cache-line-aligned region: 192 B header + 4 slots × 64 B.
+    // Cache-line-aligned region: 256 B header + 4 slots × 64 B.
     #[repr(C, align(64))]
-    struct Region([u8; 448]);
-    let mut region = Region([0; 448]);
+    struct Region([u8; 512]);
+    let mut region = Region([0; 512]);
 
     let (mut producer, mut consumer) = Ring::init(&mut region.0, 64, 4).unwrap().split();
 
