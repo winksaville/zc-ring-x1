@@ -103,7 +103,7 @@ struct Header {
     layout_version: AtomicU32, // bumped on any layout change
     slot_size: AtomicU32,      // N in bytes, cache-line multiple
     capacity: AtomicU32,       // M, power of two; index mask is M - 1
-    cache_line_size: AtomicU32, // CACHE_LINE the region was built with
+    cache_line_size: AtomicU32, // CACHE_LINE_SIZE the region was built with
     // line 1 — producer-owned
     producer_idx: CacheAligned<AtomicU32>, // written by producer only
     // line 2 — consumer-owned
@@ -125,7 +125,7 @@ offset size_of::<Header>()  slots: M × N bytes
   forward out of `user` lands in slot 0 (the app's own message
   data), not in an index line.
 - **`repr(align(N))` takes only an integer literal** — it
-  cannot name `CACHE_LINE`, so the `64` is written out and
+  cannot name `CACHE_LINE_SIZE`, so the `64` is written out and
   const asserts tie `align_of::<CacheAligned<AtomicU32>>()`
   and `size_of::<Header>()` back to the constant.
 - **Every field is atomic** — the region may be mapped by a
@@ -143,7 +143,7 @@ offset size_of::<Header>()  slots: M × N bytes
 - **Slots** — `M` slots of `N` bytes, each cache-line
   aligned (N is a line multiple, so alignment follows from
   the array base).
-- **`CACHE_LINE = 64` plays two roles** — a layout-ABI
+- **`CACHE_LINE_SIZE = 64` plays two roles** — a layout-ABI
   constant and a false-sharing pad. On CPUs with 128-byte
   effective line pitch (Apple M-series; Intel's adjacent-line
   prefetcher is why crossbeam pads 128 on x86_64 too) the

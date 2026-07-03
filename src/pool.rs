@@ -25,7 +25,7 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, Ordering};
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
-use crate::{CACHE_LINE, CacheAligned, Error, check_type};
+use crate::{CACHE_LINE_SIZE, CacheAligned, Error, check_type};
 
 /// `alloc` failed: no free buffer (or a peer-corrupted
 /// free-stack index — validation fails toward exhaustion,
@@ -64,11 +64,11 @@ pub struct PoolHeader {
     magic: AtomicU32,
     /// Pool layout version ([`POOL_LAYOUT_VERSION`]).
     layout_version: AtomicU32,
-    /// Buffer size in bytes — a [`CACHE_LINE`] multiple.
+    /// Buffer size in bytes — a [`CACHE_LINE_SIZE`] multiple.
     buf_size: AtomicU32,
     /// Buffer count — nonzero, `< u32::MAX` ([`NIL`]).
     buf_count: AtomicU32,
-    /// [`CACHE_LINE`] this region was built with; attach
+    /// [`CACHE_LINE_SIZE`] this region was built with; attach
     /// validates it like the rest of the geometry.
     cache_line_size: AtomicU32,
     /// Free-stack head: index of the first free buffer, or
@@ -76,7 +76,7 @@ pub struct PoolHeader {
     first_free_idx: CacheAligned<AtomicU32>,
 }
 
-const _: () = assert!(size_of::<PoolHeader>() == 2 * CACHE_LINE);
+const _: () = assert!(size_of::<PoolHeader>() == 2 * CACHE_LINE_SIZE);
 
 /// A validated view over a pool region.
 ///
@@ -97,15 +97,21 @@ pub struct Pool<'a> {
     _region: PhantomData<&'a [u8]>,
 }
 
+// SAFETY: the handle owns the allocator role; the shared
+// state it touches (first_free_idx, next-links) is atomic,
+// and buffer ownership is handed off with Release/Acquire
+// ordering — same rationale as the ring endpoints.
+unsafe impl Send for Pool<'_> {}
+
 impl<'a> Pool<'a> {
     /// Initialize a fresh region and return the pool over it,
     /// with every buffer on the free-stack.
     ///
-    /// - `buf_size` — bytes per buffer, a [`CACHE_LINE`]
+    /// - `buf_size` — bytes per buffer, a [`CACHE_LINE_SIZE`]
     ///   multiple.
     /// - `buf_count` — number of buffers, nonzero and
     ///   `< u32::MAX`.
-    /// - The region must be [`CACHE_LINE`]-aligned and at
+    /// - The region must be [`CACHE_LINE_SIZE`]-aligned and at
     ///   least `size_of::<PoolHeader>() + buf_count *
     ///   buf_size` bytes.
     pub fn init(region: &'a mut [u8], buf_size: u32, buf_count: u32) -> Result<Self, Error> {
@@ -130,7 +136,7 @@ impl<'a> Pool<'a> {
         header.buf_count.store(buf_count, Ordering::Relaxed);
         header
             .cache_line_size
-            .store(CACHE_LINE as u32, Ordering::Relaxed);
+            .store(CACHE_LINE_SIZE as u32, Ordering::Relaxed);
         // SAFETY: in bounds — len >= header + buffers.
         let bufs = unsafe { base.add(size_of::<PoolHeader>()) };
         let pool = Pool {
@@ -178,7 +184,7 @@ impl<'a> Pool<'a> {
         if header.layout_version.load(Ordering::Relaxed) != POOL_LAYOUT_VERSION {
             return Err(Error::BadLayoutVersion);
         }
-        if header.cache_line_size.load(Ordering::Relaxed) != CACHE_LINE as u32 {
+        if header.cache_line_size.load(Ordering::Relaxed) != CACHE_LINE_SIZE as u32 {
             return Err(Error::BadCacheLine);
         }
         // Snapshot geometry once; per-op paths never re-read.
@@ -217,6 +223,11 @@ impl<'a> Pool<'a> {
     /// - A racing free moves the head and the CAS retries;
     ///   with a single popper an in-flight head node cannot be
     ///   removed underneath us, so there is no ABA hazard.
+    /// - `T` geometry is asserted on each call (a mismatch is
+    ///   a programming error, so it panics — same doctrine as
+    ///   `reserve_slot`). A zero-sized `T` is legal and still
+    ///   consumes a whole buffer: the buffer is the
+    ///   allocation granule.
     pub fn alloc<T>(&mut self) -> Result<BufSlot<'a, T>, Exhausted>
     where
         T: FromBytes + IntoBytes + KnownLayout,
@@ -379,7 +390,7 @@ impl<T> BufSlot<'_, T> {
 ///   knows the geometry from parameters, attach only after
 ///   reading the header).
 fn pool_header_ptr(base: *mut u8, len: usize) -> Result<*const PoolHeader, Error> {
-    if !(base as usize).is_multiple_of(CACHE_LINE) {
+    if !(base as usize).is_multiple_of(CACHE_LINE_SIZE) {
         return Err(Error::Misaligned);
     }
     if len < size_of::<PoolHeader>() {
@@ -401,11 +412,349 @@ fn pool_region_size(buf_size: u32, buf_count: u32) -> u64 {
 /// - No power-of-two constraint: the free-stack never masks
 ///   an index.
 fn validate_pool_geometry(buf_size: u32, buf_count: u32) -> Result<(), Error> {
-    if buf_size == 0 || !(buf_size as usize).is_multiple_of(CACHE_LINE) {
+    if buf_size == 0 || !(buf_size as usize).is_multiple_of(CACHE_LINE_SIZE) {
         return Err(Error::BadBufSize);
     }
     if buf_count == 0 || buf_count == NIL {
         return Err(Error::BadBufCount);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+    /// Test message; two words so a torn write would be
+    /// visible.
+    #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Debug, PartialEq)]
+    #[repr(C)]
+    struct Msg {
+        seq: u64,
+        val: u64,
+    }
+
+    /// Buffer size used by most pool tests: one cache line.
+    const TEST_CACHE_LINE_SIZE: u32 = CACHE_LINE_SIZE as u32;
+
+    /// Test region size: header + (4 buffers × 1 line each).
+    const REGION_BYTES: usize = size_of::<PoolHeader>() + (4 * CACHE_LINE_SIZE);
+
+    /// Cache-line-aligned backing store for the tests' pools.
+    #[repr(C, align(64))]
+    struct Region([u8; REGION_BYTES]);
+
+    impl Region {
+        fn new() -> Self {
+            Region([0; REGION_BYTES])
+        }
+    }
+
+    #[test]
+    fn init_rejects_bad_geometry() {
+        let mut r = Region::new();
+        assert_eq!(
+            Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE - 1, 4)
+                .err()
+                .unwrap(),
+            Error::BadBufSize
+        );
+        assert_eq!(Pool::init(&mut r.0, 0, 4).err().unwrap(), Error::BadBufSize);
+        assert_eq!(
+            Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 0).err().unwrap(),
+            Error::BadBufCount
+        );
+        assert_eq!(
+            Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, u32::MAX)
+                .err()
+                .unwrap(),
+            Error::BadBufCount
+        );
+        assert_eq!(
+            Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 8).err().unwrap(),
+            Error::TooSmall
+        );
+        assert_eq!(
+            Pool::init(&mut r.0[1..], TEST_CACHE_LINE_SIZE, 4)
+                .err()
+                .unwrap(),
+            Error::Misaligned
+        );
+        // 32-bit tripwire: size * count wraps a 32-bit usize
+        // (2^26 * 2^6 = 2^32); u64 region math must reject it.
+        assert_eq!(
+            Pool::init(&mut r.0, 1 << 26, 1 << 6).err().unwrap(),
+            Error::TooSmall
+        );
+    }
+
+    #[test]
+    fn attach_validates_header() {
+        let mut r = Region::new();
+        // Not initialized yet: magic is zero.
+        let err = unsafe { Pool::attach(r.0.as_mut_ptr(), r.0.len()) }
+            .err()
+            .unwrap();
+        assert_eq!(err, Error::BadMagic);
+        // A ring region is not a pool region: its magic must
+        // be rejected (the two kinds must never cross-attach).
+        // 2 slots: the ring header (4 lines) + 2×64 fits the
+        // pool-sized test region.
+        crate::Ring::init(&mut r.0, TEST_CACHE_LINE_SIZE, 2).unwrap();
+        let err = unsafe { Pool::attach(r.0.as_mut_ptr(), r.0.len()) }
+            .err()
+            .unwrap();
+        assert_eq!(err, Error::BadMagic);
+
+        let mut r = Region::new();
+        Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+        let pool = unsafe { Pool::attach(r.0.as_mut_ptr(), r.0.len()) }.unwrap();
+        assert_eq!(pool.buf_size(), TEST_CACHE_LINE_SIZE);
+        assert_eq!(pool.buf_count(), 4);
+        // A region built with a different CACHE_LINE_SIZE
+        // (simulated by editing the recorded value) is
+        // rejected.
+        pool.header.cache_line_size.store(128, Ordering::Relaxed);
+        let err = unsafe { Pool::attach(r.0.as_mut_ptr(), r.0.len()) }
+            .err()
+            .unwrap();
+        assert_eq!(err, Error::BadCacheLine);
+    }
+
+    #[test]
+    fn alloc_holds_many_then_exhausts() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+
+        // All four live at once — the decoupling: no guard
+        // blocks the next alloc.
+        let mut bufs = Vec::new();
+        for i in 0..4u64 {
+            let mut b = pool.alloc::<Msg>().unwrap();
+            b.seq = i;
+            b.val = i * 10;
+            bufs.push(b);
+        }
+        assert_eq!(pool.alloc::<Msg>().err().unwrap(), Exhausted);
+
+        // Distinct buffers: every write is still intact.
+        for (i, b) in bufs.iter().enumerate() {
+            assert_eq!(
+                **b,
+                Msg {
+                    seq: i as u64,
+                    val: i as u64 * 10
+                }
+            );
+        }
+        for b in bufs {
+            b.free();
+        }
+        // Fully recycled: four allocs succeed again.
+        let a = pool.alloc::<Msg>().unwrap();
+        let b = pool.alloc::<Msg>().unwrap();
+        let c = pool.alloc::<Msg>().unwrap();
+        let d = pool.alloc::<Msg>().unwrap();
+        assert_eq!(pool.alloc::<Msg>().err().unwrap(), Exhausted);
+        a.free();
+        b.free();
+        c.free();
+        d.free();
+    }
+
+    #[test]
+    fn free_is_lifo() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+
+        let a = pool.alloc::<Msg>().unwrap();
+        let b = pool.alloc::<Msg>().unwrap();
+        let a_ptr = &*a as *const Msg;
+        let b_ptr = &*b as *const Msg;
+        a.free();
+        b.free(); // b freed last, so b is the stack top
+        let first = pool.alloc::<Msg>().unwrap();
+        let second = pool.alloc::<Msg>().unwrap();
+        assert_eq!(&*first as *const Msg, b_ptr);
+        assert_eq!(&*second as *const Msg, a_ptr);
+        first.free();
+        second.free();
+    }
+
+    #[test]
+    // Dropping the guard is the behavior under test; BufSlot
+    // has no Drop impl by design (drop = leak, documented).
+    #[allow(clippy::drop_non_drop)]
+    fn dropped_guard_leaks_its_buffer() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+
+        drop(pool.alloc::<Msg>().unwrap()); // leaked, not freed
+        // The pool now serves only three buffers.
+        let a = pool.alloc::<Msg>().unwrap();
+        let b = pool.alloc::<Msg>().unwrap();
+        let c = pool.alloc::<Msg>().unwrap();
+        assert_eq!(pool.alloc::<Msg>().err().unwrap(), Exhausted);
+        a.free();
+        b.free();
+        c.free();
+    }
+
+    #[test]
+    fn corrupted_stack_fails_toward_exhausted() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+
+        // Peer scribbles an out-of-bounds head (not NIL).
+        pool.header.first_free_idx.store(1000, Ordering::Relaxed);
+        assert_eq!(pool.alloc::<Msg>().err().unwrap(), Exhausted);
+
+        // Valid head, corrupted next-link: still refused —
+        // the pop validates both before touching anything.
+        pool.header.first_free_idx.store(0, Ordering::Relaxed);
+        pool.next_buf_idx(0).store(77, Ordering::Relaxed);
+        assert_eq!(pool.alloc::<Msg>().err().unwrap(), Exhausted);
+
+        // Repairing the link restores service — degraded,
+        // never bricked.
+        pool.next_buf_idx(0).store(NIL, Ordering::Relaxed);
+        let a = pool.alloc::<Msg>().unwrap();
+        assert_eq!(pool.alloc::<Msg>().err().unwrap(), Exhausted);
+        a.free();
+    }
+
+    #[test]
+    fn wider_buffers_and_mixed_types() {
+        // A two-line buffer pool: types of different sizes
+        // (and a type filling the buffer exactly) share it,
+        // and a freed buffer is reused as a different type.
+        const BIG_BUF: usize = 2 * CACHE_LINE_SIZE;
+        #[repr(C, align(64))]
+        struct Region2([u8; size_of::<PoolHeader>() + 4 * BIG_BUF]);
+        let mut r = Region2([0; size_of::<PoolHeader>() + 4 * BIG_BUF]);
+
+        /// Fills the two-line buffer exactly.
+        #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+        #[repr(C)]
+        struct Big {
+            words: [u64; BIG_BUF / 8],
+        }
+
+        let mut pool = Pool::init(&mut r.0, BIG_BUF as u32, 4).unwrap();
+
+        // Different-sized types live in the pool at once.
+        let mut small = pool.alloc::<Msg>().unwrap();
+        let mut big = pool.alloc::<Big>().unwrap();
+        small.seq = 7;
+        big.words[0] = 1;
+        big.words[BIG_BUF / 8 - 1] = 2; // last word: full span writable
+        assert_eq!(small.seq, 7);
+        assert_eq!(big.words[BIG_BUF / 8 - 1], 2);
+
+        // A freed buffer is reused as a different type.
+        let small_ptr = &*small as *const Msg as usize;
+        small.free();
+        let reused = pool.alloc::<Big>().unwrap();
+        assert_eq!(&*reused as *const Big as usize, small_ptr);
+        reused.free();
+        big.free();
+    }
+
+    #[test]
+    fn internally_aligned_types_work() {
+        /// Alignment 32 (≤ CACHE_LINE_SIZE), no padding, so the
+        /// zerocopy derives accept it; the buffer base is
+        /// line-aligned, satisfying any align ≤ CACHE_LINE_SIZE.
+        #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+        #[repr(C, align(32))]
+        struct Aligned {
+            words: [u64; 4],
+        }
+        assert_eq!(core::mem::align_of::<Aligned>(), 32);
+
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+        let mut a = pool.alloc::<Aligned>().unwrap();
+        assert_eq!(&*a as *const Aligned as usize % 32, 0);
+        a.words = [1, 2, 3, 4];
+        assert_eq!(a.words[3], 4);
+        a.free();
+    }
+
+    #[test]
+    #[should_panic(expected = "T larger than slot")]
+    fn too_big_type_panics() {
+        /// Two lines: does not fit a one-line buffer.
+        #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+        #[repr(C)]
+        struct TooBig {
+            words: [u64; 16],
+        }
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+        // A type that cannot fit is a programming error, not
+        // a runtime condition: alloc panics (check_type).
+        let _ = pool.alloc::<TooBig>();
+    }
+
+    #[test]
+    fn zero_sized_type_consumes_a_buffer() {
+        /// Zero bytes, alignment 1.
+        #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+        #[repr(C)]
+        struct Zst;
+
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+        // Legal, and each one occupies a whole buffer — the
+        // buffer is the allocation granule.
+        let a = pool.alloc::<Zst>().unwrap();
+        let b = pool.alloc::<Zst>().unwrap();
+        let c = pool.alloc::<Zst>().unwrap();
+        let d = pool.alloc::<Zst>().unwrap();
+        assert_eq!(pool.alloc::<Zst>().err().unwrap(), Exhausted);
+        a.free();
+        b.free();
+        c.free();
+        d.free();
+    }
+
+    #[test]
+    fn threaded_alloc_here_free_there() {
+        // Allocator thread allocs and hands guards to a freer
+        // thread; recycling means total allocations far
+        // exceed buf_count. Reduced under Miri (interpreted
+        // spin loops are slow).
+        const COUNT: u64 = if cfg!(miri) { 200 } else { 100_000 };
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel::<BufSlot<'_, Msg>>();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                for i in 0..COUNT {
+                    loop {
+                        match pool.alloc::<Msg>() {
+                            Ok(mut b) => {
+                                b.seq = i;
+                                b.val = i * 3;
+                                tx.send(b).unwrap();
+                                break;
+                            }
+                            Err(Exhausted) => std::hint::spin_loop(),
+                        }
+                    }
+                }
+            });
+            s.spawn(move || {
+                for i in 0..COUNT {
+                    let b = rx.recv().unwrap();
+                    assert_eq!(b.seq, i);
+                    assert_eq!(b.val, i * 3);
+                    b.free(); // the freer role: not the allocator
+                }
+            });
+        });
+    }
 }

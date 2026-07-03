@@ -33,7 +33,7 @@ pub use producer::{Full, Producer, WriteSlot};
 ///
 /// - Slot size must be a multiple of this; slots and the region
 ///   itself must be aligned to it.
-pub const CACHE_LINE: usize = 64;
+pub const CACHE_LINE_SIZE: usize = 64;
 
 /// Layout marker written by [`Ring::init`]; rejects foreign
 /// regions on attach.
@@ -50,12 +50,12 @@ pub const USER_WORDS: usize = 16;
 /// ownership of the line.
 ///
 /// - `repr(align(N))` accepts only an integer literal — it
-///   cannot name [`CACHE_LINE`] — so the `64` is written out
+///   cannot name [`CACHE_LINE_SIZE`] — so the `64` is written out
 ///   and a const assert ties them back together.
 #[repr(C, align(64))]
 struct CacheAligned<T>(T);
 
-const _: () = assert!(align_of::<CacheAligned<AtomicU32>>() == CACHE_LINE);
+const _: () = assert!(align_of::<CacheAligned<AtomicU32>>() == CACHE_LINE_SIZE);
 
 impl<T> core::ops::Deref for CacheAligned<T> {
     type Target = T;
@@ -88,11 +88,11 @@ pub struct Header {
     magic: AtomicU32,
     /// Layout version ([`LAYOUT_VERSION`]).
     layout_version: AtomicU32,
-    /// Slot size N in bytes — a [`CACHE_LINE`] multiple.
+    /// Slot size N in bytes — a [`CACHE_LINE_SIZE`] multiple.
     slot_size: AtomicU32,
     /// Slot count M — a power of two `<= 2^31`.
     capacity: AtomicU32,
-    /// [`CACHE_LINE`] this region was built with. The line size
+    /// [`CACHE_LINE_SIZE`] this region was built with. The line size
     /// is a layout parameter (padding, offsets, slot granule),
     /// so builds must agree; attach validates it like the rest
     /// of the geometry.
@@ -107,21 +107,21 @@ pub struct Header {
     user: CacheAligned<[AtomicU32; USER_WORDS]>,
 }
 
-const _: () = assert!(size_of::<Header>() == 4 * CACHE_LINE);
+const _: () = assert!(size_of::<Header>() == 4 * CACHE_LINE_SIZE);
 
 /// Errors from region validation — [`Ring::init`] /
 /// [`Ring::attach`] and [`Pool::init`] / [`Pool::attach`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
-    /// Region is not [`CACHE_LINE`]-aligned.
+    /// Region is not [`CACHE_LINE_SIZE`]-aligned.
     Misaligned,
     /// Region is smaller than header + slots/buffers.
     TooSmall,
-    /// Slot size is zero or not a [`CACHE_LINE`] multiple.
+    /// Slot size is zero or not a [`CACHE_LINE_SIZE`] multiple.
     BadSlotSize,
     /// Capacity is zero, not a power of two, or `> 2^31`.
     BadCapacity,
-    /// Pool: buffer size is zero or not a [`CACHE_LINE`]
+    /// Pool: buffer size is zero or not a [`CACHE_LINE_SIZE`]
     /// multiple.
     BadBufSize,
     /// Pool: buffer count is zero or `u32::MAX` (the
@@ -132,7 +132,7 @@ pub enum Error {
     BadMagic,
     /// Attach: layout version mismatch.
     BadLayoutVersion,
-    /// Attach: region built with a different [`CACHE_LINE`].
+    /// Attach: region built with a different [`CACHE_LINE_SIZE`].
     BadCacheLine,
 }
 
@@ -160,10 +160,10 @@ pub struct Ring<'a> {
 impl<'a> Ring<'a> {
     /// Initialize a fresh region and return the ring over it.
     ///
-    /// - `slot_size` — N bytes per slot, a [`CACHE_LINE`]
+    /// - `slot_size` — N bytes per slot, a [`CACHE_LINE_SIZE`]
     ///   multiple.
     /// - `capacity` — M slots, a power of two `<= 2^31`.
-    /// - The region must be [`CACHE_LINE`]-aligned and at least
+    /// - The region must be [`CACHE_LINE_SIZE`]-aligned and at least
     ///   `size_of::<Header>() + M * N` bytes.
     pub fn init(region: &'a mut [u8], slot_size: u32, capacity: u32) -> Result<Self, Error> {
         validate_geometry(slot_size, capacity)?;
@@ -188,7 +188,7 @@ impl<'a> Ring<'a> {
         header.capacity.store(capacity, Ordering::Relaxed);
         header
             .cache_line_size
-            .store(CACHE_LINE as u32, Ordering::Relaxed);
+            .store(CACHE_LINE_SIZE as u32, Ordering::Relaxed);
         header.producer_idx.store(0, Ordering::Relaxed);
         header.consumer_idx.store(0, Ordering::Relaxed);
         for word in header.user.iter() {
@@ -235,7 +235,7 @@ impl<'a> Ring<'a> {
         if header.layout_version.load(Ordering::Relaxed) != LAYOUT_VERSION {
             return Err(Error::BadLayoutVersion);
         }
-        if header.cache_line_size.load(Ordering::Relaxed) != CACHE_LINE as u32 {
+        if header.cache_line_size.load(Ordering::Relaxed) != CACHE_LINE_SIZE as u32 {
             return Err(Error::BadCacheLine);
         }
         // Snapshot geometry once; per-op paths never re-read it.
@@ -287,7 +287,7 @@ impl<'a> Ring<'a> {
 ///   discharges its own safety obligation (init: exclusive
 ///   borrow; attach: the caller's shared-mapping contract).
 fn header_ptr(base: *mut u8, len: usize) -> Result<*const Header, Error> {
-    if !(base as usize).is_multiple_of(CACHE_LINE) {
+    if !(base as usize).is_multiple_of(CACHE_LINE_SIZE) {
         return Err(Error::Misaligned);
     }
     if len < size_of::<Header>() {
@@ -307,7 +307,7 @@ fn region_size(slot_size: u32, capacity: u32) -> u64 {
 
 /// Shared geometry checks for [`Ring::init`] / [`Ring::attach`].
 fn validate_geometry(slot_size: u32, capacity: u32) -> Result<(), Error> {
-    if slot_size == 0 || !(slot_size as usize).is_multiple_of(CACHE_LINE) {
+    if slot_size == 0 || !(slot_size as usize).is_multiple_of(CACHE_LINE_SIZE) {
         return Err(Error::BadSlotSize);
     }
     // The `> 1 << 31` arm is unreachable (u32 powers of two are
@@ -327,7 +327,7 @@ fn validate_geometry(slot_size: u32, capacity: u32) -> Result<(), Error> {
 fn check_type<T>(slot_size: u32) {
     assert!(size_of::<T>() <= slot_size as usize, "T larger than slot");
     assert!(
-        core::mem::align_of::<T>() <= CACHE_LINE,
+        core::mem::align_of::<T>() <= CACHE_LINE_SIZE,
         "T alignment exceeds slot alignment"
     );
 }
@@ -357,7 +357,7 @@ mod tests {
     }
 
     /// Test region size: header + (4 slots × 1 line each).
-    const REGION_BYTES: usize = size_of::<Header>() + (4 * CACHE_LINE);
+    const REGION_BYTES: usize = size_of::<Header>() + (4 * CACHE_LINE_SIZE);
 
     /// Cache-line-aligned backing store for the tests' rings.
     #[repr(C, align(64))]
@@ -414,7 +414,7 @@ mod tests {
         assert_eq!(ring.slot_size, 64);
         assert_eq!(ring.capacity, 4);
         assert_eq!(ring.mask, 3);
-        // A region built with a different CACHE_LINE (simulated
+        // A region built with a different CACHE_LINE_SIZE (simulated
         // by editing the recorded value) is rejected.
         ring.header.cache_line_size.store(128, Ordering::Relaxed);
         let err = unsafe { Ring::attach(r.0.as_mut_ptr(), r.0.len()) }

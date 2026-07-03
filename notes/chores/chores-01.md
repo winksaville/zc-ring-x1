@@ -234,7 +234,7 @@ section; todo.md gains the matching ranked entries and Ideas.
 
 ## feat: message pool allocator
 
-Commits: [[15]],[[16]],[[17]]
+Commits: [[15]],[[16]],[[17]],[[18]]
 
 # References
 
@@ -255,3 +255,4 @@ Commits: [[15]],[[16]],[[17]]
 [15]: https://github.com/winksaville/zc-ring-x1/commit/1d6d388950f8 "1d6d388950f836f820cd5983a61984a4a8ee176e"
 [16]: https://github.com/winksaville/zc-ring-x1/commit/2b09687ddebd "2b09687ddebd4e6bdc0d68a12cff57ea580b959d"
 [17]: https://github.com/winksaville/zc-ring-x1/commit/2069384698df "2069384698dfa62860193cea58aea62c4c5462c0"
+[18]: https://github.com/winksaville/zc-ring-x1/commit/9f3ce4bc87bd "9f3ce4bc87bd86faa9941a7d40007674529dcc80"

@@ -34,7 +34,7 @@ Ladder:
   freers), buffer lifecycle states (free → allocated →
   in-flight → freed) and who may touch a buffer in each,
   what "send" means before descriptor queues exist (done)
-- 0.6.0-4 test: message pool protocol tests
+- 0.6.0-4 test: message pool protocol tests (done)
 - 0.6.0 feat: message pool allocator (close-out)
 
 ## Todo
