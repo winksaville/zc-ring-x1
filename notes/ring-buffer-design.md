@@ -324,8 +324,11 @@ Per-commit, alongside the cargo cycle:
 
 ## Messaging layer: pools and descriptor queues
 
-Design for the layer above the ring — not yet built; the
-sections above remain the as-built record of the ring itself.
+Design for the layer above the ring. The pool half is
+as-built as of the 0.6.0 cycle (`src/pool.rs`: layout,
+init/attach, alloc/free); descriptor queues and provenance
+remain design. The sections above are the as-built record of
+the ring itself.
 
 The ring's `reserve_slot` fuses three acts that a messaging
 system needs separated: it allocates message memory (the slot),
@@ -435,6 +438,18 @@ marking: push the buffer onto the pool's free-stack.
   claims word should model role slots, not a single producer
   bit, so N producer claims fit later without a layout
   rethink.
+
+### Usage model: roles and buffer lifecycle
+
+The user-facing contract — who may do what, per object and
+per buffer state — lives in the README:
+[Usage model](../README.md#usage-model-roles-and-buffer-lifecycle).
+The tests exercise exactly what it permits. Summary: ring =
+one producer + one consumer; pool = one allocator + any
+freers; a buffer is always in exactly one state
+(free / allocated / in-flight [vacant until descriptor
+queues] / freed) with one permitted toucher; "send" this
+cycle means moving the `BufSlot`.
 
 ### Overflow FIFO (future)
 

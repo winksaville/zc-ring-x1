@@ -33,7 +33,7 @@ Ladder:
   one producer + one consumer; pool: one allocator + any
   freers), buffer lifecycle states (free → allocated →
   in-flight → freed) and who may touch a buffer in each,
-  what "send" means before descriptor queues exist
+  what "send" means before descriptor queues exist (done)
 - 0.6.0-4 test: message pool protocol tests
 - 0.6.0 feat: message pool allocator (close-out)
 
@@ -80,6 +80,20 @@ Ladder:
   decoupling and pool-offset machinery; how it differs from
   this project in
   [Prior art: iceoryx2](ring-buffer-design.md#prior-art-iceoryx2).
+- `#[global_allocator]` experiment over size-class pools:
+  GlobalAlloc is `&self` + any-thread, so it needs
+  shared-allocation pools (phase 2 gen-tagged head) or
+  per-thread pools with a routing layer; arbitrary `Layout`
+  needs size-class selection + an oversize fallback. Frees
+  from any thread are already natural (MPSC push). Classic
+  mempool → malloc arc; measure the object-pool form in
+  iiac-perf first.
+- BufSlot auto-free on Drop (RAII, iceoryx2-style): kills the
+  silent leak-on-drop footgun at the cost of guard-type
+  asymmetry (ring guards' drop = do-nothing) and a
+  ManuallyDrop dance in free/send paths. Decide when
+  descriptor-queue send lands — explicit free is easier to
+  upgrade than to walk back.
 - Overflow FIFO: when a queue's ring is Full, append the
   message to a sender-private intrusive pending list (same
   embedded next-link the free-stack uses; zero allocation,

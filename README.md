@@ -74,6 +74,153 @@ shared-memory region is `unsafe` (see `Ring::attach`); planned
 hardening and follow-ons are tracked in
 [notes/todo.md](notes/todo.md).
 
+## Message pool
+
+The companion allocation primitive: fixed-size
+cache-line-aligned buffers over a caller-provided region,
+decoupling "get a message" from "send it" — allocate a
+buffer, hold it as long as you like, free (or eventually
+send) it whenever. Design and roadmap:
+[Messaging layer: pools and descriptor queues](notes/ring-buffer-design.md#messaging-layer-pools-and-descriptor-queues).
+
+- Intrusive LIFO free-stack with zero per-buffer overhead: a
+  *free* buffer's first word is its next-link; an allocated
+  buffer carries no header at all.
+- `alloc::<T>()` returns a `BufSlot<T>` — the ownership
+  token for one buffer, `Deref`/`DerefMut` to `T` in place.
+  The pop is single-popper Treiber (`&mut self`, no ABA):
+  one allocator per pool.
+- `BufSlot::free` is an MPSC push: whichever thread or
+  process ends up holding the guard may free it.
+- `Pool::init` creates and validates a fresh region;
+  `Pool::attach` joins one initialized elsewhere — `unsafe`
+  like `Ring::attach` (the caller vouches for the mapping),
+  and its contract carries the single-allocator rule: at
+  most one attached handle allocates, any handle frees.
+- Messaging aside, a pool is a fast fixed-size object
+  allocator in its own right: O(1) alloc/free, no locks, no
+  syscalls, cache-aligned `T`s with LIFO reuse keeping the
+  working set hot — usable today for app-owned objects that
+  never travel.
+- `BufSlot` does not borrow the pool — any number of
+  allocated buffers live at once; dropping without `free`
+  leaks the buffer (documented, like the ring's abandon but
+  with the opposite consequence).
+- Free-stack words are untrusted shared memory: pops are
+  bounds-checked and corruption degrades to `Exhausted`,
+  never out-of-bounds access.
+- Same init/attach handshake, all-atomic header, and
+  hostile-peer posture as the ring.
+
+```rust
+use zc_ring_x1::Pool;
+use zerocopy::{FromBytes, IntoBytes, KnownLayout};
+
+#[derive(FromBytes, IntoBytes, KnownLayout)]
+#[repr(C)]
+struct Msg {
+    seq: u64,
+    val: u64,
+}
+
+// Cache-line-aligned region: 128 B header + 4 bufs × 64 B.
+#[repr(C, align(64))]
+struct Region([u8; 384]);
+let mut region = Region([0; 384]);
+
+let mut pool = Pool::init(&mut region.0, 64, 4).unwrap();
+
+let mut a = pool.alloc::<Msg>().unwrap();
+let mut b = pool.alloc::<Msg>().unwrap(); // many live at once
+a.seq = 1;
+b.seq = 2;
+b.free(); // any order, from any thread the guard moved to
+a.free();
+```
+
+## Usage model: roles and buffer lifecycle
+
+Who may do what, per object and per buffer state. The tests
+exercise exactly what this model permits; anything outside it
+is a contract violation even where the compiler cannot reject
+it.
+
+**Roles.** Roles are per *object*, and one thread may hold
+several roles across objects (a typical sender is one pool's
+allocator and one ring's producer):
+
+- **Ring** — exactly one producer and one consumer, ever
+  (SPSC): in-process, `split()` hands out each endpoint
+  once; cross-process, one producing and one consuming
+  process by contract. An endpoint reserves at most one
+  slot at a time (guard holds the endpoint borrow).
+- **Pool** — exactly one *allocator* at a time (the
+  single-popper contract on `Pool::attach`; in-process,
+  `alloc` takes `&mut self`), and **any number of freers**:
+  whoever holds a `BufSlot` may free it, from any thread or
+  process attached to the pool.
+
+**Buffer lifecycle.** A pool buffer is always in exactly one
+state, with one party allowed to touch it:
+
+- **free** — on the free-stack; the pool protocol owns it.
+  Nobody reads or writes it except through alloc/free
+  machinery (its first word is the next-link).
+- **allocated** — popped by `alloc`, owned by the `BufSlot`
+  holder: exclusive read/write through the guard, held as
+  long as desired, moved between threads freely (`Send`).
+  No other party — including the pool — may touch the
+  bytes.
+- **in-flight** — *placeholder, vacant this cycle*: after a
+  send over a descriptor queue the sender must no longer
+  touch the buffer and the receiver owns it on receipt.
+  Until descriptor queues exist there is no in-flight
+  state.
+- **freed** — `BufSlot::free` pushes it back; ownership
+  returns to the pool protocol the instant the CAS lands.
+  Use-after-free of the guard is unrepresentable (`free`
+  consumes it); dropping without `free` leaks the buffer.
+
+**What "send" means this cycle.** Transferring a message =
+moving its `BufSlot` (an ordinary Rust move; `Send` lets it
+cross threads). The ring and the pool do not yet compose:
+a `BufSlot` cannot travel through a ring slot, and no API
+reconstructs buffer access from a bare index — both arrive
+with the descriptor-queue cycle. Ring messages this cycle
+are by-value `T`s in slots, as before.
+
+**Where this is heading.** The ring alone is a building
+block; the payoff is the two composed — the ring carrying
+tiny descriptors while payloads stay put in pool buffers.
+Illustrative only (this API does not exist yet; names will
+change):
+
+```rust,ignore
+// Sender: pool allocator + ring producer.
+let mut msg = pool.alloc::<Msg>()?; // get a message
+msg.val = 42;                       // fill it in place
+producer.send(msg)?;                // consumes the BufSlot;
+                                    // only its index travels
+                                    // through the ring
+
+// Receiver: ring consumer + freer (other thread or process).
+let desc = consumer.reserve_slot::<Desc>()?;
+let msg = pool.resolve::<Msg>(&desc)?; // zero-copy view
+//                  ... read msg ...
+msg.free();     // buffer back to its pool
+desc.release(); // ring slot free for the next descriptor
+```
+
+One allocation's bytes are written once and never copied —
+not by send, not by receive, not across the process
+boundary.
+
+**Trust.** Unchanged from the ring: every word in shared
+memory is untrusted input. The pool validates the head and
+next-link at every pop and fails toward `Exhausted`; a
+hostile peer can degrade service (garbage messages, lost
+buffers, spurious exhaustion), never cause UB on this side.
+
 ## Testing
 
 - `cargo test` — the full suite, including a threaded stress
@@ -82,6 +229,10 @@ hardening and follow-ons are tracked in
   (committed as [examples/readme.rs](examples/readme.rs) so
   `cargo clippy --all-targets` keeps it compiling against the
   real API).
+- `cargo run --example pool_readme` — the Message pool
+  example above
+  ([examples/pool_readme.rs](examples/pool_readme.rs), same
+  convention).
 - `cargo +nightly miri test` — the full suite under
   [Miri](https://github.com/rust-lang/miri), which checks the
   `unsafe` code against the memory model; it has caught two
