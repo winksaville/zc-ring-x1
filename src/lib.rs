@@ -26,7 +26,7 @@ mod pool;
 mod producer;
 
 pub use consumer::{Consumer, Empty, ReadSlot};
-pub use pool::{Pool, PoolHeader};
+pub use pool::{BufSlot, Exhausted, Pool, PoolHeader};
 pub use producer::{Full, Producer, WriteSlot};
 
 /// Cache-line size the layout is built around.

@@ -28,8 +28,13 @@ Ladder:
 
 - 0.6.0-0 chore: open message pool cycle (done)
 - 0.6.0-1 feat: message pool layout + init/attach (done)
-- 0.6.0-2 feat: message pool alloc/free
-- 0.6.0-3 test: message pool protocol tests
+- 0.6.0-2 feat: message pool alloc/free (done)
+- 0.6.0-3 docs: message pool usage model — roles (ring:
+  one producer + one consumer; pool: one allocator + any
+  freers), buffer lifecycle states (free → allocated →
+  in-flight → freed) and who may touch a buffer in each,
+  what "send" means before descriptor queues exist
+- 0.6.0-4 test: message pool protocol tests
 - 0.6.0 feat: message pool allocator (close-out)
 
 ## Todo

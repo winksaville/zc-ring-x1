@@ -12,14 +12,26 @@
 //!   of the next free buffer; an allocated buffer carries no
 //!   header at all (pool-id provenance is deferred — see
 //!   todo.md's In Progress block).
-//! - Simplicity-first cut: layout + init/attach here;
-//!   alloc/free land next.
+//! - One owning allocator pops ([`Pool::alloc`], `&mut self`
+//!   as the in-process single-popper token); any holder
+//!   frees ([`BufSlot::free`], the MPSC push side). The
+//!   [`BufSlot`] guard does not borrow the pool, so any
+//!   number of allocated buffers may be live at once —
+//!   the decoupling the messaging layer exists for.
 
 use core::marker::PhantomData;
 use core::mem::size_of;
+use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, Ordering};
+use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
-use crate::{CACHE_LINE, CacheAligned, Error};
+use crate::{CACHE_LINE, CacheAligned, Error, check_type};
+
+/// `alloc` failed: no free buffer (or a peer-corrupted
+/// free-stack index — validation fails toward exhaustion,
+/// never toward handing out memory the pool doesn't own).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Exhausted;
 
 /// Layout marker written by [`Pool::init`]; rejects foreign
 /// (including ring) regions on attach.
@@ -187,6 +199,60 @@ impl<'a> Pool<'a> {
         })
     }
 
+    /// Pop the first free buffer off the free-stack as an
+    /// owned [`BufSlot`], or [`Exhausted`].
+    ///
+    /// - `&mut self` is the in-process single-popper token;
+    ///   cross-process, at most one attached handle allocates
+    ///   (see [`Pool::attach`]). The guard does **not** borrow
+    ///   the pool — any number of allocated buffers may be
+    ///   live at once; per-buffer exclusivity comes from the
+    ///   free-stack protocol (each pop yields a distinct
+    ///   index), not the borrow checker.
+    /// - Validated pop: the head and its next-link live in
+    ///   peer-writable memory, so both are bounds-checked;
+    ///   corruption degrades to `Exhausted` (mirroring the
+    ///   ring's fail-toward-`Full` occupancy check), never to
+    ///   an out-of-bounds buffer.
+    /// - A racing free moves the head and the CAS retries;
+    ///   with a single popper an in-flight head node cannot be
+    ///   removed underneath us, so there is no ABA hazard.
+    pub fn alloc<T>(&mut self) -> Result<BufSlot<'a, T>, Exhausted>
+    where
+        T: FromBytes + IntoBytes + KnownLayout,
+    {
+        check_type::<T>(self.buf_size);
+        loop {
+            // Acquire pairs with free's Release CAS: seeing a
+            // head index means seeing that buffer's next-link
+            // store (and the freer's last writes) too.
+            let head = self.header.first_free_idx.load(Ordering::Acquire);
+            if head == NIL {
+                return Err(Exhausted);
+            }
+            if head >= self.buf_count {
+                return Err(Exhausted);
+            }
+            let next = self.next_buf_idx(head).load(Ordering::Relaxed);
+            if next != NIL && next >= self.buf_count {
+                return Err(Exhausted);
+            }
+            if self
+                .header
+                .first_free_idx
+                .compare_exchange(head, next, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Ok(BufSlot {
+                    header: self.header,
+                    buf: self.buf_ptr(head),
+                    idx: head,
+                    _slot: PhantomData,
+                });
+            }
+        }
+    }
+
     /// Buffer size in bytes (geometry snapshot).
     pub fn buf_size(&self) -> u32 {
         self.buf_size
@@ -221,6 +287,86 @@ impl<'a> Pool<'a> {
         // SAFETY: idx < buf_count, so the offset stays inside
         // the buffer array validated at init/attach.
         unsafe { self.bufs.add(idx as usize * self.buf_size as usize) }
+    }
+}
+
+/// An allocated buffer, owned until [`free`](BufSlot::free):
+/// `DerefMut` to use it as a `T` in place.
+///
+/// - Does not borrow the [`Pool`] — hold any number, as long
+///   as you like; getting a buffer implies nothing about
+///   when (or whether) it is sent or freed.
+/// - Dropping without `free` leaks the buffer until the pool
+///   is re-initialized (the abandon analog of the ring's
+///   guards, with the opposite consequence).
+pub struct BufSlot<'p, T> {
+    /// The pool's control block (for the free CAS).
+    header: &'p PoolHeader,
+    /// Base of the owned buffer. Raw, and references are
+    /// minted per access — same aliasing rationale as the
+    /// ring guards.
+    buf: *mut u8,
+    /// This buffer's index (the value free pushes).
+    idx: u32,
+    /// The guard acts as a `&mut T` into the region.
+    _slot: PhantomData<&'p mut T>,
+}
+
+// SAFETY: the guard owns its buffer exclusively (the pop
+// removed it from every shared structure); free's CAS is the
+// only shared-state touch and is properly ordered.
+unsafe impl<T: Send> Send for BufSlot<'_, T> {}
+
+impl<T> Deref for BufSlot<'_, T> {
+    type Target = T;
+    /// Read access to the buffer as a `T`.
+    fn deref(&self) -> &T {
+        // SAFETY: buf is in-bounds and cache-line aligned
+        // (validated geometry), any byte pattern is a valid T
+        // (FromBytes bound at alloc), and the pop gave this
+        // guard sole ownership until free.
+        unsafe { &*(self.buf as *const T) }
+    }
+}
+
+impl<T> DerefMut for BufSlot<'_, T> {
+    /// Write access to the buffer as a `T`.
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: as in deref; &mut self gives exclusivity of
+        // the minted reference.
+        unsafe { &mut *(self.buf as *mut T) }
+    }
+}
+
+impl<T> BufSlot<'_, T> {
+    /// Push the buffer back onto the pool's free-stack.
+    ///
+    /// - Any holder may free — this is the free-stack's MPSC
+    ///   push side; only allocation is single-popper.
+    /// - The CAS retries only when another free (or the
+    ///   allocator's pop) moves the head first.
+    pub fn free(self) {
+        // The buffer's first word becomes its next-link again.
+        let link = self.buf as *const AtomicU32;
+        // SAFETY: buf is in-bounds and 4-aligned (cache-line
+        // aligned base); the guard still owns the buffer, and
+        // all peers access this word as an atomic.
+        let link = unsafe { &*link };
+        loop {
+            let head = self.header.first_free_idx.load(Ordering::Relaxed);
+            link.store(head, Ordering::Relaxed);
+            // Release pairs with alloc's Acquire loads: the
+            // popper that sees idx also sees the link store
+            // above (and this holder's last buffer writes).
+            if self
+                .header
+                .first_free_idx
+                .compare_exchange(head, self.idx, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+            {
+                return;
+            }
+        }
     }
 }
 
