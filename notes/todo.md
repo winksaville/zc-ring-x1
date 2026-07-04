@@ -28,7 +28,7 @@ coordination) stays design
   protocol tests folded in (round-trip, cross-thread free,
   hostile descriptors) so the API never lands untested
   (done)
-- 0.7.0-3 feat: demo descriptor flow ring + pool
+- 0.7.0-3 feat: demo descriptor flow ring + pool (done)
 - 0.7.0 feat: descriptor queues over the SPSC ring
   (close-out)
 

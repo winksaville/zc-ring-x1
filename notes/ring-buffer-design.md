@@ -398,6 +398,9 @@ section that expands it.
     UB.
 - 0.7.0 builds the in-process slice of this model
   [details](#descriptor-and-registry-design-070).
+  - As built, everything is single-process: one address
+    space, threads as the peers, no shared-memory mapping
+    code yet.
   - Cross-process setup (mapping exchange, pool-id
     coordination) stays design
     [details](#open-questions).

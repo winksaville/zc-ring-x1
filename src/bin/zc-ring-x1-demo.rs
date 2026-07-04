@@ -18,12 +18,15 @@
 //!   usage model); getting a buffer implies nothing about
 //!   when it is sent or freed.
 //! - The composed form — descriptors through the ring,
-//!   payloads at rest in pool buffers — is the next cycle;
-//!   this demo shows each primitive honestly on its own.
+//!   payloads at rest in pool buffers — runs between them:
+//!   alloc → into_desc → ring → resolve → free, with the
+//!   same placement ladder as the raw ring.
 
 use std::time::Instant;
 
-use zc_ring_x1::{BufSlot, CACHE_LINE_SIZE, Empty, Exhausted, Full, Pool, Ring};
+use zc_ring_x1::{
+    BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, Pool, PoolRegistry, Ring,
+};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /// Messages moved per part.
@@ -252,6 +255,151 @@ fn spsc_ring_one_msg_2t(pin: PinPair) -> f64 {
     start.elapsed().as_secs_f64()
 }
 
+/// The composed flow on one thread pinned to cpu 0: one pool
+/// message allocated outside the timed loop; each iteration
+/// populates it, converts guard → descriptor, rings the
+/// descriptor across, and resolves the guard back; return
+/// elapsed seconds.
+///
+/// - Isolates messaging cost (into_desc + ring + resolve)
+///   from the pool cycle — pool_alloc_free_1t reports that
+///   separately.
+/// - The guard and the descriptor are the two exclusive
+///   forms of ownership, so the per-iteration conversion
+///   cannot hoist: converting *is* the send-side handoff.
+///   The 2t variant keeps alloc/free per message because
+///   there ownership genuinely leaves the producer.
+fn spsc_ring_one_pool_msg_1t() -> f64 {
+    let mut ring_region = Region([0; size_of::<Region>()]);
+    let mut pool_region = Region([0; size_of::<Region>()]);
+    let mut pool = Pool::init(&mut pool_region.0, CACHE_LINE_SIZE as u32, DEPTH).unwrap(); // OK: Region is sized/aligned for the pool header + DEPTH buffers
+    let mut registry = PoolRegistry::<1>::new();
+    let pool_id = registry.register(pool.resolver()).unwrap(); // OK: empty capacity-1 registry always has room
+    let (mut producer, mut consumer) =
+        Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
+            .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
+            .split();
+
+    let start = Instant::now();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            pin_to_cpu(0);
+            let mut buf_slot = pool.alloc::<Msg>().unwrap(); // OK: fresh pool, DEPTH buffers free
+            for i in 0..COUNT {
+                buf_slot.seq = i;
+                let desc = registry
+                    .into_desc(pool_id, buf_slot)
+                    .map_err(|(_, e)| e)
+                    .unwrap(); // OK: pool_id came from this registry's register
+                match producer.reserve_slot::<Desc>() {
+                    Ok(mut slot) => {
+                        *slot = desc;
+                        slot.commit();
+                    }
+                    Err(Full) => {
+                        panic!("spsc_ring_one_pool_msg_1t: producer Full SHOULD NOT HAPPEN");
+                    }
+                }
+                buf_slot = match consumer.reserve_slot::<Desc>() {
+                    Ok(slot) => {
+                        let desc = *slot;
+                        slot.release();
+                        // SAFETY: the desc was consumed into
+                        // the ring by into_desc above and is
+                        // resolved exactly once, same thread.
+                        let msg = unsafe { registry.resolve::<Msg>(desc) }.unwrap(); // OK: desc came from into_desc on this pool
+                        assert_eq!(msg.seq, i);
+                        msg
+                    }
+                    Err(Empty) => {
+                        panic!("spsc_ring_one_pool_msg_1t: consumer Empty SHOULD NOT HAPPEN");
+                    }
+                };
+            }
+            buf_slot.free();
+        });
+    });
+    start.elapsed().as_secs_f64()
+}
+
+/// The composed flow producer-thread → consumer-thread:
+/// alloc + fill pool messages on the producer, descriptors
+/// cross the SPSC ring, the consumer resolves and frees;
+/// return elapsed seconds.
+///
+/// - `pin` — `Some((p, c))` pins the producer to cpu `p` and
+///   the consumer to cpu `c`; `None` lets the scheduler place
+///   them (the number then depends on where they land).
+fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
+    let mut ring_region = Region([0; size_of::<Region>()]);
+    let mut pool_region = Region([0; size_of::<Region>()]);
+    let mut pool = Pool::init(&mut pool_region.0, CACHE_LINE_SIZE as u32, DEPTH).unwrap(); // OK: Region is sized/aligned for the pool header + DEPTH buffers
+    let mut registry = PoolRegistry::<1>::new();
+    let pool_id = registry.register(pool.resolver()).unwrap(); // OK: empty capacity-1 registry always has room
+    let registry = &registry;
+    let (mut producer, mut consumer) =
+        Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
+            .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
+            .split();
+
+    let start = Instant::now();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            if let Some((p, _)) = pin {
+                pin_to_cpu(p);
+            }
+            for i in 0..COUNT {
+                let mut buf_slot = loop {
+                    match pool.alloc::<Msg>() {
+                        Ok(buf_slot) => break buf_slot,
+                        Err(Exhausted) => std::hint::spin_loop(),
+                    }
+                };
+                buf_slot.seq = i;
+                let desc = registry
+                    .into_desc(pool_id, buf_slot)
+                    .map_err(|(_, e)| e)
+                    .unwrap(); // OK: pool_id came from this registry's register
+                loop {
+                    match producer.reserve_slot::<Desc>() {
+                        Ok(mut slot) => {
+                            *slot = desc;
+                            slot.commit();
+                            break;
+                        }
+                        Err(Full) => std::hint::spin_loop(),
+                    }
+                }
+            }
+        });
+        s.spawn(move || {
+            if let Some((_, c)) = pin {
+                pin_to_cpu(c);
+            }
+            for i in 0..COUNT {
+                let desc = loop {
+                    match consumer.reserve_slot::<Desc>() {
+                        Ok(slot) => {
+                            let desc = *slot;
+                            slot.release();
+                            break desc;
+                        }
+                        Err(Empty) => std::hint::spin_loop(),
+                    }
+                };
+                // SAFETY: the desc was consumed into the ring
+                // by the producer and read after the commit →
+                // reserve handoff (happens-before); each is
+                // resolved exactly once.
+                let msg = unsafe { registry.resolve::<Msg>(desc) }.unwrap(); // OK: descs here only come from the producer's into_desc
+                assert_eq!(msg.seq, i);
+                msg.free();
+            }
+        });
+    });
+    start.elapsed().as_secs_f64()
+}
+
 /// Alloc + fill COUNT messages on an allocator thread,
 /// free them on a freer thread (guards cross a std
 /// channel); return elapsed seconds.
@@ -274,9 +422,9 @@ fn std_mpsc_one_pool_msg_2t(pin: PinPair) -> f64 {
             for i in 0..COUNT {
                 loop {
                     match pool.alloc::<Msg>() {
-                        Ok(mut buf) => {
-                            buf.seq = i;
-                            tx.send(buf).unwrap();
+                        Ok(mut buf_slot) => {
+                            buf_slot.seq = i;
+                            tx.send(buf_slot).unwrap();
                             break;
                         }
                         Err(Exhausted) => std::hint::spin_loop(),
@@ -289,9 +437,34 @@ fn std_mpsc_one_pool_msg_2t(pin: PinPair) -> f64 {
                 pin_to_cpu(f);
             }
             for i in 0..COUNT {
-                let buf = rx.recv().unwrap();
-                assert_eq!(buf.seq, i);
-                buf.free();
+                let buf_slot = rx.recv().unwrap();
+                assert_eq!(buf_slot.seq, i);
+                buf_slot.free();
+            }
+        });
+    });
+    start.elapsed().as_secs_f64()
+}
+
+/// The std-channel flow on one thread pinned to cpu 0: alloc
+/// a pool message, move its guard through a sync_channel,
+/// receive and free it; return elapsed seconds.
+fn std_mpsc_one_pool_msg_1t() -> f64 {
+    let mut region = Region([0; size_of::<Region>()]);
+    let mut pool = Pool::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH).unwrap(); // OK: Region is sized/aligned for the pool header + DEPTH buffers
+    let (tx, rx) = std::sync::mpsc::sync_channel::<BufSlot<'_, Msg>>(DEPTH as usize);
+
+    let start = Instant::now();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            pin_to_cpu(0);
+            for i in 0..COUNT {
+                let mut buf_slot = pool.alloc::<Msg>().unwrap(); // OK: alloc+free per iteration, DEPTH never exceeded
+                buf_slot.seq = i;
+                tx.send(buf_slot).unwrap(); // OK: capacity DEPTH, at most one in flight
+                let buf_slot = rx.recv().unwrap(); // OK: just sent on this thread
+                assert_eq!(buf_slot.seq, i);
+                buf_slot.free();
             }
         });
     });
@@ -313,10 +486,10 @@ fn pool_alloc_free_1t() -> f64 {
         s.spawn(move || {
             pin_to_cpu(0);
             for i in 0..COUNT {
-                let mut buf = pool.alloc::<Msg>().unwrap(); // OK: alloc+free per iteration, DEPTH never exceeded
-                buf.seq = i;
-                std::hint::black_box(buf.seq);
-                buf.free();
+                let mut buf_slot = pool.alloc::<Msg>().unwrap(); // OK: alloc+free per iteration, DEPTH never exceeded
+                buf_slot.seq = i;
+                std::hint::black_box(buf_slot.seq);
+                buf_slot.free();
             }
         });
     });
@@ -354,53 +527,81 @@ fn main() {
         return;
     }
     println!("demo: {} messages each, depth {DEPTH}", commas(COUNT));
+    let (smt, far) = discover_pin_pairs();
+
+    // Alloc/free baselines, then message flows — like
+    // compares with like within each block.
+    report("pool_alloc_free_1t (core 0):", pool_alloc_free_1t());
+    report("global_alloc_free_1t (core 0):", global_alloc_free_1t());
+
+    // Single thread, core 0.
+    println!();
     report("spsc_ring_one_msg_1t (core 0):", spsc_ring_one_msg_1t());
+    report(
+        "spsc_ring_one_pool_msg_1t (core 0):",
+        spsc_ring_one_pool_msg_1t(),
+    );
+    report(
+        "std_mpsc_one_pool_msg_1t (core 0):",
+        std_mpsc_one_pool_msg_1t(),
+    );
+
+    // Two threads, scheduler-placed.
+    println!();
     report(
         "spsc_ring_one_msg_2t (unpinned):",
         spsc_ring_one_msg_2t(None),
     );
-    let (smt, far) = discover_pin_pairs();
-    match smt {
-        Some((p, c)) => report(
-            &format!("spsc_ring_one_msg_2t (same core {p}+{c}):"),
-            spsc_ring_one_msg_2t(smt),
-        ),
-        None => {
-            println!("spsc_ring_one_msg_2t (same core):           skipped, no SMT sibling found")
-        }
-    }
-    match far {
-        Some((p, c)) => report(
-            &format!("spsc_ring_one_msg_2t (diff cores {p}+{c}):"),
-            spsc_ring_one_msg_2t(far),
-        ),
-        None => {
-            println!("spsc_ring_one_msg_2t (diff cores):          skipped, only one core found")
-        }
-    }
+    report(
+        "spsc_ring_one_pool_msg_2t (unpinned):",
+        spsc_ring_one_pool_msg_2t(None),
+    );
     report(
         "std_mpsc_one_pool_msg_2t (unpinned):",
         std_mpsc_one_pool_msg_2t(None),
     );
+
+    // Two threads, one physical core (SMT siblings).
+    println!();
     match smt {
-        Some((p, c)) => report(
-            &format!("std_mpsc_one_pool_msg_2t (same core {p}+{c}):"),
-            std_mpsc_one_pool_msg_2t(smt),
-        ),
+        Some((p, c)) => {
+            report(
+                &format!("spsc_ring_one_msg_2t (same core {p}+{c}):"),
+                spsc_ring_one_msg_2t(smt),
+            );
+            report(
+                &format!("spsc_ring_one_pool_msg_2t (same core {p}+{c}):"),
+                spsc_ring_one_pool_msg_2t(smt),
+            );
+            report(
+                &format!("std_mpsc_one_pool_msg_2t (same core {p}+{c}):"),
+                std_mpsc_one_pool_msg_2t(smt),
+            );
+        }
         None => {
-            println!("std_mpsc_one_pool_msg_2t (same core):       skipped, no SMT sibling found")
+            println!("2t same-core runs:                          skipped, no SMT sibling found")
         }
     }
+
+    // Two threads, different physical cores.
+    println!();
     match far {
-        Some((p, c)) => report(
-            &format!("std_mpsc_one_pool_msg_2t (diff cores {p}+{c}):"),
-            std_mpsc_one_pool_msg_2t(far),
-        ),
+        Some((p, c)) => {
+            report(
+                &format!("spsc_ring_one_msg_2t (diff cores {p}+{c}):"),
+                spsc_ring_one_msg_2t(far),
+            );
+            report(
+                &format!("spsc_ring_one_pool_msg_2t (diff cores {p}+{c}):"),
+                spsc_ring_one_pool_msg_2t(far),
+            );
+            report(
+                &format!("std_mpsc_one_pool_msg_2t (diff cores {p}+{c}):"),
+                std_mpsc_one_pool_msg_2t(far),
+            );
+        }
         None => {
-            println!("std_mpsc_one_pool_msg_2t (diff cores):      skipped, only one core found")
+            println!("2t diff-cores runs:                         skipped, only one core found")
         }
     }
-    report("pool_alloc_free_1t (core 0):", pool_alloc_free_1t());
-    report("global_alloc_free_1t (core 0):", global_alloc_free_1t());
-    println!("(composed descriptor flow arrives with the descriptor-queue cycle)");
 }
