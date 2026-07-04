@@ -22,13 +22,10 @@ _No cycle currently in progress._
  detail goes in `notes/chores/chores-NN.md` design
  subsections (link via `[N]` ref).
 
-1. Wait-policy hook + spin models: `_with(impl FnMut(u32)
-   -> bool)` variants of alloc / producer / consumer
-   reserve_slot (closure votes keep-waiting per retry), a
-   shipped spin policy plus `_spin` wrappers as the model
-   users copy, then measure all three forms (raw loop,
-   closure, `_spin`) in iiac-perf to verify the seam is
-   zero-cost [[11]].
+1. Measure the wait-policy seam in iiac-perf: raw loop vs
+   `_with(closure)` vs `_spin` must be zero-cost within
+   noise before the endpoints build on it (the measurement
+   clause of the shipped wait-policy hook) [[11]].
 2. Descriptor queue endpoints: paired DescSender (loan +
    send) / DescReceiver (recv) owning ring endpoint +
    registry access, so the demo's ~20-line send path
@@ -143,6 +140,7 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 - feat: demo alloc/free perf loops [[9]]
 - feat: demo cpu-pinned placement variants [[10]]
 - feat: descriptor queues over the SPSC ring [[12]]
+- feat: wait-policy hook + spin models [[13]]
 
 # References
 
@@ -153,3 +151,4 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 [10]: chores/chores-01.md#feat-demo-cpu-pinned-placement-variants
 [11]: chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [12]: chores/chores-01.md#feat-descriptor-queues-over-the-spsc-ring
+[13]: chores/chores-01.md#feat-wait-policy-hook--spin-models

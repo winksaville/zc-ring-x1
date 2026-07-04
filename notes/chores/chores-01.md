@@ -359,7 +359,7 @@ siblings, shared L1/L2), different physical cores
 
 ## feat: descriptor queues over the SPSC ring
 
-Commits: [[24]],[[25]],[[26]],[[27]]
+Commits: [[24]],[[25]],[[26]],[[27]],[[28]]
 
 Getting a pool buffer must not imply sending it, and the
 ring alone fuses allocation, queue position, and
@@ -444,6 +444,53 @@ Design captured from the post-demo review; promoted to
   iiac-perf measures raw loop vs closure vs `_spin` — the
   seam must be zero-cost before the endpoints build on it.
 
+## feat: wait-policy hook + spin models
+
+Commits:
+
+Todo #1: every wait in the demo and tests was a hand-rolled
+spin loop — nine lines of ceremony per wait point. The hook
+makes the wait an injected policy (`FnMut(u32) -> bool`:
+attempt count in, keep-waiting out) and ships the one policy
+we dogfood, per the tier model in
+[Follow-on: endpoints and wait policies](#follow-on-endpoints-and-wait-policies).
+
+- `_with` variants on `Pool::alloc` and both endpoints'
+  `reserve_slot`; the policy is called after each failed
+  attempt (0-based, saturating count), `false` returns the
+  operation's usual error.
+- On the endpoints the wait loop *is* the reservation (the
+  guard borrows the endpoint, so retrying a `reserve_slot`
+  call could not return it): the owned index loads once,
+  only the peer's index re-reads per attempt, so the no-wait
+  fast path does exactly the loads `reserve_slot` does.
+- `policy::spin` is the only shipped policy; the `_spin`
+  wrappers return the value directly (no `Result` — spin
+  never quits).
+- Demo keeps every existing loop raw and adds a three-way
+  seam exemplar. Terms, defined here at first use:
+  - **raw** — the hand-rolled wait loop: the baseline, the
+    fastest form we know for the shape, what the other
+    forms are measured against (and what iiac-perf ports
+    first).
+  - **exemplar** — one workload written in all three forms
+    side by side (raw / `_with(closure)` / `_spin`), the
+    worked model of the comparison:
+    `spsc_ring_one_msg_{1t,2t}`, at 1t (no waiting — pure
+    per-call overhead, where ~3 ns/msg makes any cost a
+    visible percentage) and same-core 2t (overhead under
+    real waiting).
+- The exemplar caught two real regressions before landing:
+  a probe-then-reserve first draft doubled the index loads
+  (1t: 2.8 → 6.2 ns), fixed by inlining the reservation
+  into the wait loop; and non-generic `policy::spin` didn't
+  cross-crate-inline into the monomorphized `_with`
+  (`_spin` 10.2 → 3.3 ns after the fix + `#[inline]`).
+  After both, the 1t ladder reads 2.8 / 2.9 / 3.3 —
+  eyeball-zero for `_with`, near-zero for `_spin`.
+- Remaining clause of the todo — confirm with calibrated
+  mean/stdev in iiac-perf — happens in the sibling repo.
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"
@@ -473,3 +520,4 @@ Design captured from the post-demo review; promoted to
 [25]: https://github.com/winksaville/zc-ring-x1/commit/3226b9dc15d2 "3226b9dc15d26e71d647a659c8a7b933a66be7b2"
 [26]: https://github.com/winksaville/zc-ring-x1/commit/dd5217d72434 "dd5217d724341220a2e201d4ff74c947d6ef5bf8"
 [27]: https://github.com/winksaville/zc-ring-x1/commit/fe4f426b9f24 "fe4f426b9f24d6883cb2d1fd42e36ed1c09e39d9"
+[28]: https://github.com/winksaville/zc-ring-x1/commit/20852d556100 "20852d556100cc862f61b0c80b05d4fef656e63c"

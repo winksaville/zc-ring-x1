@@ -100,6 +100,70 @@ impl<'a> Producer<'a> {
             _slot: PhantomData,
         })
     }
+
+    /// [`reserve_slot`](Producer::reserve_slot) with an
+    /// injected wait policy: retry until a slot frees up or
+    /// the policy gives up.
+    ///
+    /// - `wait` is called after each failed attempt with the
+    ///   attempt count (0-based, saturating); returning
+    ///   `false` gives up → `Err(Full)`.
+    /// - The wait loop is the reservation itself (the guard
+    ///   borrows the endpoint, so retrying a `reserve_slot`
+    ///   call could not return it): `producer_idx` is ours
+    ///   and loaded once; only `consumer_idx` is re-read per
+    ///   attempt, so the no-wait fast path does exactly the
+    ///   loads `reserve_slot` does.
+    /// - See [`policy`](crate::policy) for shipped policies
+    ///   and the composition model.
+    pub fn reserve_slot_with<T>(
+        &mut self,
+        mut wait: impl FnMut(u32) -> bool,
+    ) -> Result<WriteSlot<'_, T>, Full>
+    where
+        T: FromBytes + IntoBytes + KnownLayout,
+    {
+        check_type::<T>(self.slot_size);
+        // Ours alone: no peer moves it, load once.
+        let p = self.header.producer_idx.load(Ordering::Relaxed);
+        let mut attempt = 0u32;
+        loop {
+            // Same load + `>=` occupancy check as
+            // reserve_slot (see there for the corruption
+            // rationale).
+            let c = self.header.consumer_idx.load(Ordering::Acquire);
+            if p.wrapping_sub(c) < self.capacity {
+                break;
+            }
+            if !wait(attempt) {
+                return Err(Full);
+            }
+            attempt = attempt.saturating_add(1);
+        }
+        // Raw pointer, not `&mut T` — see reserve_slot.
+        let msg = slot_ptr(self.slots, p, self.mask, self.slot_size) as *mut T;
+        Ok(WriteSlot {
+            header: self.header,
+            msg,
+            next_idx: p.wrapping_add(1),
+            _slot: PhantomData,
+        })
+    }
+
+    /// [`reserve_slot`](Producer::reserve_slot), spinning
+    /// until a slot is available —
+    /// [`reserve_slot_with`](Producer::reserve_slot_with)
+    /// under the never-quitting
+    /// [`policy::spin`](crate::policy::spin), so no `Result`.
+    pub fn reserve_slot_spin<T>(&mut self) -> WriteSlot<'_, T>
+    where
+        T: FromBytes + IntoBytes + KnownLayout,
+    {
+        match self.reserve_slot_with(crate::policy::spin) {
+            Ok(slot) => slot,
+            Err(Full) => unreachable!("policy::spin never gives up"),
+        }
+    }
 }
 
 /// A reserved write slot: `DerefMut` to write the message, then

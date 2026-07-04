@@ -265,6 +265,49 @@ impl<'a> Pool<'a> {
         }
     }
 
+    /// [`alloc`](Pool::alloc) with an injected wait policy:
+    /// retry until a buffer frees up or the policy gives up.
+    ///
+    /// - `wait` is called after each failed attempt with the
+    ///   attempt count (0-based, saturating); returning
+    ///   `false` gives up → `Err(Exhausted)`.
+    /// - See [`policy`](crate::policy) for shipped policies
+    ///   and the composition model.
+    pub fn alloc_with<T>(
+        &mut self,
+        mut wait: impl FnMut(u32) -> bool,
+    ) -> Result<BufSlot<'a, T>, Exhausted>
+    where
+        T: FromBytes + IntoBytes + KnownLayout,
+    {
+        let mut attempt = 0u32;
+        loop {
+            match self.alloc::<T>() {
+                Ok(buf_slot) => return Ok(buf_slot),
+                Err(Exhausted) => {
+                    if !wait(attempt) {
+                        return Err(Exhausted);
+                    }
+                    attempt = attempt.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    /// [`alloc`](Pool::alloc), spinning until a buffer is
+    /// available — [`alloc_with`](Pool::alloc_with) under the
+    /// never-quitting [`policy::spin`](crate::policy::spin),
+    /// so no `Result`.
+    pub fn alloc_spin<T>(&mut self) -> BufSlot<'a, T>
+    where
+        T: FromBytes + IntoBytes + KnownLayout,
+    {
+        match self.alloc_with(crate::policy::spin) {
+            Ok(buf_slot) => buf_slot,
+            Err(Exhausted) => unreachable!("policy::spin never gives up"),
+        }
+    }
+
     /// Buffer size in bytes (geometry snapshot).
     pub fn buf_size(&self) -> u32 {
         self.buf_size
@@ -867,5 +910,51 @@ mod tests {
                 }
             });
         });
+    }
+
+    #[test]
+    fn alloc_with_policy_counts_and_gives_up() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+        // Drain the pool so alloc_with must wait.
+        let held: [_; 4] = core::array::from_fn(|_| pool.alloc::<Msg>().unwrap());
+
+        // The policy sees 0-based attempt counts and its
+        // `false` becomes Err(Exhausted).
+        let mut seen = Vec::new();
+        let err = pool
+            .alloc_with::<Msg>(|attempt| {
+                seen.push(attempt);
+                attempt < 2
+            })
+            .err()
+            .unwrap();
+        assert_eq!(err, Exhausted);
+        assert_eq!(seen, [0, 1, 2]);
+
+        // A freed buffer ends the wait with Ok.
+        let mut freed = false;
+        let mut held = held.into_iter();
+        let buf_slot = pool
+            .alloc_with::<Msg>(|_| {
+                if !freed {
+                    held.next().unwrap().free();
+                    freed = true;
+                }
+                true
+            })
+            .unwrap();
+        buf_slot.free();
+        held.for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn alloc_spin_returns_directly() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+        let mut buf_slot = pool.alloc_spin::<Msg>();
+        buf_slot.seq = 7;
+        assert_eq!(buf_slot.seq, 7);
+        buf_slot.free();
     }
 }

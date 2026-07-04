@@ -22,6 +22,7 @@ use core::mem::{align_of, size_of};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 mod consumer;
+pub mod policy;
 mod pool;
 mod producer;
 mod registry;
@@ -586,6 +587,79 @@ mod tests {
                             Err(Empty) => std::hint::spin_loop(),
                         }
                     }
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn reserve_slot_with_policy_counts_and_gives_up() {
+        let mut r = Region::new();
+        let (mut prod, mut cons) = Ring::init(&mut r.0, 64, 4).unwrap().split();
+
+        // Empty ring: the consumer's policy sees 0-based
+        // attempts and its `false` becomes Err(Empty).
+        let mut seen = Vec::new();
+        let err = cons
+            .reserve_slot_with::<Msg>(|attempt| {
+                seen.push(attempt);
+                attempt < 2
+            })
+            .err()
+            .unwrap();
+        assert_eq!(err, Empty);
+        assert_eq!(seen, [0, 1, 2]);
+
+        // Fill the ring: the producer's policy gives up with
+        // Err(Full).
+        for i in 0..4 {
+            let mut slot = prod.reserve_slot::<Msg>().unwrap();
+            slot.seq = i;
+            slot.commit();
+        }
+        let err = prod
+            .reserve_slot_with::<Msg>(|attempt| attempt < 2)
+            .err()
+            .unwrap();
+        assert_eq!(err, Full);
+
+        // With room / messages available the policy is never
+        // consulted.
+        let msg = cons
+            .reserve_slot_with::<Msg>(|_| panic!("policy consulted with a message available"))
+            .unwrap();
+        assert_eq!(msg.seq, 0);
+        msg.release();
+        let mut slot = prod
+            .reserve_slot_with::<Msg>(|_| panic!("policy consulted with room available"))
+            .unwrap();
+        slot.seq = 4;
+        slot.commit();
+    }
+
+    #[test]
+    fn threaded_spsc_spin_variants() {
+        // The threaded_spsc flow through reserve_slot_spin on
+        // both ends — the shipped-policy model in use.
+        const COUNT: u64 = if cfg!(miri) { 200 } else { 100_000 };
+        let mut r = Region::new();
+        let (mut prod, mut cons) = Ring::init(&mut r.0, 64, 4).unwrap().split();
+
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                for i in 0..COUNT {
+                    let mut slot = prod.reserve_slot_spin::<Msg>();
+                    slot.seq = i;
+                    slot.val = i * 3;
+                    slot.commit();
+                }
+            });
+            s.spawn(move || {
+                for i in 0..COUNT {
+                    let msg = cons.reserve_slot_spin::<Msg>();
+                    assert_eq!(msg.seq, i);
+                    assert_eq!(msg.val, i * 3);
+                    msg.release();
                 }
             });
         });

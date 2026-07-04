@@ -85,6 +85,67 @@ impl<'a> Consumer<'a> {
             _slot: PhantomData,
         })
     }
+
+    /// [`reserve_slot`](Consumer::reserve_slot) with an
+    /// injected wait policy: retry until a message arrives or
+    /// the policy gives up.
+    ///
+    /// - `wait` is called after each failed attempt with the
+    ///   attempt count (0-based, saturating); returning
+    ///   `false` gives up → `Err(Empty)`.
+    /// - The wait loop is the reservation itself (the guard
+    ///   borrows the endpoint, so retrying a `reserve_slot`
+    ///   call could not return it): `consumer_idx` is ours
+    ///   and loaded once; only `producer_idx` is re-read per
+    ///   attempt, so the no-wait fast path does exactly the
+    ///   loads `reserve_slot` does.
+    /// - See [`policy`](crate::policy) for shipped policies
+    ///   and the composition model.
+    pub fn reserve_slot_with<T>(
+        &mut self,
+        mut wait: impl FnMut(u32) -> bool,
+    ) -> Result<ReadSlot<'_, T>, Empty>
+    where
+        T: FromBytes + KnownLayout + Immutable,
+    {
+        check_type::<T>(self.slot_size);
+        // Ours alone: no peer moves it, load once.
+        let c = self.header.consumer_idx.load(Ordering::Relaxed);
+        let mut attempt = 0u32;
+        loop {
+            let p = self.header.producer_idx.load(Ordering::Acquire);
+            if p != c {
+                break;
+            }
+            if !wait(attempt) {
+                return Err(Empty);
+            }
+            attempt = attempt.saturating_add(1);
+        }
+        // Raw pointer, not `&T` — see reserve_slot.
+        let msg = slot_ptr(self.slots, c, self.mask, self.slot_size) as *const T;
+        Ok(ReadSlot {
+            header: self.header,
+            msg,
+            next_idx: c.wrapping_add(1),
+            _slot: PhantomData,
+        })
+    }
+
+    /// [`reserve_slot`](Consumer::reserve_slot), spinning
+    /// until a message arrives —
+    /// [`reserve_slot_with`](Consumer::reserve_slot_with)
+    /// under the never-quitting
+    /// [`policy::spin`](crate::policy::spin), so no `Result`.
+    pub fn reserve_slot_spin<T>(&mut self) -> ReadSlot<'_, T>
+    where
+        T: FromBytes + KnownLayout + Immutable,
+    {
+        match self.reserve_slot_with(crate::policy::spin) {
+            Ok(slot) => slot,
+            Err(Empty) => unreachable!("policy::spin never gives up"),
+        }
+    }
 }
 
 /// A reserved read slot: `Deref` to read the message, then
