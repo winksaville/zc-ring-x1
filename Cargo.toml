@@ -3,7 +3,7 @@ name = "zc-ring-x1"
 # Version-of-record (see notes/versioning.md): advanced through
 # the cycle's X.Y.Z-N phases; the -N rides in the semver
 # prerelease slot.
-version = "0.6.2"
+version = "0.6.3"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"
@@ -11,3 +11,7 @@ description = "Zero-copy no_std SPSC ring buffer experiment"
 
 [dependencies]
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
+
+# Demo-binary only: thread pinning for the pinned ring runs.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

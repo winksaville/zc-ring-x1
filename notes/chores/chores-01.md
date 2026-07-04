@@ -299,7 +299,7 @@ primitives working across threads with throughput printed.
 
 ## feat: demo alloc/free perf loops
 
-Commits:
+Commits: [[22]]
 
 Two single-thread loops join the demo scoreboard: the
 pool's raw alloc→write→free cost, and the same loop through
@@ -315,6 +315,47 @@ the global allocator (Box::new/drop), black_box-guarded.
   tens of ns, pool ops ~10 ns, std channel hundreds — the
   descriptor-queue cycle's projected win is readable off
   the four lines.
+
+## feat: demo cpu-pinned placement variants
+
+Commits:
+
+Cross-thread numbers swung ~4× run to run because the
+scheduler decides where the two threads land. Every demo
+line now states its thread placement, and the 2t parts run
+a placement ladder: unpinned, same physical core (SMT
+siblings, shared L1/L2), different physical cores
+(preferring one outside cpu0's L3 group — the far end).
+
+- Pinning is `sched_setaffinity` via a Linux-only `libc`
+  dependency; cpu pairs are discovered at runtime from
+  `/sys/devices/system/cpu` topology (SMT sibling list, L3
+  `shared_cpu_list`), so the demo adapts to any Linux box
+  and prints a "skipped" line when the machine lacks the
+  shape. Non-Linux builds compile with pinning stubbed out.
+- Pinned runs execute in scoped threads that pin
+  themselves — pinning the main thread would leak its
+  affinity mask into every later part's spawned threads.
+- Functions renamed to say what each line measures:
+  `spsc_ring_one_msg_1t/_2t`, `std_mpsc_one_pool_msg_2t`
+  (std's mpsc channel carrying pool-buffer guards, used
+  SPSC), `pool_alloc_free_1t`, `global_alloc_free_1t`; the
+  1t runs pin to core 0 so every line's placement is
+  deterministic.
+- The ladder decomposes the transfer cost: same-core ~8-12
+  ns vs diff-cores ~100-300 ns for the identical ring code.
+  We think the gap is cache-line handoff distance (shared
+  L1/L2 vs cross-L3/CCD traffic), and the unpinned number
+  wandering between the two ends is scheduler placement.
+  Single runs, no mean/stdev — still an eyeball baseline,
+  not a benchmark.
+- `Msg` shrank to one word (`seq`): the loops measure
+  creating, initializing, sending, and receiving a message,
+  and writing a second word (`val`, the old torn-write
+  canary) was payload cost unrelated to that. One word is
+  the floor that is still real — an uninitialized message
+  would isolate pure transfer but no real sender ships one;
+  a possible future variant, not the default.
 
 # References
 
@@ -339,3 +380,4 @@ the global allocator (Box::new/drop), black_box-guarded.
 [19]: https://github.com/winksaville/zc-ring-x1/commit/6177323244b4 "6177323244b4d80fe07a9efaa6d8647ca31b4787"
 [20]: https://github.com/winksaville/zc-ring-x1/commit/67b6a553f80c "67b6a553f80c188debd62b41e47c81e11e7b2f33"
 [21]: https://github.com/winksaville/zc-ring-x1/commit/31016b69c25f "31016b69c25f80a5b5d4050f2e866d0b46b5a248"
+[22]: https://github.com/winksaville/zc-ring-x1/commit/044e346e40e0 "044e346e40e0da7e4e95c3761bd8a419428e4d30"

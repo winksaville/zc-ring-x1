@@ -120,6 +120,7 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 - feat: message pool allocator [[7]]
 - feat: ring + pool demo binary [[8]]
 - feat: demo alloc/free perf loops [[9]]
+- feat: demo cpu-pinned placement variants [[10]]
 
 # References
 
@@ -128,3 +129,4 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 [7]: chores/chores-01.md#feat-message-pool-allocator
 [8]: chores/chores-01.md#feat-ring--pool-demo-binary
 [9]: chores/chores-01.md#feat-demo-allocfree-perf-loops
+[10]: chores/chores-01.md#feat-demo-cpu-pinned-placement-variants
