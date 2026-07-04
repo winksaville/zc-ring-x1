@@ -59,6 +59,16 @@ _No cycle currently in progress._
   from any thread are already natural (MPSC push). Classic
   mempool → malloc arc; measure the object-pool form in
   iiac-perf first.
+- Private per-handle cache in front of the shared free-stack
+  (tcache-over-arenas): alloc/free hit a thread-private list
+  with plain load/store; refill/flush moves batches to the
+  CAS stack, amortizing one CAS over N messages. Motivating
+  datum: 2 uncontended CAS = 8.7 ns of the pool's 9.9 ns
+  single-thread round trip (vs malloc tcache's zero
+  atomics). Hold until iiac-perf shows per-op CAS matters in
+  a composed workload; we think the pool's tail latency
+  (p99, stddev) already beats malloc — no arena locks, no
+  brk/mmap — and that matters more than the mean.
 - BufSlot auto-free on Drop (RAII, iceoryx2-style): kills the
   silent leak-on-drop footgun at the cost of guard-type
   asymmetry (ring guards' drop = do-nothing) and a
@@ -108,11 +118,13 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 - feat: ring buffer user line + blocking contract [[5]]
 - docs: messaging layer design (pools + queues) [[6]]
 - feat: message pool allocator [[7]]
-- feat: ring + pool demo example [[8]]
+- feat: ring + pool demo binary [[8]]
+- feat: demo alloc/free perf loops [[9]]
 
 # References
 
 [5]: chores/chores-01.md#feat-ring-buffer-user-line--blocking-contract
 [6]: chores/chores-01.md#docs-messaging-layer-design-pools--queues
 [7]: chores/chores-01.md#feat-message-pool-allocator
-[8]: chores/chores-01.md#feat-ring--pool-demo-example
+[8]: chores/chores-01.md#feat-ring--pool-demo-binary
+[9]: chores/chores-01.md#feat-demo-allocfree-perf-loops

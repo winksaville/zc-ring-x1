@@ -277,9 +277,9 @@ Ladder (all shipped, Keep separate):
 - 0.6.0-4 test: message pool protocol tests
 - 0.6.0 feat: message pool allocator (close-out)
 
-## feat: ring + pool demo example
+## feat: ring + pool demo binary
 
-Commits:
+Commits: [[21]]
 
 A runnable, visible proof for library visitors: both
 primitives working across threads with throughput printed.
@@ -296,6 +296,25 @@ primitives working across threads with throughput printed.
   a benchmark (iiac-perf owns real measurement). The pool
   part's rate is channel-dominated, which is itself the
   argument for the descriptor-queue cycle; the demo says so.
+
+## feat: demo alloc/free perf loops
+
+Commits:
+
+Two single-thread loops join the demo scoreboard: the
+pool's raw alloc→write→free cost, and the same loop through
+the global allocator (Box::new/drop), black_box-guarded.
+
+- Pool ≈ malloc single-threaded (~10 ns) is the expected
+  result, not a defeat: malloc's hot path is the same
+  thread-local LIFO free-list trick. The pool's case is
+  shared-memory zero-copy, no_std, no syscalls ever, and
+  determinism for the embedded floor — capabilities, not a
+  tight-loop race.
+- The scoreboard now decomposes the story: ring transfer
+  tens of ns, pool ops ~10 ns, std channel hundreds — the
+  descriptor-queue cycle's projected win is readable off
+  the four lines.
 
 # References
 
@@ -319,3 +338,4 @@ primitives working across threads with throughput printed.
 [18]: https://github.com/winksaville/zc-ring-x1/commit/9f3ce4bc87bd "9f3ce4bc87bd86faa9941a7d40007674529dcc80"
 [19]: https://github.com/winksaville/zc-ring-x1/commit/6177323244b4 "6177323244b4d80fe07a9efaa6d8647ca31b4787"
 [20]: https://github.com/winksaville/zc-ring-x1/commit/67b6a553f80c "67b6a553f80c188debd62b41e47c81e11e7b2f33"
+[21]: https://github.com/winksaville/zc-ring-x1/commit/31016b69c25f "31016b69c25f80a5b5d4050f2e866d0b46b5a248"

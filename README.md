@@ -235,12 +235,27 @@ buffers, spurious exhaustion), never cause UB on this side.
   convention).
 - `cargo run --release` — the demo binary
   ([src/bin/zc-ring-x1-demo.rs](src/bin/zc-ring-x1-demo.rs)):
-  both primitives live across threads with throughput
-  printed — the ring moving typed messages in place, and
+  a four-line throughput scoreboard (msgs/sec and ns/msg) —
+  the ring moving typed messages in place across threads,
   the pool's allocator/freer role split (guards crossing a
-  channel). Installable: `cargo install --path . --locked`,
-  then `zc-ring-x1-demo`; `-V` prints the version-of-record
-  so you know which build you are testing.
+  std channel), the pool's raw single-thread alloc/free,
+  and the same loop through the global allocator for
+  comparison. Eyeball numbers, not a benchmark (calibrated
+  measurement lives in iiac-perf). Installable:
+  `cargo install --path . --locked`, then `zc-ring-x1-demo`;
+  `-V` prints the version-of-record so you know which build
+  you are testing. An example run:
+
+  ```text
+  $ zc-ring-x1-demo
+  zc-ring-x1 0.6.2
+  demo: 1,000,000 messages each, depth 64
+  ring (SPSC, in-place):             18,723,550 msgs/sec     53.4 ns/msg
+  pool (alloc here -> free there):    2,993,315 msgs/sec    334.1 ns/msg
+  pool (alloc/free, 1 thread):      100,962,781 msgs/sec      9.9 ns/msg
+  global (Box::new/drop, 1 thread):  107,037,570 msgs/sec      9.3 ns/msg
+  (composed descriptor flow arrives with the descriptor-queue cycle)
+  ```
 - `cargo +nightly miri test` — the full suite under
   [Miri](https://github.com/rust-lang/miri), which checks the
   `unsafe` code against the memory model; it has caught two

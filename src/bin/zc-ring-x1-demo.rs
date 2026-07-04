@@ -144,6 +144,38 @@ fn pool_demo() -> f64 {
     start.elapsed().as_secs_f64()
 }
 
+/// Alloc → write → free COUNT messages on one thread — the
+/// pool's own cost, no channel, no second thread; return
+/// elapsed seconds.
+fn pool_alloc_free_demo() -> f64 {
+    let mut region = Region([0; size_of::<Region>()]);
+    let mut pool = Pool::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH).unwrap();
+
+    let start = Instant::now();
+    for i in 0..COUNT {
+        let mut buf = pool.alloc::<Msg>().unwrap();
+        buf.seq = i;
+        buf.val = i * 3;
+        std::hint::black_box(buf.val);
+        buf.free();
+    }
+    start.elapsed().as_secs_f64()
+}
+
+/// The same loop through the global allocator (Box::new →
+/// write → drop) for comparison; return elapsed seconds.
+fn global_alloc_free_demo() -> f64 {
+    let start = Instant::now();
+    for i in 0..COUNT {
+        let mut buf = std::hint::black_box(Box::new(Msg { seq: 0, val: 0 }));
+        buf.seq = i;
+        buf.val = i * 3;
+        std::hint::black_box(buf.val);
+        drop(buf);
+    }
+    start.elapsed().as_secs_f64()
+}
+
 /// Run both parts and print their throughput; `-V` /
 /// `--version` prints the version-of-record and exits.
 fn main() {
@@ -155,5 +187,10 @@ fn main() {
     println!("demo: {} messages each, depth {DEPTH}", commas(COUNT));
     report("ring (SPSC, in-place):", ring_demo());
     report("pool (alloc here -> free there):", pool_demo());
+    report("pool (alloc/free, 1 thread):", pool_alloc_free_demo());
+    report(
+        "global (Box::new/drop, 1 thread):",
+        global_alloc_free_demo(),
+    );
     println!("(composed descriptor flow arrives with the descriptor-queue cycle)");
 }
