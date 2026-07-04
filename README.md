@@ -171,49 +171,54 @@ state, with one party allowed to touch it:
   long as desired, moved between threads freely (`Send`).
   No other party — including the pool — may touch the
   bytes.
-- **in-flight** — *placeholder, vacant this cycle*: after a
-  send over a descriptor queue the sender must no longer
-  touch the buffer and the receiver owns it on receipt.
-  Until descriptor queues exist there is no in-flight
-  state.
+- **in-flight** — the descriptor form: `into_desc` consumes
+  the guard and ownership travels in the returned `Desc`
+  (typically through a ring). The sender must no longer
+  touch the buffer; whoever `resolve`s the descriptor owns
+  it, exactly once.
 - **freed** — `BufSlot::free` pushes it back; ownership
   returns to the pool protocol the instant the CAS lands.
   Use-after-free of the guard is unrepresentable (`free`
   consumes it); dropping without `free` leaks the buffer.
 
-**What "send" means this cycle.** Transferring a message =
-moving its `BufSlot` (an ordinary Rust move; `Send` lets it
-cross threads). The ring and the pool do not yet compose:
-a `BufSlot` cannot travel through a ring slot, and no API
-reconstructs buffer access from a bare index — both arrive
-with the descriptor-queue cycle. Ring messages this cycle
-are by-value `T`s in slots, as before.
+**What "send" means.** Two forms compose:
 
-**Where this is heading.** The ring alone is a building
-block; the payoff is the two composed — the ring carrying
-tiny descriptors while payloads stay put in pool buffers.
-Illustrative only (this API does not exist yet; names will
-change):
+- Moving the `BufSlot` itself (an ordinary Rust move;
+  `Send` lets it cross threads or a std channel).
+- The descriptor flow (0.7.0): register the pool in a
+  per-process `PoolRegistry`, convert the guard to an
+  8-byte `Desc` with `into_desc`, and send *that* through
+  a ring as an ordinary POD message; the receiver
+  `resolve`s it back to an owned guard. The payload stays
+  put in its pool buffer:
 
 ```rust,ignore
 // Sender: pool allocator + ring producer.
-let mut msg = pool.alloc::<Msg>()?; // get a message
-msg.val = 42;                       // fill it in place
-producer.send(msg)?;                // consumes the BufSlot;
-                                    // only its index travels
-                                    // through the ring
+let mut msg = pool.alloc::<Msg>()?;   // get a message
+msg.seq = 42;                         // fill it in place
+let desc = registry.into_desc(pool_id, msg)?; // guard -> Desc
+let mut slot = producer.reserve_slot::<Desc>()?;
+*slot = desc;                         // 8 bytes, not the payload
+slot.commit();
 
-// Receiver: ring consumer + freer (other thread or process).
-let desc = consumer.reserve_slot::<Desc>()?;
-let msg = pool.resolve::<Msg>(&desc)?; // zero-copy view
+// Receiver: ring consumer + freer (another thread).
+let slot = consumer.reserve_slot::<Desc>()?;
+let desc = *slot;
+slot.release();                       // ring slot free again
+// SAFETY: desc came from into_desc, arrived via the ring's
+// commit -> reserve handoff, resolved exactly once.
+let msg = unsafe { registry.resolve::<Msg>(desc) }?;
 //                  ... read msg ...
-msg.free();     // buffer back to its pool
-desc.release(); // ring slot free for the next descriptor
+msg.free();                           // buffer back to its pool
 ```
 
 One allocation's bytes are written once and never copied —
-not by send, not by receive, not across the process
-boundary.
+not by send, not by receive. (`resolve` is the one `unsafe`:
+validation rejects unknown ids / bad indices / wrong types,
+but ownership uniqueness is the caller's promise. Paired
+sender/receiver endpoints that encapsulate it — and shrink
+this to loan / send / recv — are the next cycle; see
+notes/todo.md.)
 
 **Trust.** Unchanged from the ring: every word in shared
 memory is untrusted input. The pool validates the head and
@@ -235,26 +240,42 @@ buffers, spurious exhaustion), never cause UB on this side.
   convention).
 - `cargo run --release` — the demo binary
   ([src/bin/zc-ring-x1-demo.rs](src/bin/zc-ring-x1-demo.rs)):
-  a four-line throughput scoreboard (msgs/sec and ns/msg) —
-  the ring moving typed messages in place across threads,
-  the pool's allocator/freer role split (guards crossing a
-  std channel), the pool's raw single-thread alloc/free,
-  and the same loop through the global allocator for
-  comparison. Eyeball numbers, not a benchmark (calibrated
-  measurement lives in iiac-perf). Installable:
-  `cargo install --path . --locked`, then `zc-ring-x1-demo`;
-  `-V` prints the version-of-record so you know which build
-  you are testing. An example run:
+  a throughput scoreboard (msgs/sec and ns/msg) grouped so
+  like compares with like — alloc/free baselines (pool vs
+  global allocator), then three message flows (raw ring,
+  composed ring + pool descriptors, std channel + pool) at
+  each thread placement: single thread on core 0, two
+  threads unpinned, two SMT siblings sharing one physical
+  core, and two different physical cores (pairs discovered
+  from /sys at runtime; each line names the cpus it ran
+  on). Eyeball numbers — single runs, no mean/stdev — not a
+  benchmark (calibrated measurement lives in iiac-perf).
+  Installable: `cargo install --path . --locked`, then
+  `zc-ring-x1-demo`; `-V` prints the version-of-record so
+  you know which build you are testing. An example run:
 
   ```text
   $ zc-ring-x1-demo
-  zc-ring-x1 0.6.2
+  zc-ring-x1 0.7.0
   demo: 1,000,000 messages each, depth 64
-  ring (SPSC, in-place):             18,723,550 msgs/sec     53.4 ns/msg
-  pool (alloc here -> free there):    2,993,315 msgs/sec    334.1 ns/msg
-  pool (alloc/free, 1 thread):      100,962,781 msgs/sec      9.9 ns/msg
-  global (Box::new/drop, 1 thread):  107,037,570 msgs/sec      9.3 ns/msg
-  (composed descriptor flow arrives with the descriptor-queue cycle)
+  pool_alloc_free_1t (core 0):                 102,119,813 msgs/sec      9.8 ns/msg
+  global_alloc_free_1t (core 0):               148,147,577 msgs/sec      6.8 ns/msg
+
+  spsc_ring_one_msg_1t (core 0):               388,935,863 msgs/sec      2.6 ns/msg
+  spsc_ring_one_pool_msg_1t (core 0):          132,426,985 msgs/sec      7.6 ns/msg
+  std_mpsc_one_pool_msg_1t (core 0):            28,185,250 msgs/sec     35.5 ns/msg
+
+  spsc_ring_one_msg_2t (unpinned):              20,647,303 msgs/sec     48.4 ns/msg
+  spsc_ring_one_pool_msg_2t (unpinned):          6,004,837 msgs/sec    166.5 ns/msg
+  std_mpsc_one_pool_msg_2t (unpinned):           3,859,666 msgs/sec    259.1 ns/msg
+
+  spsc_ring_one_msg_2t (same core 0+12):       133,307,240 msgs/sec      7.5 ns/msg
+  spsc_ring_one_pool_msg_2t (same core 0+12):   26,101,551 msgs/sec     38.3 ns/msg
+  std_mpsc_one_pool_msg_2t (same core 0+12):    17,164,074 msgs/sec     58.3 ns/msg
+
+  spsc_ring_one_msg_2t (diff cores 0+3):         5,309,068 msgs/sec    188.4 ns/msg
+  spsc_ring_one_pool_msg_2t (diff cores 0+3):    3,222,906 msgs/sec    310.3 ns/msg
+  std_mpsc_one_pool_msg_2t (diff cores 0+3):     3,258,778 msgs/sec    306.9 ns/msg
   ```
 - `cargo +nightly miri test` — the full suite under
   [Miri](https://github.com/rust-lang/miri), which checks the

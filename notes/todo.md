@@ -6,31 +6,7 @@ uses links or reference links for more details.
 
 ## In Progress
 
-**feat: descriptor queues over the SPSC ring**
-
-Getting a pool buffer must not imply sending it, and the
-ring alone fuses allocation, queue position, and
-publication. Descriptors — small `(pool id, buffer offset)`
-values sent through the existing SPSC ring — separate them,
-so any pool message travels over any queue. This cycle
-builds the in-process slice: the descriptor type, pool ids
-via a per-process registry, and guard ↔ descriptor
-conversion; cross-process setup (mapping exchange, pool-id
-coordination) stays design
-[details](ring-buffer-design.md#messaging-layer-pools-and-descriptor-queues).
-
-- 0.7.0-0 chore: open descriptor queue cycle (done)
-- 0.7.0-1 docs: settle descriptor design questions —
-  descriptor shape (offset vs index, width), pool-id
-  source, resolve-side validation, the unsafe ownership
-  contract for guard ↔ descriptor (done)
-- 0.7.0-2 feat: pool registry + descriptor resolve —
-  protocol tests folded in (round-trip, cross-thread free,
-  hostile descriptors) so the API never lands untested
-  (done)
-- 0.7.0-3 feat: demo descriptor flow ring + pool (done)
-- 0.7.0 feat: descriptor queues over the SPSC ring
-  (close-out)
+_No cycle currently in progress._
 
 ## Todo
 
@@ -46,12 +22,33 @@ coordination) stays design
  detail goes in `notes/chores/chores-NN.md` design
  subsections (link via `[N]` ref).
 
-1. Endpoint claims word: CAS-claimed producer/consumer roles
+1. Wait-policy hook + spin models: `_with(impl FnMut(u32)
+   -> bool)` variants of alloc / producer / consumer
+   reserve_slot (closure votes keep-waiting per retry), a
+   shipped spin policy plus `_spin` wrappers as the model
+   users copy, then measure all three forms (raw loop,
+   closure, `_spin`) in iiac-perf to verify the seam is
+   zero-cost [[11]].
+2. Descriptor queue endpoints: paired DescSender (loan +
+   send) / DescReceiver (recv) owning ring endpoint +
+   registry access, so the demo's ~20-line send path
+   becomes ~3 lines and `resolve`'s unsafe is audited once
+   inside the crate (recv safe by construction); guard
+   handed back on Full [[11]].
+3. Batch alloc/free demo: alongside the one-message
+   alloc_free_1t loops, a variant that allocs X messages
+   (5, 10, …) then frees them all, pool vs global
+   allocator. We think the pool's rate stays constant
+   (pop/push is O(1) regardless of live count, LIFO keeps
+   the working set hot) while Box::new/drop slows as the
+   batch outgrows malloc's thread-cache fast path — the
+   demo should show it.
+4. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
    [details](ring-buffer-design.md#resolved-questions).
-2. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+5. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot [details](ring-buffer-design.md#api).
 
@@ -140,18 +137,19 @@ coordination) stays design
 Completed tasks are moved from `## Todo` to here, `## Done`, as they are completed
 and older `## Done` sections are moved to [done.md](done.md) to keep this file small.
 
-- feat: ring buffer user line + blocking contract [[5]]
 - docs: messaging layer design (pools + queues) [[6]]
 - feat: message pool allocator [[7]]
 - feat: ring + pool demo binary [[8]]
 - feat: demo alloc/free perf loops [[9]]
 - feat: demo cpu-pinned placement variants [[10]]
+- feat: descriptor queues over the SPSC ring [[12]]
 
 # References
 
-[5]: chores/chores-01.md#feat-ring-buffer-user-line--blocking-contract
 [6]: chores/chores-01.md#docs-messaging-layer-design-pools--queues
 [7]: chores/chores-01.md#feat-message-pool-allocator
 [8]: chores/chores-01.md#feat-ring--pool-demo-binary
 [9]: chores/chores-01.md#feat-demo-allocfree-perf-loops
 [10]: chores/chores-01.md#feat-demo-cpu-pinned-placement-variants
+[11]: chores/chores-01.md#follow-on-endpoints-and-wait-policies
+[12]: chores/chores-01.md#feat-descriptor-queues-over-the-spsc-ring

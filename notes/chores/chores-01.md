@@ -359,7 +359,90 @@ siblings, shared L1/L2), different physical cores
 
 ## feat: descriptor queues over the SPSC ring
 
-Commits:
+Commits: [[24]],[[25]],[[26]],[[27]]
+
+Getting a pool buffer must not imply sending it, and the
+ring alone fuses allocation, queue position, and
+publication. Descriptors — small `(pool id, buffer index)`
+values sent through the existing SPSC ring — separate them,
+so any pool message travels over any queue. This cycle
+built the in-process slice: the descriptor type, pool ids
+via a per-process registry, and guard ↔ descriptor
+conversion; cross-process setup (mapping exchange, pool-id
+coordination) stays design
+[details](../ring-buffer-design.md#descriptor-and-registry-design-070).
+
+- The guard and the descriptor are the two exclusive forms
+  of buffer ownership; converting is the send-side handoff.
+  `into_desc` is safe (guard handed back on error, no leak
+  path); `resolve` is the one `unsafe` — validation is
+  all-`Err` (a hostile descriptor selects which pool gets
+  compared, so it must not select a panic), and `unsafe`
+  covers only what validation cannot check: ownership
+  uniqueness plus happens-before delivery.
+- `PoolResolver` is a view derived from the pool handle —
+  no second region borrow, dodging the Stacked Borrows
+  retag hazard init documents. Registries are per-process
+  and private; only descriptors cross boundaries, and pool
+  ids are the shared vocabulary (cross-process
+  `register_at` under an agreed id is recorded against the
+  pool-id-allocation open question).
+- Protocol tests folded into the feat commit rather than a
+  separate test step, so the API never landed untested;
+  the composed cross-thread test (descs over the ring,
+  buffers recycling) is the demo/iiac-perf flow in
+  miniature. Full suite clean under Miri.
+- Demo grew the composed flow with the same placement
+  ladder as the raw ring, output regrouped so like
+  compares with like; the 1t variant allocates outside the
+  timed loop, isolating messaging cost (~8 ns/msg vs the
+  std-channel counterpart's ~35) from the pool cycle.
+- Design doc gained the System model overview (rules at a
+  glance, every bullet linking to its expanding section)
+  and a linkability convention: sub-topics wanted by
+  inbound links become `####` headings (Provenance, Open
+  questions), whose anchors follow their titles even when
+  a section migrates.
+
+### As-built ladder
+
+- 0.7.0-0 chore: open descriptor queue cycle
+- 0.7.0-1 docs: settle descriptor design questions
+- 0.7.0-2 feat: pool registry + descriptor resolve
+- 0.7.0-3 feat: demo descriptor flow ring + pool
+- 0.7.0 feat: descriptor queues over the SPSC ring
+  (close-out)
+
+### Follow-on: endpoints and wait policies
+
+Design captured from the post-demo review; promoted to
+`## Todo` #1 and #2.
+
+- The demo's send path is ~20 lines of ceremony. Target
+  shape is ~3: `loan` → populate → `send`. Paired
+  `DescSender` (ring producer + pool + registry access;
+  `loan` carries the single-popper token structurally) and
+  `DescReceiver` (consumer + registry). The deep win is
+  safety, not line count: descriptors entering the ring
+  only through the paired sender make `recv` satisfy
+  resolve's contract by construction — the `unsafe` gets
+  audited once inside the crate instead of at every call
+  site. iceoryx2's loan/send shape, as the design doc's
+  prior-art note anticipated.
+- Wait policies as an injected closure: `_with(impl
+  FnMut(u32) -> bool)` — attempt count in, keep-waiting
+  out — uniformly over the three wait points (Exhausted /
+  Full / Empty). Tiers: non-blocking primitive (unchanged,
+  the only tier with protocol knowledge), the `_with`
+  hook, shipped policies we dogfood (`_spin`) as the model
+  users copy, and user compositions (their own
+  `get::<Msg>()`, policy baked in, no closure in their
+  signature). Polling only — true blocking (futex,
+  eventfd) needs a peer wake over the user line and stays
+  a separate layer.
+- Validation order: the wait-policy hook lands first and
+  iiac-perf measures raw loop vs closure vs `_spin` — the
+  seam must be zero-cost before the endpoints build on it.
 
 # References
 
@@ -386,3 +469,7 @@ Commits:
 [21]: https://github.com/winksaville/zc-ring-x1/commit/31016b69c25f "31016b69c25f80a5b5d4050f2e866d0b46b5a248"
 [22]: https://github.com/winksaville/zc-ring-x1/commit/044e346e40e0 "044e346e40e0da7e4e95c3761bd8a419428e4d30"
 [23]: https://github.com/winksaville/zc-ring-x1/commit/2faa51644bd2 "2faa51644bd2540a4c6fbba71bae6ba21ea9e8be"
+[24]: https://github.com/winksaville/zc-ring-x1/commit/606c8f9daa49 "606c8f9daa495c4cb3d21b93c24fc6c447f02b87"
+[25]: https://github.com/winksaville/zc-ring-x1/commit/3226b9dc15d2 "3226b9dc15d26e71d647a659c8a7b933a66be7b2"
+[26]: https://github.com/winksaville/zc-ring-x1/commit/dd5217d72434 "dd5217d724341220a2e201d4ff74c947d6ef5bf8"
+[27]: https://github.com/winksaville/zc-ring-x1/commit/fe4f426b9f24 "fe4f426b9f24d6883cb2d1fd42e36ed1c09e39d9"

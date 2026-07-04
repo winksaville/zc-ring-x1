@@ -353,7 +353,7 @@ mod tests {
     /// (COUNT >> buf_count).
     #[test]
     fn desc_over_ring_cross_thread() {
-        const COUNT: u64 = 10_000;
+        const COUNT: u64 = if cfg!(miri) { 200 } else { 10_000 };
         let mut pr = Region::<POOL_BYTES>([0; POOL_BYTES]);
         let mut rr = Region::<RING_BYTES>([0; RING_BYTES]);
         let mut pool = Pool::init(&mut pr.0, LINE, 4).unwrap();
