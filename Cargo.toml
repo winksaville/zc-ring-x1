@@ -3,7 +3,7 @@ name = "zc-ring-x1"
 # Version-of-record (see notes/versioning.md): advanced through
 # the cycle's X.Y.Z-N phases; the -N rides in the semver
 # prerelease slot.
-version = "0.7.0-1"
+version = "0.7.0-2"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"

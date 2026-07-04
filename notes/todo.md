@@ -24,10 +24,11 @@ coordination) stays design
   descriptor shape (offset vs index, width), pool-id
   source, resolve-side validation, the unsafe ownership
   contract for guard ↔ descriptor (done)
-- 0.7.0-2 feat: pool registry + descriptor resolve
-- 0.7.0-3 test: descriptor protocol tests (round-trip,
-  cross-thread free, hostile descriptors)
-- 0.7.0-4 feat: demo descriptor flow ring + pool
+- 0.7.0-2 feat: pool registry + descriptor resolve —
+  protocol tests folded in (round-trip, cross-thread free,
+  hostile descriptors) so the API never lands untested
+  (done)
+- 0.7.0-3 feat: demo descriptor flow ring + pool
 - 0.7.0 feat: descriptor queues over the SPSC ring
   (close-out)
 

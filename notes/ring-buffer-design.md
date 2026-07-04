@@ -355,10 +355,10 @@ section that expands it.
   - A process-private pool serves intra-process messaging.
 - A message to be sent to another process must come from a
   pool in shared memory
-  [details](#provenance-and-descriptors).
+  [details](#pool-id-resolution).
   - The receiving process must have that pool mapped.
 - Queues carry descriptors, not payloads
-  [details](#provenance-and-descriptors).
+  [details](#descriptors).
   - A descriptor is a uniform small
     `(pool id, buffer index)` regardless of message size.
   - The payload stays at rest in its pool buffer.
@@ -370,6 +370,12 @@ section that expands it.
   [details](#descriptor-and-registry-design-070).
   - It maps pool ids to that process's view (mapping) of
     each pool.
+  - Registries are private and never shared; only
+    descriptors cross process boundaries.
+  - Pool ids are the shared vocabulary: every participating
+    process must register a pool under the same id (the
+    assignment scheme is an open question —
+    [details](#pool-id-allocation)).
 - Ownership follows the descriptor
   [details](#usage-model-roles-and-buffer-lifecycle).
   - alloc → write → send the descriptor over a queue →
@@ -386,7 +392,7 @@ section that expands it.
     alloc.
 - Descriptors and free-stack links arriving through shared
   memory are untrusted
-  [details](#provenance-and-descriptors).
+  [details](#trust).
   - Both are validated before use.
   - Corruption degrades to errors or lost buffers, never
     UB.
@@ -416,29 +422,51 @@ section that expands it.
 
 ### Provenance and descriptors
 
-- **Offsets only, everywhere** — different per-process
-  mappings mean no pointers in any shared structure; this
-  also serves the single-address-space case unchanged.
-- **Message provenance** — every buffer begins with a small
-  header naming its pool `(pool id, offset)`; whoever holds a
-  message last must free it to the right pool, so provenance
-  travels with the message.
-- **Descriptors** — a queue entry is a uniform small
-  `(pool id, buffer index)` regardless of message size; the
-  receiver resolves the pool id and learns geometry from the
-  pool's own header (index over byte offset settled in
-  [Descriptor and registry design](#descriptor-and-registry-design-070)).
-- **Pool self-description** — each pool region starts with a
-  header (magic, layout version, buffer size, count,
-  alignment), attach-validated exactly like the ring header.
-- **Pool-id resolution** — each process keeps a local registry
-  mapping pool id to its own mapping of that pool's region.
-  "Any message over any queue" carries the precondition that
-  both endpoints have the message's pool mapped.
-- **Trust** — offsets and indices arriving through shared
-  memory are untrusted: bounds- and alignment-checked against
-  the receiver's own view before use, same discipline as the
-  ring's geometry snapshot.
+How a message's origin travels and is resolved — one
+sub-topic per heading, each directly linkable.
+
+#### Offsets only, everywhere
+
+Different per-process mappings mean no pointers in any
+shared structure; this also serves the single-address-space
+case unchanged.
+
+#### Message provenance
+
+Every buffer begins with a small header naming its pool
+`(pool id, offset)`; whoever holds a message last must free
+it to the right pool, so provenance travels with the
+message. (Deferred as of 0.7.0 — provenance travels in the
+descriptor instead; see
+[Descriptor and registry design](#descriptor-and-registry-design-070).)
+
+#### Descriptors
+
+A queue entry is a uniform small `(pool id, buffer index)`
+regardless of message size; the receiver resolves the pool
+id and learns geometry from the pool's own header (index
+over byte offset settled in
+[Descriptor and registry design](#descriptor-and-registry-design-070)).
+
+#### Pool self-description
+
+Each pool region starts with a header (magic, layout
+version, buffer size, count, alignment), attach-validated
+exactly like the ring header.
+
+#### Pool-id resolution
+
+Each process keeps a local registry mapping pool id to its
+own mapping of that pool's region. "Any message over any
+queue" carries the precondition that both endpoints have
+the message's pool mapped.
+
+#### Trust
+
+Offsets and indices arriving through shared memory are
+untrusted: bounds- and alignment-checked against the
+receiver's own view before use, same discipline as the
+ring's geometry snapshot.
 
 ### Descriptor and registry design (0.7.0)
 
@@ -458,6 +486,11 @@ coordination) remains in [Open questions](#open-questions).
   (const-generic array; no_std, zero allocation).
   `register(resolver) -> PoolId` assigns the next slot
   index; phase 1 has no unregister, so ids never dangle.
+  Sequential assignment produces cross-process id agreement
+  only when one process assigns all ids — the in-process
+  slice's case; cross-process will need registration under
+  an externally agreed id (e.g. `register_at(id, ...)`),
+  pending [Pool-id allocation](#pool-id-allocation).
 - **`Pool::resolver() -> PoolResolver`** — a non-allocating
   view (header ref, buffer base, geometry) derived from the
   existing handle, so no second region borrow and no
@@ -623,24 +656,36 @@ What keeps this project distinct from it:
 
 ### Open questions
 
-- **Pool-id allocation** — in-process settled in 0.7.0
-  (registry slot index, no unregister); cross-process
-  remains open: coordinator-assigned versus derived from
-  the shm object's identity.
-- **Setup plane** — how a process discovers and maps a pool it
-  hasn't seen: pre-arranged at init (embedded-friendly,
-  allocation-free after startup) versus fd-passing over a
-  Unix socket (Linux-friendly, dynamic); likely both, as
-  profiles.
-- **Message header shape** — 0.7.0 settled the near half:
-  provenance travels in the descriptor, a type tag is
-  payload-level, and the in-buffer header is deferred (see
-  [Descriptor and registry design](#descriptor-and-registry-design-070)).
-  Still open: whether a length (or anything else) joins a
-  future in-buffer header, and its layout against the
-  embedded next-link — the link is load-bearing for three
-  states (free-stack, pending FIFO, future lists), so they
-  must be laid out together when that header lands.
+One question per heading, each directly linkable; a
+resolved question migrates to
+[Resolved questions](#resolved-questions), keeping its
+heading (and so its anchor).
+
+#### Pool-id allocation
+
+In-process settled in 0.7.0 (registry slot index, no
+unregister); cross-process remains open:
+coordinator-assigned versus derived from the shm object's
+identity.
+
+#### Setup plane
+
+How a process discovers and maps a pool it hasn't seen:
+pre-arranged at init (embedded-friendly, allocation-free
+after startup) versus fd-passing over a Unix socket
+(Linux-friendly, dynamic); likely both, as profiles.
+
+#### Message header shape
+
+0.7.0 settled the near half: provenance travels in the
+descriptor, a type tag is payload-level, and the in-buffer
+header is deferred (see
+[Descriptor and registry design](#descriptor-and-registry-design-070)).
+Still open: whether a length (or anything else) joins a
+future in-buffer header, and its layout against the
+embedded next-link — the link is load-bearing for three
+states (free-stack, pending FIFO, future lists), so they
+must be laid out together when that header lands.
 
 ## Resolved questions
 

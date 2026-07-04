@@ -10,8 +10,9 @@
 //! - The free-stack is intrusive with zero per-buffer
 //!   overhead: a *free* buffer's first word holds the index
 //!   of the next free buffer; an allocated buffer carries no
-//!   header at all (pool-id provenance is deferred — see
-//!   todo.md's In Progress block).
+//!   header at all (in-buffer provenance is deferred — the
+//!   descriptor is the travel form; see the design doc's
+//!   "Descriptor and registry design (0.7.0)").
 //! - One owning allocator pops ([`Pool::alloc`], `&mut self`
 //!   as the in-process single-popper token); any holder
 //!   frees ([`BufSlot::free`], the MPSC push side). The
@@ -274,6 +275,25 @@ impl<'a> Pool<'a> {
         self.buf_count
     }
 
+    /// A non-allocating [`PoolResolver`] view of this pool,
+    /// for registration in a
+    /// [`PoolRegistry`](crate::PoolRegistry).
+    ///
+    /// - Derived from this handle (same provenance as its own
+    ///   pointers), so no second region borrow and no Stacked
+    ///   Borrows retag hazard — `init`/`attach` take the
+    ///   region pointer exactly once.
+    /// - Any number of views may exist; none can allocate, so
+    ///   the single-popper contract stays with this handle.
+    pub fn resolver(&self) -> PoolResolver<'a> {
+        PoolResolver {
+            header: self.header,
+            bufs: self.bufs,
+            buf_size: self.buf_size,
+            buf_count: self.buf_count,
+        }
+    }
+
     /// The next-free-buffer index cell of buffer `idx` — its
     /// first word, the intrusive free-stack link, meaningful
     /// only while the buffer is free.
@@ -298,6 +318,85 @@ impl<'a> Pool<'a> {
         // SAFETY: idx < buf_count, so the offset stays inside
         // the buffer array validated at init/attach.
         unsafe { self.bufs.add(idx as usize * self.buf_size as usize) }
+    }
+}
+
+/// A non-allocating view over a pool: resolves validated
+/// buffer indices to owned [`BufSlot`] guards on behalf of a
+/// [`PoolRegistry`](crate::PoolRegistry).
+///
+/// - Created by [`Pool::resolver`]; carries the same header
+///   ref, buffer base, and geometry snapshot as its pool.
+/// - Cannot allocate — the single-popper token stays with the
+///   owning [`Pool`] handle.
+/// - Identifies its pool by header address (see
+///   [`PoolRegistry::into_desc`](crate::PoolRegistry::into_desc)).
+#[derive(Clone, Copy)]
+pub struct PoolResolver<'a> {
+    /// The pool's control block.
+    header: &'a PoolHeader,
+    /// Base of the buffer array (copy of [`Pool::bufs`]).
+    bufs: *mut u8,
+    /// Snapshot of `header.buf_size`.
+    buf_size: u32,
+    /// Snapshot of `header.buf_count`.
+    buf_count: u32,
+}
+
+// SAFETY: the view is read-only over its own fields; the only
+// shared-memory mutation reachable through it is the minted
+// guards' free CAS, which is the free-stack's any-thread MPSC
+// push side. Allocation (the single-popper role) is not
+// reachable from a resolver.
+unsafe impl Send for PoolResolver<'_> {}
+// SAFETY: all methods take &self and touch shared state only
+// through atomics (as above), so concurrent use from multiple
+// threads adds no non-atomic shared access.
+unsafe impl Sync for PoolResolver<'_> {}
+
+impl<'a> PoolResolver<'a> {
+    /// The pool's header address — its identity for registry
+    /// lookups.
+    pub(crate) fn header_ptr(&self) -> *const PoolHeader {
+        self.header
+    }
+
+    /// Buffer count (geometry snapshot).
+    pub(crate) fn buf_count(&self) -> u32 {
+        self.buf_count
+    }
+
+    /// Buffer size in bytes (geometry snapshot).
+    pub(crate) fn buf_size(&self) -> u32 {
+        self.buf_size
+    }
+
+    /// Mint the owned guard for buffer `idx`.
+    ///
+    /// # Safety
+    ///
+    /// - The caller has validated `idx < buf_count` and `T`'s
+    ///   geometry against this pool.
+    /// - The caller holds the buffer's ownership (the index
+    ///   came from a consumed guard via
+    ///   [`PoolRegistry::into_desc`](crate::PoolRegistry::into_desc),
+    ///   arrived with happens-before ordering, and is resolved
+    ///   exactly once) — minting a second live guard for one
+    ///   buffer aliases `&mut T`.
+    pub(crate) unsafe fn slot_from_idx<T>(&self, idx: u32) -> BufSlot<'a, T>
+    where
+        T: FromBytes + IntoBytes + KnownLayout,
+    {
+        // SAFETY: idx < buf_count (caller contract), so the
+        // offset stays inside the buffer array validated at
+        // init/attach.
+        let buf = unsafe { self.bufs.add(idx as usize * self.buf_size as usize) };
+        BufSlot {
+            header: self.header,
+            buf,
+            idx,
+            _slot: PhantomData,
+        }
     }
 }
 
@@ -350,6 +449,18 @@ impl<T> DerefMut for BufSlot<'_, T> {
 }
 
 impl<T> BufSlot<'_, T> {
+    /// The owning pool's header address — matched against a
+    /// registry entry's [`PoolResolver::header_ptr`] by
+    /// [`PoolRegistry::into_desc`](crate::PoolRegistry::into_desc).
+    pub(crate) fn header_ptr(&self) -> *const PoolHeader {
+        self.header
+    }
+
+    /// This buffer's index (the descriptor payload).
+    pub(crate) fn idx(&self) -> u32 {
+        self.idx
+    }
+
     /// Push the buffer back onto the pool's free-stack.
     ///
     /// - Any holder may free — this is the free-stack's MPSC

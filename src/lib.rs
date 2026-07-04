@@ -24,10 +24,12 @@ use core::sync::atomic::{AtomicU32, Ordering};
 mod consumer;
 mod pool;
 mod producer;
+mod registry;
 
 pub use consumer::{Consumer, Empty, ReadSlot};
-pub use pool::{BufSlot, Exhausted, Pool, PoolHeader};
+pub use pool::{BufSlot, Exhausted, Pool, PoolHeader, PoolResolver};
 pub use producer::{Full, Producer, WriteSlot};
+pub use registry::{Desc, PoolId, PoolRegistry, RegistryError};
 
 /// Cache-line size the layout is built around.
 ///
@@ -330,6 +332,13 @@ fn check_type<T>(slot_size: u32) {
         core::mem::align_of::<T>() <= CACHE_LINE_SIZE,
         "T alignment exceeds slot alignment"
     );
+}
+
+/// Non-panicking form of [`check_type`], for descriptor
+/// resolve — there the pool compared against is selected by
+/// untrusted input, which must not be able to select a panic.
+fn type_fits<T>(slot_size: u32) -> bool {
+    size_of::<T>() <= slot_size as usize && core::mem::align_of::<T>() <= CACHE_LINE_SIZE
 }
 
 /// Pointer to the slot for free-running index `idx`.
