@@ -108,9 +108,11 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 - feat: ring buffer user line + blocking contract [[5]]
 - docs: messaging layer design (pools + queues) [[6]]
 - feat: message pool allocator [[7]]
+- feat: ring + pool demo example [[8]]
 
 # References
 
 [5]: chores/chores-01.md#feat-ring-buffer-user-line--blocking-contract
 [6]: chores/chores-01.md#docs-messaging-layer-design-pools--queues
 [7]: chores/chores-01.md#feat-message-pool-allocator
+[8]: chores/chores-01.md#feat-ring--pool-demo-example

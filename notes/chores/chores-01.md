@@ -234,7 +234,7 @@ section; todo.md gains the matching ranked entries and Ideas.
 
 ## feat: message pool allocator
 
-Commits: [[15]],[[16]],[[17]],[[18]],[[19]]
+Commits: [[15]],[[16]],[[17]],[[18]],[[19]],[[20]]
 
 Todo #1 (decouple "get a message" from "send it"): the ring's
 reserve_slot fuses allocation, queue position, and a
@@ -277,6 +277,26 @@ Ladder (all shipped, Keep separate):
 - 0.6.0-4 test: message pool protocol tests
 - 0.6.0 feat: message pool allocator (close-out)
 
+## feat: ring + pool demo example
+
+Commits:
+
+A runnable, visible proof for library visitors: both
+primitives working across threads with throughput printed.
+
+- `src/bin/zc-ring-x1-demo.rs`: a binary (not an example)
+  so `cargo install --path . --locked` works and `-V`
+  prints the version-of-record — you always know which
+  build you are testing. Ring part (SPSC in-place messages,
+  producer → consumer threads) and pool part (allocator
+  thread fills BufSlots, freer thread frees; guards cross a
+  std channel per the usage model's "send = move the
+  guard").
+- Prints msgs/sec per part — an eyeball smoke-baseline, not
+  a benchmark (iiac-perf owns real measurement). The pool
+  part's rate is channel-dominated, which is itself the
+  argument for the descriptor-queue cycle; the demo says so.
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"
@@ -298,3 +318,4 @@ Ladder (all shipped, Keep separate):
 [17]: https://github.com/winksaville/zc-ring-x1/commit/2069384698df "2069384698dfa62860193cea58aea62c4c5462c0"
 [18]: https://github.com/winksaville/zc-ring-x1/commit/9f3ce4bc87bd "9f3ce4bc87bd86faa9941a7d40007674529dcc80"
 [19]: https://github.com/winksaville/zc-ring-x1/commit/6177323244b4 "6177323244b4d80fe07a9efaa6d8647ca31b4787"
+[20]: https://github.com/winksaville/zc-ring-x1/commit/67b6a553f80c "67b6a553f80c188debd62b41e47c81e11e7b2f33"

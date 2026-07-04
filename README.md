@@ -233,6 +233,14 @@ buffers, spurious exhaustion), never cause UB on this side.
   example above
   ([examples/pool_readme.rs](examples/pool_readme.rs), same
   convention).
+- `cargo run --release` — the demo binary
+  ([src/bin/zc-ring-x1-demo.rs](src/bin/zc-ring-x1-demo.rs)):
+  both primitives live across threads with throughput
+  printed — the ring moving typed messages in place, and
+  the pool's allocator/freer role split (guards crossing a
+  channel). Installable: `cargo install --path . --locked`,
+  then `zc-ring-x1-demo`; `-V` prints the version-of-record
+  so you know which build you are testing.
 - `cargo +nightly miri test` — the full suite under
   [Miri](https://github.com/rust-lang/miri), which checks the
   `unsafe` code against the memory model; it has caught two
