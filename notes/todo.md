@@ -6,7 +6,30 @@ uses links or reference links for more details.
 
 ## In Progress
 
-_No cycle currently in progress._
+**feat: descriptor queues over the SPSC ring**
+
+Getting a pool buffer must not imply sending it, and the
+ring alone fuses allocation, queue position, and
+publication. Descriptors — small `(pool id, buffer offset)`
+values sent through the existing SPSC ring — separate them,
+so any pool message travels over any queue. This cycle
+builds the in-process slice: the descriptor type, pool ids
+via a per-process registry, and guard ↔ descriptor
+conversion; cross-process setup (mapping exchange, pool-id
+coordination) stays design
+[details](ring-buffer-design.md#messaging-layer-pools-and-descriptor-queues).
+
+- 0.7.0-0 chore: open descriptor queue cycle (current)
+- 0.7.0-1 docs: settle descriptor design questions —
+  descriptor shape (offset vs index, width), pool-id
+  source, resolve-side validation, the unsafe ownership
+  contract for guard ↔ descriptor
+- 0.7.0-2 feat: pool registry + descriptor resolve
+- 0.7.0-3 test: descriptor protocol tests (round-trip,
+  cross-thread free, hostile descriptors)
+- 0.7.0-4 feat: demo descriptor flow ring + pool
+- 0.7.0 feat: descriptor queues over the SPSC ring
+  (close-out)
 
 ## Todo
 
@@ -22,17 +45,12 @@ _No cycle currently in progress._
  detail goes in `notes/chores/chores-NN.md` design
  subsections (link via `[N]` ref).
 
-1. Descriptor queues: carry `(pool id, buffer offset)`
-   descriptors over the existing SPSC ring so any message
-   travels over any queue; per-process pool registry to
-   resolve ids
-   [details](ring-buffer-design.md#messaging-layer-pools-and-descriptor-queues).
-2. Endpoint claims word: CAS-claimed producer/consumer roles
+1. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
    [details](ring-buffer-design.md#resolved-questions).
-3. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+2. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot [details](ring-buffer-design.md#api).
 

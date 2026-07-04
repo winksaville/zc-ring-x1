@@ -318,7 +318,7 @@ the global allocator (Box::new/drop), black_box-guarded.
 
 ## feat: demo cpu-pinned placement variants
 
-Commits:
+Commits: [[23]]
 
 Cross-thread numbers swung ~4× run to run because the
 scheduler decides where the two threads land. Every demo
@@ -357,6 +357,10 @@ siblings, shared L1/L2), different physical cores
   would isolate pure transfer but no real sender ships one;
   a possible future variant, not the default.
 
+## feat: descriptor queues over the SPSC ring
+
+Commits:
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"
@@ -381,3 +385,4 @@ siblings, shared L1/L2), different physical cores
 [20]: https://github.com/winksaville/zc-ring-x1/commit/67b6a553f80c "67b6a553f80c188debd62b41e47c81e11e7b2f33"
 [21]: https://github.com/winksaville/zc-ring-x1/commit/31016b69c25f "31016b69c25f80a5b5d4050f2e866d0b46b5a248"
 [22]: https://github.com/winksaville/zc-ring-x1/commit/044e346e40e0 "044e346e40e0da7e4e95c3761bd8a419428e4d30"
+[23]: https://github.com/winksaville/zc-ring-x1/commit/2faa51644bd2 "2faa51644bd2540a4c6fbba71bae6ba21ea9e8be"
