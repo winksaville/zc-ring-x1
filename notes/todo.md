@@ -19,11 +19,11 @@ conversion; cross-process setup (mapping exchange, pool-id
 coordination) stays design
 [details](ring-buffer-design.md#messaging-layer-pools-and-descriptor-queues).
 
-- 0.7.0-0 chore: open descriptor queue cycle (current)
+- 0.7.0-0 chore: open descriptor queue cycle (done)
 - 0.7.0-1 docs: settle descriptor design questions —
   descriptor shape (offset vs index, width), pool-id
   source, resolve-side validation, the unsafe ownership
-  contract for guard ↔ descriptor
+  contract for guard ↔ descriptor (done)
 - 0.7.0-2 feat: pool registry + descriptor resolve
 - 0.7.0-3 test: descriptor protocol tests (round-trip,
   cross-thread free, hostile descriptors)
@@ -87,6 +87,12 @@ coordination) stays design
   a composed workload; we think the pool's tail latency
   (p99, stddev) already beats malloc — no arena locks, no
   brk/mmap — and that matters more than the mean.
+- `Message` trait over the payload cast boilerplate: const
+  `MSG_ID` + the zerocopy bounds; receiver-side dispatch
+  (read tag, match, cast) without per-call-site ceremony,
+  and maybe a transport seam so an embedded
+  pointer-descriptor profile slots in behind the same API
+  [details](ring-buffer-design.md#descriptor-and-registry-design-070).
 - BufSlot auto-free on Drop (RAII, iceoryx2-style): kills the
   silent leak-on-drop footgun at the cost of guard-type
   asymmetry (ring guards' drop = do-nothing) and a

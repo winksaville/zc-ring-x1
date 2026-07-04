@@ -341,6 +341,61 @@ descriptors, and the existing ring is the unchanged primitive
 underneath (reserve-to-commit becomes a momentary act, where
 the fusion is harmless).
 
+### System model (overview)
+
+The layer's rules at a glance; each bullet links to the
+section that expands it.
+
+- A process may have one or more pools
+  [details](#pool-topology-and-phasing).
+  - Each pool has one owning allocator: a single thread
+    allocates, any holder frees.
+- Not all pools in a process need to be in shared memory
+  [details](#layer-requirements).
+  - A process-private pool serves intra-process messaging.
+- A message to be sent to another process must come from a
+  pool in shared memory
+  [details](#provenance-and-descriptors).
+  - The receiving process must have that pool mapped.
+- Queues carry descriptors, not payloads
+  [details](#provenance-and-descriptors).
+  - A descriptor is a uniform small
+    `(pool id, buffer index)` regardless of message size.
+  - The payload stays at rest in its pool buffer.
+- Any message travels over any queue
+  [details](#layer-requirements).
+  - Precondition: both endpoints have the message's pool
+    registered.
+- Each process keeps its own pool registry
+  [details](#descriptor-and-registry-design-070).
+  - It maps pool ids to that process's view (mapping) of
+    each pool.
+- Ownership follows the descriptor
+  [details](#usage-model-roles-and-buffer-lifecycle).
+  - alloc → write → send the descriptor over a queue →
+    the receiver owns it → read, forward over another
+    queue, or free.
+  - A buffer is always in exactly one state with one
+    permitted toucher.
+- Any holder — any thread or process — may free
+  [details](#free-path-intrusive-lifo-free-stack).
+  - The free pushes the buffer directly onto its pool's
+    free-stack in shared memory — no round-trip through
+    the owning process.
+  - The owning allocator finds the buffer on a later
+    alloc.
+- Descriptors and free-stack links arriving through shared
+  memory are untrusted
+  [details](#provenance-and-descriptors).
+  - Both are validated before use.
+  - Corruption degrades to errors or lost buffers, never
+    UB.
+- 0.7.0 builds the in-process slice of this model
+  [details](#descriptor-and-registry-design-070).
+  - Cross-process setup (mapping exchange, pool-id
+    coordination) stays design
+    [details](#open-questions).
+
 ### Layer requirements
 
 - **Decoupled get/hold/send/free** — allocate a message, hold
@@ -369,9 +424,10 @@ the fusion is harmless).
   message last must free it to the right pool, so provenance
   travels with the message.
 - **Descriptors** — a queue entry is a uniform small
-  `(pool id, buffer offset)` regardless of message size; the
+  `(pool id, buffer index)` regardless of message size; the
   receiver resolves the pool id and learns geometry from the
-  pool's own header.
+  pool's own header (index over byte offset settled in
+  [Descriptor and registry design](#descriptor-and-registry-design-070)).
 - **Pool self-description** — each pool region starts with a
   header (magic, layout version, buffer size, count,
   alignment), attach-validated exactly like the ring header.
@@ -383,6 +439,73 @@ the fusion is harmless).
   memory are untrusted: bounds- and alignment-checked against
   the receiver's own view before use, same discipline as the
   ring's geometry snapshot.
+
+### Descriptor and registry design (0.7.0)
+
+The in-process slice as designed for the 0.7.0 cycle;
+cross-process setup (mapping exchange, pool-id
+coordination) remains in [Open questions](#open-questions).
+
+- **`Desc { pool_id: u32, buf_idx: u32 }`** — 8 bytes, POD
+  (zerocopy derives), so it rides any queue as an ordinary
+  message. A buffer *index*, not a byte offset: the
+  offsets-only rule bars pointers (per-process mappings),
+  and an index is equally position-independent while
+  matching what the free-stack and guards already speak;
+  validation is one bounds check where a byte offset would
+  also need a buffer-boundary divisibility check.
+- **`PoolRegistry`** — per-process, fixed capacity
+  (const-generic array; no_std, zero allocation).
+  `register(resolver) -> PoolId` assigns the next slot
+  index; phase 1 has no unregister, so ids never dangle.
+- **`Pool::resolver() -> PoolResolver`** — a non-allocating
+  view (header ref, buffer base, geometry) derived from the
+  existing handle, so no second region borrow and no
+  Stacked Borrows retag hazard (`init` takes the region
+  pointer exactly once). Send + Sync: resolving mints
+  guards from validated indices, and the only
+  shared-memory mutation is the guards' free CAS, already
+  any-thread. Cross-process later, the same view derives
+  from an `attach`ed handle.
+- **`into_desc(slot, pool_id)`** — safe, O(1): checks the
+  guard's header address against the id's registry entry
+  (catches id/pool mispairing); consumes the guard, and
+  ownership travels on in the descriptor (the usage
+  model's "in-flight" state). The error side hands the
+  guard back, so a miss cannot leak the buffer.
+- **`unsafe resolve::<T>(desc) -> Result<BufSlot<T>, _>`**
+  — every failure is an `Err`, never a panic: unknown pool
+  id, index out of range, `T` geometry mismatch. The
+  geometry case differs from `alloc` (which panics)
+  because the descriptor selects which pool gets compared
+  — untrusted input must not select a panic. `unsafe`
+  covers the one thing validation cannot check —
+  ownership: the caller promises the desc came from
+  `into_desc`, arrived over a channel establishing
+  happens-before (ring commit → reserve qualifies), and is
+  resolved exactly once.
+- **`Desc` is plain data on purpose** — `FromBytes` means a
+  receiver mints one from shared bytes anyway, so a
+  move-only ownership token would be theater; the
+  discipline lives in resolve's contract.
+- **In-buffer provenance deferred** — the descriptor is the
+  message's travel form (forwarding re-sends it), so no
+  flow carries a buffer without its provenance; adding an
+  in-buffer header later is a pool `layout_version` bump.
+- **Type dispatch is payload-level** — the descriptor stays
+  type-agnostic. Multiple message types over one queue
+  need a receiver-readable tag: a first-word id driving a
+  match (demo-minimal), `TryFromBytes` tagged enums, or a
+  future `Message` trait hiding the cast boilerplate (see
+  todo Ideas).
+- **Single-address-space profile (future)** — with no MMU
+  and one trust domain, a descriptor could carry pointers
+  (a flattened guard): zero-lookup resolve, but nothing to
+  validate against — a scribbled pointer descriptor is UB
+  on use, where id + index degrades to an `Err`. The
+  canonical form stays `(pool id, buf idx)`; a pointer
+  profile could arrive later behind the same trait seam as
+  other usage styles.
 
 ### Free path: intrusive LIFO free-stack
 
@@ -500,20 +623,24 @@ What keeps this project distinct from it:
 
 ### Open questions
 
-- **Pool-id allocation** — coordinator-assigned versus derived
-  from the shm object's identity.
+- **Pool-id allocation** — in-process settled in 0.7.0
+  (registry slot index, no unregister); cross-process
+  remains open: coordinator-assigned versus derived from
+  the shm object's identity.
 - **Setup plane** — how a process discovers and maps a pool it
   hasn't seen: pre-arranged at init (embedded-friendly,
   allocation-free after startup) versus fd-passing over a
   Unix socket (Linux-friendly, dynamic); likely both, as
   profiles.
-- **Message header shape** — minimum provenance is
-  `(pool id, offset)`; whether length or a type tag joins it
-  is undecided. Settle this early — the embedded next-link
-  is load-bearing for three states (free-stack, pending
-  FIFO, future lists), so the link, provenance, and any
-  length/type tag should be laid out together before the
-  first pool implementation lands.
+- **Message header shape** — 0.7.0 settled the near half:
+  provenance travels in the descriptor, a type tag is
+  payload-level, and the in-buffer header is deferred (see
+  [Descriptor and registry design](#descriptor-and-registry-design-070)).
+  Still open: whether a length (or anything else) joins a
+  future in-buffer header, and its layout against the
+  embedded next-link — the link is load-bearing for three
+  states (free-stack, pending FIFO, future lists), so they
+  must be laid out together when that header lands.
 
 ## Resolved questions
 
