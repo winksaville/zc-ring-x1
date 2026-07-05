@@ -268,14 +268,14 @@ impl<'a> Pool<'a> {
     /// [`alloc`](Pool::alloc) with an injected wait policy:
     /// retry until a buffer frees up or the policy gives up.
     ///
-    /// - `wait` is called after each failed attempt with the
-    ///   attempt count (0-based, saturating); returning
-    ///   `false` gives up → `Err(Exhausted)`.
+    /// - `on_exhausted` is called after each failed attempt
+    ///   with the attempt count (0-based, saturating);
+    ///   returning `false` gives up → `Err(Exhausted)`.
     /// - See [`policy`](crate::policy) for shipped policies
     ///   and the composition model.
     pub fn alloc_with<T>(
         &mut self,
-        mut wait: impl FnMut(u32) -> bool,
+        mut on_exhausted: impl FnMut(u32) -> bool,
     ) -> Result<BufSlot<'a, T>, Exhausted>
     where
         T: FromBytes + IntoBytes + KnownLayout,
@@ -285,7 +285,7 @@ impl<'a> Pool<'a> {
             match self.alloc::<T>() {
                 Ok(buf_slot) => return Ok(buf_slot),
                 Err(Exhausted) => {
-                    if !wait(attempt) {
+                    if !on_exhausted(attempt) {
                         return Err(Exhausted);
                     }
                     attempt = attempt.saturating_add(1);

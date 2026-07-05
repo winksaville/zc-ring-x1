@@ -105,8 +105,8 @@ impl<'a> Producer<'a> {
     /// injected wait policy: retry until a slot frees up or
     /// the policy gives up.
     ///
-    /// - `wait` is called after each failed attempt with the
-    ///   attempt count (0-based, saturating); returning
+    /// - `on_full` is called after each failed attempt with
+    ///   the attempt count (0-based, saturating); returning
     ///   `false` gives up → `Err(Full)`.
     /// - The wait loop is the reservation itself (the guard
     ///   borrows the endpoint, so retrying a `reserve_slot`
@@ -118,7 +118,7 @@ impl<'a> Producer<'a> {
     ///   and the composition model.
     pub fn reserve_slot_with<T>(
         &mut self,
-        mut wait: impl FnMut(u32) -> bool,
+        mut on_full: impl FnMut(u32) -> bool,
     ) -> Result<WriteSlot<'_, T>, Full>
     where
         T: FromBytes + IntoBytes + KnownLayout,
@@ -135,7 +135,7 @@ impl<'a> Producer<'a> {
             if p.wrapping_sub(c) < self.capacity {
                 break;
             }
-            if !wait(attempt) {
+            if !on_full(attempt) {
                 return Err(Full);
             }
             attempt = attempt.saturating_add(1);

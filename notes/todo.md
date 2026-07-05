@@ -141,6 +141,7 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 - feat: demo cpu-pinned placement variants [[10]]
 - feat: descriptor queues over the SPSC ring [[12]]
 - feat: wait-policy hook + spin models [[13]]
+- refactor: demo _closure forms + on_full params [[14]]
 
 # References
 
@@ -152,3 +153,4 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 [11]: chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [12]: chores/chores-01.md#feat-descriptor-queues-over-the-spsc-ring
 [13]: chores/chores-01.md#feat-wait-policy-hook--spin-models
+[14]: chores/chores-01.md#refactor-demo-_closure-forms--on_full-params

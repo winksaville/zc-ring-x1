@@ -474,7 +474,7 @@ we dogfood, per the tier model in
     forms are measured against (and what iiac-perf ports
     first).
   - **exemplar** — one workload written in all three forms
-    side by side (raw / `_with(closure)` / `_spin`), the
+    side by side (raw / `_closure` / `_spin`), the
     worked model of the comparison:
     `spsc_ring_one_msg_{1t,2t}`, at 1t (no waiting — pure
     per-call overhead, where ~3 ns/msg makes any cost a
@@ -490,6 +490,36 @@ we dogfood, per the tier model in
   eyeball-zero for `_with`, near-zero for `_spin`.
 - Remaining clause of the todo — confirm with calibrated
   mean/stdev in iiac-perf — happens in the sibling repo.
+
+## refactor: demo _closure forms + on_full params
+
+Commits:
+
+Naming pass from reading the 0.7.1 call sites: a scoreboard
+label ending in `_with` dangles ("with what?"), and nothing
+at a call site said what the closure decides or when it
+runs.
+
+- Demo exemplar forms renamed `_with` → `_closure`
+  (`spsc_ring_one_msg_{1t,2t}_closure`): form names
+  describe the caller's code shape, and the label now reads
+  complete without an argument in sight. The API keeps
+  `_with` — the std idiom (`get_or_insert_with`,
+  `resize_with`) whose value is recognition; at real call
+  sites the argument answers "with what?".
+- The wait closure's *event* moved into the parameter name:
+  `on_full` / `on_empty` / `on_exhausted`. It surfaces in
+  docs, signature popups, and rust-analyzer inlay hints —
+  the call site itself now shows when the closure runs.
+  Policies stay event-neutral (`policy::spin` serves all
+  three events); the event belongs to the call, the
+  strategy to the policy.
+- Considered and recorded for later if `_with` still
+  itches: `reserve_slot_or_wait(on_full)` (behavior-named
+  method), and replacing the bool with a `Wait::Again /
+  GiveUp` enum (boolean blindness) — deferred because
+  named policies already carry the meaning at real call
+  sites, and pre-1.0 renames stay cheap.
 
 # References
 

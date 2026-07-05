@@ -90,8 +90,8 @@ impl<'a> Consumer<'a> {
     /// injected wait policy: retry until a message arrives or
     /// the policy gives up.
     ///
-    /// - `wait` is called after each failed attempt with the
-    ///   attempt count (0-based, saturating); returning
+    /// - `on_empty` is called after each failed attempt with
+    ///   the attempt count (0-based, saturating); returning
     ///   `false` gives up → `Err(Empty)`.
     /// - The wait loop is the reservation itself (the guard
     ///   borrows the endpoint, so retrying a `reserve_slot`
@@ -103,7 +103,7 @@ impl<'a> Consumer<'a> {
     ///   and the composition model.
     pub fn reserve_slot_with<T>(
         &mut self,
-        mut wait: impl FnMut(u32) -> bool,
+        mut on_empty: impl FnMut(u32) -> bool,
     ) -> Result<ReadSlot<'_, T>, Empty>
     where
         T: FromBytes + KnownLayout + Immutable,
@@ -117,7 +117,7 @@ impl<'a> Consumer<'a> {
             if p != c {
                 break;
             }
-            if !wait(attempt) {
+            if !on_empty(attempt) {
                 return Err(Empty);
             }
             attempt = attempt.saturating_add(1);

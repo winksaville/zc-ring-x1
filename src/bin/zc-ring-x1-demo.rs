@@ -21,14 +21,15 @@
 //!   payloads at rest in pool buffers — runs between them:
 //!   alloc → into_desc → ring → resolve → free, with the
 //!   same placement ladder as the raw ring.
-//! - The `_with` / `_spin` lines are the wait-policy seam
-//!   exemplar: one workload written in all three forms side
-//!   by side — raw (the hand-rolled wait loop, the fastest
-//!   form we know for the shape and the baseline the others
-//!   are measured against), `_with` (a spinning closure
-//!   through the policy hook), and `_spin` (the shipped
-//!   model). Calibrated measurement lives in iiac-perf;
-//!   these lines are the eyeball check.
+//! - The `_closure` / `_spin` lines are the wait-policy
+//!   seam exemplar: one workload written in all three forms
+//!   side by side — raw (the hand-rolled wait loop, the
+//!   fastest form we know for the shape and the baseline
+//!   the others are measured against), `_closure` (a
+//!   spinning closure through the `reserve_slot_with`
+//!   hook), and `_spin` (the shipped model). Calibrated
+//!   measurement lives in iiac-perf; these lines are the
+//!   eyeball check.
 
 use std::time::Instant;
 
@@ -76,7 +77,7 @@ fn commas(n: u64) -> String {
 fn report(label: &str, secs: f64) {
     let rate = commas((COUNT as f64 / secs) as u64);
     let ns_per_msg = secs * 1e9 / COUNT as f64;
-    println!("{label:<43} {rate:>12} msgs/sec  {ns_per_msg:>7.1} ns/msg");
+    println!("{label:<46} {rate:>12} msgs/sec  {ns_per_msg:>7.1} ns/msg");
 }
 
 /// Parse a /sys cpu-list string ("0,12" or "0-2,6") into cpu
@@ -271,7 +272,7 @@ fn spsc_ring_one_msg_2t(pin: PinPair) -> f64 {
 /// instead of waiting and the line measures the probe path's
 /// pure overhead — at ~3 ns/msg any per-call cost shows as a
 /// visible percentage.
-fn spsc_ring_one_msg_1t_with() -> f64 {
+fn spsc_ring_one_msg_1t_closure() -> f64 {
     let mut region = Region([0; size_of::<Region>()]);
     let (mut producer, mut consumer) = Ring::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
         .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
@@ -284,14 +285,14 @@ fn spsc_ring_one_msg_1t_with() -> f64 {
             for i in 0..COUNT {
                 let mut slot = producer
                     .reserve_slot_with::<Msg>(|_| {
-                        panic!("spsc_ring_one_msg_1t_with: producer Full SHOULD NOT HAPPEN")
+                        panic!("spsc_ring_one_msg_1t_closure: producer Full SHOULD NOT HAPPEN")
                     })
                     .unwrap(); // OK: the policy panics instead of giving up
                 slot.seq = i;
                 slot.commit();
                 let msg = consumer
                     .reserve_slot_with::<Msg>(|_| {
-                        panic!("spsc_ring_one_msg_1t_with: consumer Empty SHOULD NOT HAPPEN")
+                        panic!("spsc_ring_one_msg_1t_closure: consumer Empty SHOULD NOT HAPPEN")
                     })
                     .unwrap(); // OK: the policy panics instead of giving up
                 assert_eq!(msg.seq, i);
@@ -331,7 +332,7 @@ fn spsc_ring_one_msg_1t_spin() -> f64 {
 /// spsc_ring_one_msg_2t through `reserve_slot_with` with a
 /// spinning closure — the closure form of the three-way seam
 /// check under real waiting.
-fn spsc_ring_one_msg_2t_with(pin: PinPair) -> f64 {
+fn spsc_ring_one_msg_2t_closure(pin: PinPair) -> f64 {
     let mut region = Region([0; size_of::<Region>()]);
     let (mut producer, mut consumer) = Ring::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
         .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
@@ -693,8 +694,8 @@ fn main() {
     println!();
     report("spsc_ring_one_msg_1t (core 0):", spsc_ring_one_msg_1t());
     report(
-        "spsc_ring_one_msg_1t_with (core 0):",
-        spsc_ring_one_msg_1t_with(),
+        "spsc_ring_one_msg_1t_closure (core 0):",
+        spsc_ring_one_msg_1t_closure(),
     );
     report(
         "spsc_ring_one_msg_1t_spin (core 0):",
@@ -733,8 +734,8 @@ fn main() {
                 spsc_ring_one_msg_2t(smt),
             );
             report(
-                &format!("spsc_ring_one_msg_2t_with (same core {p}+{c}):"),
-                spsc_ring_one_msg_2t_with(smt),
+                &format!("spsc_ring_one_msg_2t_closure (same core {p}+{c}):"),
+                spsc_ring_one_msg_2t_closure(smt),
             );
             report(
                 &format!("spsc_ring_one_msg_2t_spin (same core {p}+{c}):"),
@@ -750,7 +751,7 @@ fn main() {
             );
         }
         None => {
-            println!("2t same-core runs:                          skipped, no SMT sibling found")
+            println!("2t same-core runs:                             skipped, no SMT sibling found")
         }
     }
 
@@ -772,7 +773,7 @@ fn main() {
             );
         }
         None => {
-            println!("2t diff-cores runs:                         skipped, only one core found")
+            println!("2t diff-cores runs:                            skipped, only one core found")
         }
     }
 }
