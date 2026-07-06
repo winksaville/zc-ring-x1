@@ -9,9 +9,9 @@
 //!   in place (reserve_slot → write → commit; reserve_slot
 //!   → read → release) — first both ends on one thread
 //!   (the ring's own cost), then one producer thread to
-//!   one consumer thread: unpinned, pinned to one physical
-//!   core's two SMT siblings (shared L1/L2), and pinned to
-//!   two different physical cores.
+//!   one consumer thread: unpinned, pinned to two different
+//!   physical cores, and pinned to one physical core's two
+//!   SMT siblings (shared L1/L2, when the CPU has SMT).
 //! - Part 2, the pool: an allocator thread allocs and
 //!   fills `BufSlot`s and hands them to a freer thread —
 //!   "send" today is moving the guard (see the README's
@@ -725,6 +725,37 @@ fn main() {
         std_mpsc_one_pool_msg_2t(None),
     );
 
+    // Two threads, different physical cores.
+    println!();
+    match far {
+        Some((p, c)) => {
+            report(
+                &format!("spsc_ring_one_msg_2t (diff cores {p}+{c}):"),
+                spsc_ring_one_msg_2t(far),
+            );
+            report(
+                &format!("spsc_ring_one_msg_2t_closure (diff cores {p}+{c}):"),
+                spsc_ring_one_msg_2t_closure(far),
+            );
+            report(
+                &format!("spsc_ring_one_msg_2t_spin (diff cores {p}+{c}):"),
+                spsc_ring_one_msg_2t_spin(far),
+            );
+            report(
+                &format!("spsc_ring_one_pool_msg_2t (diff cores {p}+{c}):"),
+                spsc_ring_one_pool_msg_2t(far),
+            );
+            report(
+                &format!("std_mpsc_one_pool_msg_2t (diff cores {p}+{c}):"),
+                std_mpsc_one_pool_msg_2t(far),
+            );
+        }
+        None => {
+            println!("2t diff-cores runs:");
+            println!("  skipped, only one core found");
+        }
+    }
+
     // Two threads, one physical core (SMT siblings).
     println!();
     match smt {
@@ -751,29 +782,8 @@ fn main() {
             );
         }
         None => {
-            println!("2t same-core runs:                             skipped, no SMT sibling found")
-        }
-    }
-
-    // Two threads, different physical cores.
-    println!();
-    match far {
-        Some((p, c)) => {
-            report(
-                &format!("spsc_ring_one_msg_2t (diff cores {p}+{c}):"),
-                spsc_ring_one_msg_2t(far),
-            );
-            report(
-                &format!("spsc_ring_one_pool_msg_2t (diff cores {p}+{c}):"),
-                spsc_ring_one_pool_msg_2t(far),
-            );
-            report(
-                &format!("std_mpsc_one_pool_msg_2t (diff cores {p}+{c}):"),
-                std_mpsc_one_pool_msg_2t(far),
-            );
-        }
-        None => {
-            println!("2t diff-cores runs:                            skipped, only one core found")
+            println!("2t same-core runs:");
+            println!("  skipped, no SMT sibling found");
         }
     }
 }

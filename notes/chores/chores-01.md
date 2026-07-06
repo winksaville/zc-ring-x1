@@ -446,7 +446,7 @@ Design captured from the post-demo review; promoted to
 
 ## feat: wait-policy hook + spin models
 
-Commits:
+Commits: [[29]]
 
 Todo #1: every wait in the demo and tests was a hand-rolled
 spin loop — nine lines of ceremony per wait point. The hook
@@ -493,7 +493,7 @@ we dogfood, per the tier model in
 
 ## refactor: demo _closure forms + on_full params
 
-Commits:
+Commits: [[30]]
 
 Naming pass from reading the 0.7.1 call sites: a scoreboard
 label ending in `_with` dangles ("with what?"), and nothing
@@ -520,6 +520,33 @@ runs.
   GiveUp` enum (boolean blindness) — deferred because
   named policies already carry the meaning at real call
   sites, and pre-1.0 renames stay cheap.
+
+## feat: demo seam lines on diff cores, SMT last
+
+Commits:
+
+On a CPU without SMT (Pi 5's Cortex-A76, one thread per
+core) the same-core section skips, and the `_closure` /
+`_spin` seam lines ran only there — so a non-SMT machine
+never printed the three-way comparison under real waiting.
+
+- The diff-cores section now prints the full five-line set;
+  on the Pi 5 the three forms land within a few percent of
+  each other (~82–87 ns/msg across two A76 cores) — the
+  eyeball zero-cost the seam check wants.
+- The same-core (SMT) section moved last: it's the only
+  hardware-conditional section, so a machine without SMT
+  ends with the notice instead of a hole mid-output.
+- Skip notices print on two lines (header, then indented
+  reason) instead of padding to the scoreboard columns.
+- The skip itself is correct behavior, recorded so it isn't
+  "fixed" later: pinning works on any core (diff-cores runs
+  everywhere), but two threads simultaneously on one
+  physical core *is* SMT hardware. A probe pinning both
+  spin-waiting threads to one cpu measured ~8k msgs/sec vs
+  ~12M cross-core — we think each handoff waits out a
+  scheduler timeslice, so that number measures the
+  scheduler, not the ring.
 
 # References
 
@@ -551,3 +578,5 @@ runs.
 [26]: https://github.com/winksaville/zc-ring-x1/commit/dd5217d72434 "dd5217d724341220a2e201d4ff74c947d6ef5bf8"
 [27]: https://github.com/winksaville/zc-ring-x1/commit/fe4f426b9f24 "fe4f426b9f24d6883cb2d1fd42e36ed1c09e39d9"
 [28]: https://github.com/winksaville/zc-ring-x1/commit/20852d556100 "20852d556100cc862f61b0c80b05d4fef656e63c"
+[29]: https://github.com/winksaville/zc-ring-x1/commit/88a696959c4e "88a696959c4e40c02a6f36e3c15a074d57daaefb"
+[30]: https://github.com/winksaville/zc-ring-x1/commit/b23b06a5dae5 "b23b06a5dae5c21a94e60bcf2e94b883d146e359"
