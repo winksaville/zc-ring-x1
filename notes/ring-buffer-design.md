@@ -1,13 +1,14 @@
 # Ring buffer design
 
 Design notes for the zero-copy ring buffer. This file uses
-[Prose form](../AGENTS.md#prose-form). It covers requirements,
-constraints, the memory layout, the API, and the validation
-ladder, and is kept in sync with the implementation in
-`src/` (as-built): `lib.rs` holds the region-level machinery
-(header, init/attach/split, geometry helpers) and re-exports
-the endpoint modules `producer.rs` (Producer, WriteSlot,
-Full) and `consumer.rs` (Consumer, ReadSlot, Empty).
+[Prose form](../AGENTS.md#prose-form). It covers terminology,
+requirements, constraints, the memory layout, the API, and
+the validation ladder, and is kept in sync with the
+implementation in `src/` (as-built): `lib.rs` holds the
+region-level machinery (header, init/attach/split, geometry
+helpers) and re-exports the endpoint modules `producer.rs`
+(Producer, WriteSlot, Full) and `consumer.rs` (Consumer,
+ReadSlot, Empty).
 
 ## Goal
 
@@ -16,6 +17,35 @@ a consumer with no copying at the boundary: the producer writes
 its message directly into buffer memory, the consumer reads it
 in place. The same layout must work intra-process (threads) and
 inter-process (shared memory).
+
+## Terminology
+
+The vocabulary the rest of the document builds on, defined
+once before first use:
+
+- **slot** — a cache-line-aligned `[u8; N]`: one of the
+  ring's M fixed-size buffers. Untyped storage — a message
+  is a zerocopy `&T` / `&mut T` view into it (geometry
+  details in [Constraints](#constraints)).
+- **reserve** — take exclusive access to a slot through a
+  guard:
+  - the producer reserves the next free slot
+    (`WriteSlot`);
+  - the consumer reserves the oldest unread slot
+    (`ReadSlot`).
+- **commit** — the producer publishes its slot to the
+  consumer; the handoff of ownership away from the writer:
+  - SPSC: the `producer_idx` Release store;
+  - MPSC: the slot's seq Release store.
+- **release** — the consumer hands its slot back for
+  reuse; the matching handoff in the other direction:
+  - SPSC: the `consumer_idx` Release store;
+  - MPSC: the slot's seq Release store (`pos + M`).
+- **claim** — MPSC only: a producer wins exclusive
+  ownership of a slot position by CAS on the shared
+  producer index; writing and committing follow. Claim
+  order and commit order can differ — see
+  [MPSC ring (sibling primitive)](#mpsc-ring-sibling-primitive).
 
 ## Requirements
 
@@ -51,8 +81,8 @@ inter-process (shared memory).
 
 ## Constraints
 
-- **Slot geometry: M slots × N bytes** — a *slot* is one
-  fixed-size buffer in the ring; the ring holds M of them.
+- **Slot geometry: M slots × N bytes** — the ring holds M
+  [slots](#terminology) of N bytes each.
   - M (capacity) is a power of two — index wrapping is a
     mask, no division; checked at construction.
   - N (slot size) is a multiple of the cache-line size, and
@@ -325,6 +355,211 @@ Per-commit, alongside the cargo cycle:
   positions intact).
 - [loom](https://docs.rs/loom) for exhaustive ordering
   exploration is a possible follow-on (Ideas).
+
+## MPSC ring (sibling primitive)
+
+Design for the multi-producer single-consumer ring — a
+sibling type next to the SPSC ring, not a mode of it. The
+SPSC hot path is one Relaxed load + one Acquire load + one
+Release store per side; any unified type would put at least a
+per-slot sequence check into that path. So the primitives
+stay separate, existing SPSC users pay nothing, and iiac-perf
+measures the two directly against each other. Anticipated as
+a one-bullet placeholder in
+[Pool topology and phasing](#pool-topology-and-phasing); this
+section is the full design.
+
+### MPSC protocol
+
+Vyukov's bounded MPMC queue restricted to many-producer /
+one-consumer: producers CAS-claim `producer_idx`; a per-slot
+sequence word publishes each slot independently. The seq
+exists because claim order and commit order differ under
+concurrency — the consumer must observe commits, not claims.
+
+- **Sequence array** — `M × AtomicU32`, `seq[i]` initialized
+  to `i`. Slot at free-running position `pos` (masked at
+  access, as SPSC) is:
+  - claimable when `seq == pos`,
+  - committed when `seq == pos + 1`,
+  - released by the consumer storing `seq = pos + M`.
+- **Producer claim** — load `producer_idx` (Relaxed), load
+  that slot's seq (Acquire), branch on the wrapping-signed
+  diff `seq.wrapping_sub(pos) as i32`:
+  - `== 0` — claimable:
+    - `compare_exchange_weak(pos, pos + 1)` on
+      `producer_idx`; success claims the slot exclusively.
+    - Write the payload in place.
+    - `seq.store(pos + 1, Release)` commits.
+  - `< 0` — full:
+    - The slot's previous occupant is not yet released.
+    - The `on_full` policy decides retry vs give-up.
+  - `> 0` — lost the race to another producer:
+    - Reload `producer_idx` and retry.
+    - Not a policy call: the system made progress, only
+      this producer fell behind.
+- **Consumer** — single, as in SPSC, so its side needs no
+  CAS:
+  - wait for `seq == c + 1` (Acquire),
+  - read the slot,
+  - store `seq = c + M` (Release),
+  - advance the private index.
+- **Producers never read `consumer_idx`**:
+  - fullness falls out of the slot seq;
+  - the header's consumer index line is diagnostic
+    occupancy only.
+- **Free-running u32 + power-of-two M** carry over
+  unchanged: `2^32 % M == 0` keeps seq arithmetic and masked
+  positions wrap-safe.
+- **Atomic floor** — the claim CAS raises the floor for MPSC
+  users only:
+  - the module is gated on `target_has_atomic = "32"`;
+  - the SPSC ring stays load/store-only (thumbv6m keeps
+    working).
+
+### MPSC API: closure send
+
+The producer-side guard is replaced by a closure, because in
+MPSC an abandoned *claim* wedges the queue — the consumer
+waits at that position forever — where SPSC's dropped guard
+was free (`producer_idx` never moved). Abandonment is made
+unrepresentable rather than handled:
+
+- `MpscRing::init(region, slot_size, capacity)` /
+  `unsafe attach` — mirror the SPSC constructors:
+  - own magic and layout_version;
+  - cross-attaching a region of the wrong kind fails
+    toward `BadMagic`.
+- `split() -> (MpscProducer, MpscConsumer)` with
+  `MpscProducer: Clone + Send`:
+  - one handle per producing thread;
+  - cross-process producers attach;
+  - the endpoint claims word models role slots, not a
+    single producer bit, so N producer claims fit —
+    already noted in its todo.
+- `producer.send_with::<T>(on_full, fill)` →
+  `Result<(), Full>`:
+  - `fill: impl FnOnce(&mut T)` writes the payload in
+    place — claim, fill, commit on closure return;
+  - commit-by-construction — no public abandonment state;
+  - `on_full(attempt) -> bool` is the same wait-policy
+    seam as SPSC (`|_| false` = single probe).
+- `consumer.reserve_slot_with::<T>(on_empty)` →
+  `ReadSlot` — the SPSC consumer guard survives:
+  - consumer abandonment is harmless (drop without
+    release re-delivers the same slot);
+  - so the guard shape stays.
+- **Unwind path** — a panic in `fill` must not wedge the
+  queue:
+  - the unwind runs an internal guard's Drop, which
+    tombstones the claimed slot — a marked commit the
+    consumer releases without delivering;
+  - sketch: a reserved seq bit masked out of the index
+    arithmetic (constrains `M <= 2^30`); encoding is an
+    open question below;
+  - only unwinding reaches it — panic=abort targets never
+    do.
+
+### Overflow readiness
+
+The sender-private overflow FIFO
+([Overflow FIFO (future)](#overflow-fifo-future)) must
+compose with MPSC when it lands. Two properties keep that
+true; both are named requirements so a later protocol tweak
+cannot silently break them:
+
+- **`Full` is a zero-footprint failure**:
+  - a send returning `Full` leaves no claim, no tombstone,
+    no protocol residue;
+  - the protocol gives this by construction — fullness is
+    observed in the slot seq *before* any CAS, and a lost
+    CAS is also stateless — but it is a requirement, not
+    an accident.
+- **`Full` is the overflow seam**:
+  - the future MPSC DescSender probes with `|_| false` and
+    on `Err(Full)` appends the buffer to its own pending
+    list;
+  - pending lists stay per-sender — no shared list, no
+    CAS;
+  - per-sender draining preserves exactly the per-producer
+    FIFO order MPSC promises anyway — inter-producer order
+    was never promised.
+
+### MPSC trust
+
+Same posture as the SPSC ring: every shared word is
+untrusted, corruption degrades service and never causes UB.
+
+- The seq array joins the untrusted set:
+  - positions are always masked, so scribbled seqs yield
+    spurious Full/Empty or garbage-but-valid `T`s
+    (zerocopy guarantees representation, not sense);
+  - never out-of-bounds access.
+- A hostile *producer* peer is new surface relative to
+  SPSC:
+  - it can claim and never commit — wedging the queue, a
+    liveness loss;
+  - or commit garbage;
+  - denial of service stays possible, as it always was —
+    memory safety does not depend on peers.
+
+### Fan-in (composition, not a mode)
+
+The other standard many-to-one shape: one SPSC ring per
+producer, the consumer polls N endpoints. Both have a place:
+
+- the shared MPSC ring:
+  - arrival-order fairness ("fair FIFO");
+  - one place to poll.
+- fan-in:
+  - stays load/store-only;
+  - zero producer-to-producer interference;
+  - the consumer chooses the service policy (priority,
+    round-robin, weighted, …).
+
+Fan-in is buildable today from shipped SPSC parts; likely
+both shapes get offered eventually (a fan-in helper as a
+later convenience — no commitment yet). The bench matrix
+measures both from the start.
+
+### MPSC measurement plan
+
+iiac-perf (sibling repo) grows an mpsc set alongside `zcr`:
+
+- `zcr-mpsc-1t` — same-thread round-trip: pure protocol
+  overhead (CAS + seq vs load/store), against
+  `zcr-with-1t`.
+- `zcr-mpsc-2t` — 1 producer / 1 consumer cross-core: what
+  MPSC costs when you don't need it, against `zcr-with-2t`.
+- `zcr-mpsc-3t` / `-5t` — 2 / 4 producers, one consumer:
+  claim-contention scaling, the numbers SPSC cannot
+  produce.
+- Fan-in comparator at the same producer counts (N SPSC
+  rings, round-robin poll).
+- We think the shared ring:
+  - loses to fan-in on raw throughput under producer
+    contention (CAS retries vs disjoint cache lines);
+  - wins on consumer-side latency and fairness at larger
+    N.
+- The matrix exists to check that, not assume it.
+
+### MPSC open questions
+
+- **Seq array padding**:
+  - packed `M × 4` bytes — Vyukov's shape; adjacent-slot
+    false sharing;
+  - line-padded — `M × 64` bytes of overhead;
+  - start packed, and the bench matrix decides whether a
+    padded variant earns a layout flag.
+- **Tombstone encoding**:
+  - reserved seq bit — masked arithmetic, `M <= 2^30`;
+  - or a per-slot side word;
+  - only the unwind path needs it, so the simplest
+    correct encoding wins.
+- **Header consumer index**:
+  - keep as diagnostic occupancy (Relaxed stores by the
+    consumer), or drop the line entirely;
+  - the `occupancy()` polish todo argues for keeping it.
 
 ## Messaging layer: pools and descriptor queues
 
@@ -601,7 +836,8 @@ marking: push the buffer onto the pool's free-stack.
   primitive under the same descriptor layer. The endpoint
   claims word should model role slots, not a single producer
   bit, so N producer claims fit later without a layout
-  rethink.
+  rethink. Full design:
+  [MPSC ring (sibling primitive)](#mpsc-ring-sibling-primitive).
 
 ### Usage model: roles and buffer lifecycle
 

@@ -6,7 +6,21 @@ uses links or reference links for more details.
 
 ## In Progress
 
-_No cycle currently in progress._
+**feat: mpsc ring sibling primitive**
+
+N senders sharing one queue needs a multi-producer ring, and
+the SPSC hot path (load/store-only, ~2 ns 1t) must not pay
+for it — so MPSC lands as a separate sibling primitive,
+measured A/B against SPSC and a fan-in comparator in
+iiac-perf. Design:
+[MPSC ring (sibling primitive)](ring-buffer-design.md#mpsc-ring-sibling-primitive).
+
+- 0.11.0-0 docs: mpsc ring design + plan (current)
+- 0.11.0-1 feat: mpsc ring layout + init/attach
+- 0.11.0-2 feat: mpsc send_with + consumer recv
+- 0.11.0-3 feat: demo mpsc flow lines
+- 0.11.0-4 docs: mpsc iiac-perf numbers
+- 0.11.0 feat: mpsc ring sibling primitive (close-out)
 
 ## Todo
 
@@ -23,12 +37,24 @@ _No cycle currently in progress._
  subsections (link via `[N]` ref).
 
 1. Descriptor queue endpoints: paired DescSender (loan +
-   send) / DescReceiver (recv) owning ring endpoint +
-   registry access, so the demo's ~20-line send path
-   becomes ~3 lines and `resolve`'s unsafe is audited once
-   inside the crate (recv safe by construction); guard
-   handed back on Full [[11]].
-2. Batch alloc/free demo: alongside the one-message
+   send) / DescReceiver (recv) [[11]]:
+   - own ring endpoint + registry access;
+   - the demo's ~20-line send path becomes ~3 lines;
+   - `resolve`'s unsafe is audited once inside the crate
+     (recv safe by construction);
+   - guard handed back on Full;
+   - design against both ring flavors (SPSC + MPSC);
+   - the sender is also where each sender's private
+     overflow pending list will live.
+2. Overflow FIFO: on ring Full, append the message to a
+   sender-private pending list instead of failing
+   [details](ring-buffer-design.md#overflow-fifo-future):
+   - intrusive — the same embedded next-link the
+     free-stack uses, so zero allocation;
+   - naturally bounded by pool capacity;
+   - composes per-sender with MPSC — see
+     [Overflow readiness](ring-buffer-design.md#overflow-readiness).
+3. Batch alloc/free demo: alongside the one-message
    alloc_free_1t loops, a variant that allocs X messages
    (5, 10, …) then frees them all, pool vs global
    allocator. We think the pool's rate stays constant
@@ -36,12 +62,12 @@ _No cycle currently in progress._
    the working set hot) while Box::new/drop slows as the
    batch outgrows malloc's thread-cache fast path — the
    demo should show it.
-3. Endpoint claims word: CAS-claimed producer/consumer roles
+4. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
    [details](ring-buffer-design.md#resolved-questions).
-4. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+5. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot_with [details](ring-buffer-design.md#api).
 
@@ -55,6 +81,13 @@ _No cycle currently in progress._
   An in-repo bench only if per-commit regression tracking
   proves necessary.
 
+- Fan-in helper: consumer-side composition polling N SPSC
+  rings under a pluggable service policy (priority,
+  round-robin, weighted)
+  [details](ring-buffer-design.md#fan-in-composition-not-a-mode):
+  - buildable today from shipped parts;
+  - likely offered alongside the MPSC ring eventually — no
+    commitment yet.
 - Study [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2)
   before implementing message pools — battle-tested loan/send
   decoupling and pool-offset machinery; how it differs from
@@ -90,11 +123,6 @@ _No cycle currently in progress._
   ManuallyDrop dance in free/send paths. Decide when
   descriptor-queue send lands — explicit free is easier to
   upgrade than to walk back.
-- Overflow FIFO: when a queue's ring is Full, append the
-  message to a sender-private intrusive pending list (same
-  embedded next-link the free-stack uses; zero allocation,
-  naturally bounded by pool capacity)
-  [details](ring-buffer-design.md#overflow-fifo-future).
 - Blocking layer above the crate (futex, eventfd, async
   wakers) built on the header's user line — mechanism and
   contracts in

@@ -16,7 +16,9 @@ A dummy chore description.
 
 ## docs: versioning SSOT + generic conventions
 
-Commits:
+Commits: [[35]] (in vc-template-x1 — this work predates this
+repo, which was created from the template; the content
+arrived here in the Initial commit)
 
 Adopt the converged generic convention set from fc, so the
 template's `AGENTS.md`, `cycle-protocol.md`, and `versioning.md`
@@ -663,7 +665,7 @@ relabeled; fresh iiac-perf numbers land in a later pass. The
 
 ## docs: refresh iiac-perf numbers, seam closed
 
-Commits:
+Commits: [[36]]
 
 The `0.9.0` cycle removed the `zcr-spin-*` README blocks and
 promised fresh iiac-perf numbers "in a later pass". This is that
@@ -682,6 +684,10 @@ pass, and it also closes the seam-measurement clause of Todo #1
   empirical justification for the `0.8.0` / `0.9.0` drops of
   `reserve_slot` and `reserve_slot_spin` — the seam collapsed
   because the dominated rungs were removed, not deferred.
+
+## feat: mpsc ring sibling primitive
+
+Commits:
 
 # References
 
@@ -719,3 +725,5 @@ pass, and it also closes the seam-measurement clause of Todo #1
 [32]: https://github.com/winksaville/zc-ring-x1/commit/35f144b980f7 "35f144b980f78b893892f9958c3c6b3fa0c2909e"
 [33]: https://github.com/winksaville/zc-ring-x1/commit/0897d0a2edce "0897d0a2edced6719f2ce5e65cc263da7514ff47"
 [34]: https://github.com/winksaville/zc-ring-x1/commit/af9dc6af764f "af9dc6af764f51c28ba9400a4f86ee4b6acee265"
+[35]: https://github.com/winksaville/vc-template-x1/commit/d485bb5d34b7 "d485bb5d34b72453ccb44f16967730ace2e17dc9"
+[36]: https://github.com/winksaville/zc-ring-x1/commit/3f07aec032f5 "3f07aec032f55b456912120aed8ca14a891986fe"
