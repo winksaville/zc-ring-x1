@@ -616,7 +616,7 @@ change.
 
 ## refactor: drop reserve_slot_spin and alloc_spin
 
-Commits:
+Commits: [[34]]
 
 With `reserve_slot` gone, the endpoints' `reserve_slot_spin`
 (and the pool's parallel `alloc_spin`) were the only remaining
@@ -661,6 +661,28 @@ relabeled; fresh iiac-perf numbers land in a later pass. The
 
 - `0.9.0` refactor: drop reserve_slot_spin and alloc_spin
 
+## docs: refresh iiac-perf numbers, seam closed
+
+Commits:
+
+The `0.9.0` cycle removed the `zcr-spin-*` README blocks and
+promised fresh iiac-perf numbers "in a later pass". This is that
+pass, and it also closes the seam-measurement clause of Todo #1
+(the shipped wait-policy hook's validation step).
+
+- README.md perf section replaced with an `iiac-perf 0.16.0`
+  run: the harness now expands the `zcr` shorthand to just
+  `zcr-with-1t` / `zcr-with-2t`, since raw and spin no longer
+  exist as zc-ring methods. Header command shortens from the
+  six explicit bench names to `iiac-perf -d 300 zcr`.
+- Todo #1's measurement is done: raw / `_with` / `_spin` were
+  measured at 300s, and `_with` ≈ `_spin` within noise while
+  the hand-rolled raw loop was the slowest (bug #1's
+  read-both-indices-every-spin penalty). That result is the
+  empirical justification for the `0.8.0` / `0.9.0` drops of
+  `reserve_slot` and `reserve_slot_spin` — the seam collapsed
+  because the dominated rungs were removed, not deferred.
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"
@@ -696,3 +718,4 @@ relabeled; fresh iiac-perf numbers land in a later pass. The
 [31]: https://github.com/winksaville/zc-ring-x1/commit/e083cd429597 "e083cd4295978a75833af284e9dd1620c0ad63e8"
 [32]: https://github.com/winksaville/zc-ring-x1/commit/35f144b980f7 "35f144b980f78b893892f9958c3c6b3fa0c2909e"
 [33]: https://github.com/winksaville/zc-ring-x1/commit/0897d0a2edce "0897d0a2edced6719f2ce5e65cc263da7514ff47"
+[34]: https://github.com/winksaville/zc-ring-x1/commit/af9dc6af764f "af9dc6af764f51c28ba9400a4f86ee4b6acee265"

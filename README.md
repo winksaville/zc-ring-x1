@@ -229,9 +229,9 @@ buffers, spurious exhaustion), never cause UB on this side.
 
 ## Performance runs using benches in iiac-perf each 5min (300s) duration
 ```
-wink@3900x 26-07-06T15:13:37.833Z:~/data/prgs/rust/iiac-perf (main+1)
-$ iiac-perf -d 300 zcr-raw-1t zcr-with-1t zcr-spin-1t zcr-raw-2t zcr-with-2t zcr-spin-2t
-iiac-perf 0.15.0 — Rust latency microbenchmark harness
+wink@3900x 26-07-06T14:50:58.972Z:~/data/prgs/rust/iiac-perf (main+1)
+$ iiac-perf -d 300 zcr
+iiac-perf 0.16.0 — Rust latency microbenchmark harness
 
 Calibration:
   framing/sample      11.12 ns  (timer pair, two-point fit)
@@ -241,91 +241,50 @@ Calibration:
   sleep inhibit     active (systemd-inhibit --what=sleep)
   config            none (built-in defaults)
 
-zcr-raw-1t: zc-ring-x1 raw round-trip (1 thread) [duration=300.0s outer=1,440,771,241 inner=35 calls=50,426,993,435 adj/call=0.81ns labels=both]:
-                            first           last         range          count           mean       adjusted
-  z4  0.000_1              4.3 ns         4.3 ns        0.0 ns          6,171         4.3 ns         3.5 ns
-  p30 0.30                 4.6 ns         4.6 ns        0.0 ns    738,479,210         4.6 ns         3.8 ns
-  p70 0.70                 4.9 ns         4.9 ns        0.0 ns    381,068,110         4.9 ns         4.1 ns
-  p90 0.90                 5.1 ns         5.1 ns        0.0 ns    275,496,171         5.1 ns         4.3 ns
-  n2  0.99                 5.4 ns         5.4 ns        0.0 ns     28,576,262         5.4 ns         4.6 ns
-  n3  0.999                5.7 ns         6.3 ns        0.6 ns     15,526,980         5.9 ns         5.1 ns
-  n4  0.999_9              6.6 ns       111.9 ns      105.4 ns      1,478,478        12.8 ns        12.0 ns
-  n5  0.999_99           112.3 ns       142.1 ns       29.8 ns        125,532       119.9 ns       119.1 ns
-  n6  0.999_999          142.3 ns     2,265.1 ns    2,122.8 ns         12,814       386.3 ns       385.5 ns
-  n7  0.999_999_9      2,267.1 ns     2,449.4 ns      182.3 ns          1,369     2,297.9 ns     2,297.1 ns
-  n8  0.999_999_99     2,455.6 ns     6,594.6 ns    4,139.0 ns            130     5,358.1 ns     5,357.3 ns
-  n9  0.999_999_999    6,668.3 ns    10,190.8 ns    3,522.6 ns             13     7,158.2 ns     7,157.4 ns
-  n10 0.999_999_999_9 27,820.0 ns    27,820.0 ns        0.0 ns              1    27,820.0 ns    27,819.2 ns
-  mean                                                                                4.8 ns         4.0 ns
-  stdev                                                                               3.8 ns
-  mean min..n2                                                                        4.8 ns         4.0 ns
-  stdev min..n2                                                                       0.2 ns
+zcr-with-1t: zc-ring-x1 reserve_slot_with round-trip (1 thread) [duration=300.0s outer=2,064,159,039 inner=40 calls=82,566,361,560 adj/call=0.77ns labels=both]:
+                            first           last         range            count           mean       adjusted
+  z3  0.001                2.3 ns         2.3 ns        0.0 ns          817,487         2.3 ns         1.5 ns
+  z2  0.01                 2.5 ns         2.5 ns        0.0 ns       30,371,404         2.5 ns         1.7 ns
+  p30 0.30                 2.5 ns         2.5 ns        0.0 ns    1,080,749,327         2.5 ns         1.7 ns
+  p60 0.60                 2.7 ns         2.7 ns        0.0 ns      249,945,275         2.7 ns         2.0 ns
+  p80 0.80                 2.8 ns         2.8 ns        0.0 ns      484,832,768         2.8 ns         2.0 ns
+  n2  0.99                 3.0 ns         3.3 ns        0.3 ns      206,929,047         3.0 ns         2.3 ns
+  n3  0.999                3.5 ns         3.8 ns        0.3 ns        9,206,831         3.6 ns         2.8 ns
+  n4  0.999_9              4.0 ns         9.0 ns        5.0 ns        1,100,438         4.2 ns         3.4 ns
+  n5  0.999_99             9.3 ns       116.2 ns      107.0 ns          185,914        93.8 ns        93.1 ns
+  n6  0.999_999          116.5 ns     1,970.2 ns    1,853.7 ns           18,497       172.7 ns       172.0 ns
+  n7  0.999_999_9      1,971.2 ns     2,097.2 ns      126.0 ns            1,844     1,993.1 ns     1,992.4 ns
+  n8  0.999_999_99     2,099.2 ns     5,603.3 ns    3,504.1 ns              186     3,658.0 ns     3,657.3 ns
+  n9  0.999_999_999    5,611.5 ns    10,076.2 ns    4,464.6 ns               19     6,219.5 ns     6,218.7 ns
+  n10 0.999_999_999_9 10,641.4 ns    10,911.7 ns      270.3 ns                2    10,776.6 ns    10,775.8 ns
+  mean                                                                                  2.7 ns         1.9 ns
+  stdev                                                                                 2.6 ns
+  mean min..n2                                                                          2.6 ns         1.9 ns
+  stdev min..n2                                                                         0.2 ns
 
-zcr-with-1t: zc-ring-x1 reserve_slot_with round-trip (1 thread) [duration=300.0s outer=1,367,394,942 inner=38 calls=51,961,007,796 adj/call=0.78ns labels=both]:
-                            first           last         range          count           mean       adjusted
-  z4  0.000_1              4.2 ns         4.2 ns        0.0 ns            161         4.2 ns         3.4 ns
-  p20 0.20                 4.5 ns         4.5 ns        0.0 ns    360,925,518         4.5 ns         3.7 ns
-  p60 0.60                 4.7 ns         4.7 ns        0.0 ns    895,657,195         4.7 ns         4.0 ns
-  n2  0.99                 5.0 ns         5.5 ns        0.5 ns    100,429,486         5.1 ns         4.4 ns
-  n3  0.999                5.8 ns         6.1 ns        0.3 ns      8,726,583         5.9 ns         5.1 ns
-  n4  0.999_9              6.3 ns       103.6 ns       97.3 ns      1,514,195        12.5 ns        11.7 ns
-  n5  0.999_99           103.9 ns       162.7 ns       58.8 ns        128,130       110.6 ns       109.9 ns
-  n6  0.999_999          162.9 ns     2,117.6 ns    1,954.7 ns         12,254     1,425.4 ns     1,424.6 ns
-  n7  0.999_999_9      2,119.7 ns     2,474.0 ns      354.3 ns          1,284     2,177.9 ns     2,177.1 ns
-  n8  0.999_999_99     2,476.0 ns     6,615.0 ns    4,139.0 ns            122     5,327.8 ns     5,327.1 ns
-  n9  0.999_999_999    6,651.9 ns     9,592.8 ns    2,940.9 ns             13     7,390.1 ns     7,389.3 ns
-  n10 0.999_999_999_9 13,434.9 ns    13,434.9 ns        0.0 ns              1    13,434.9 ns    13,434.1 ns
-  mean                                                                                4.7 ns         4.0 ns
-  stdev                                                                               5.8 ns
-  mean min..n2                                                                        4.7 ns         3.9 ns
-  stdev min..n2                                                                       0.2 ns
-
-zcr-raw-2t: zc-ring-x1 raw round-trip (2 threads, spin) [duration=300.0s outer=1,674,401,787 inner=1 calls=1,674,401,787 adj/call=11.61ns labels=both]:
+zcr-with-2t: zc-ring-x1 reserve_slot_with round-trip (2 threads, spin) [duration=300.0s outer=1,942,197,324 inner=1 calls=1,942,197,324 adj/call=11.61ns labels=both]:
                                first              last             range          count              mean          adjusted
-  z4  0.000_1                20.0 ns           99.0 ns           79.0 ns         88,909           82.0 ns           70.4 ns
-  z3  0.001                 100.0 ns          100.0 ns            0.0 ns      1,360,537          100.0 ns           88.4 ns
-  z2  0.01                  109.1 ns          119.0 ns           10.0 ns      6,342,651          110.5 ns           98.9 ns
-  p20 0.20                  120.1 ns          120.1 ns            0.0 ns    531,691,241          120.1 ns          108.5 ns
-  p40 0.40                  129.0 ns          129.0 ns            0.0 ns    136,846,551          129.0 ns          117.4 ns
-  p50 0.50                  130.0 ns          130.0 ns            0.0 ns    185,455,509          130.0 ns          118.4 ns
-  p60 0.60                  139.0 ns          140.0 ns            1.0 ns    181,543,208          140.0 ns          128.4 ns
-  p80 0.80                  150.0 ns          150.0 ns            0.0 ns    532,605,110          150.0 ns          138.4 ns
-  n2  0.99                  160.1 ns          170.1 ns           10.0 ns     92,939,202          166.1 ns          154.5 ns
-  n3  0.999                 180.1 ns          200.1 ns           20.0 ns      3,868,138          183.2 ns          171.6 ns
-  n4  0.999_9               210.0 ns        3,838.0 ns        3,627.9 ns      1,493,933          583.1 ns          571.5 ns
-  n5  0.999_99            3,846.1 ns        4,821.0 ns          974.8 ns        150,073        4,143.1 ns        4,131.5 ns
-  n6  0.999_999           4,829.2 ns       14,901.2 ns       10,072.1 ns         15,049        6,307.4 ns        6,295.8 ns
-  n7  0.999_999_9        14,909.4 ns      173,801.5 ns      158,892.0 ns          1,509       47,338.7 ns       47,327.1 ns
-  n8  0.999_999_99      173,932.5 ns      252,313.6 ns       78,381.1 ns            150      203,502.4 ns      203,490.8 ns
-  n9  0.999_999_999     308,019.2 ns    2,005,925.9 ns    1,697,906.7 ns             15      838,598.7 ns      838,587.0 ns
-  n10 0.999_999_999_9 2,631,925.8 ns    3,303,014.4 ns      671,088.6 ns              2    2,967,470.1 ns    2,967,458.5 ns
-  mean                                                                                           137.1 ns          125.5 ns
-  stdev                                                                                          173.9 ns
-  mean min..n2                                                                                   136.1 ns          124.5 ns
-  stdev min..n2                                                                                   14.4 ns
+  z4  0.000_1                20.0 ns           40.0 ns           20.0 ns        197,058           34.8 ns           23.2 ns
+  z3  0.001                  50.0 ns           90.0 ns           40.0 ns      1,705,182           76.2 ns           64.6 ns
+  z2  0.01                   99.0 ns           99.0 ns            0.0 ns        525,426           99.0 ns           87.4 ns
+  p20 0.20                  100.0 ns          100.0 ns            0.0 ns    734,468,749          100.0 ns           88.4 ns
+  p50 0.50                  109.1 ns          109.1 ns            0.0 ns    300,842,854          109.1 ns           97.4 ns
+  p80 0.80                  110.0 ns          110.0 ns            0.0 ns    769,394,633          110.0 ns           98.4 ns
+  n2  0.99                  119.0 ns          140.0 ns           21.0 ns    112,045,448          125.7 ns          114.1 ns
+  n3  0.999                 150.0 ns          530.4 ns          380.4 ns     21,078,443          209.5 ns          197.9 ns
+  n4  0.999_9               540.2 ns        3,727.4 ns        3,187.2 ns      1,745,782          734.7 ns          723.1 ns
+  n5  0.999_99            3,737.6 ns        5,623.8 ns        1,886.2 ns        174,336        4,173.8 ns        4,162.2 ns
+  n6  0.999_999           5,632.0 ns       81,395.7 ns       75,763.7 ns         17,474       30,586.4 ns       30,574.8 ns
+  n7  0.999_999_9        81,461.2 ns      217,317.4 ns      135,856.1 ns          1,745       98,674.0 ns       98,662.4 ns
+  n8  0.999_999_99      217,448.4 ns      996,671.5 ns      779,223.0 ns            175      379,072.2 ns      379,060.6 ns
+  n9  0.999_999_999   1,004,535.8 ns    3,007,316.0 ns    2,002,780.2 ns             17    1,837,907.0 ns    1,837,895.4 ns
+  n10 0.999_999_999_9 3,978,297.3 ns    4,005,560.3 ns       27,263.0 ns              2    3,991,928.8 ns    3,991,917.2 ns
+  mean                                                                                           109.3 ns           97.7 ns
+  stdev                                                                                          309.0 ns
+  mean min..n2                                                                                   106.9 ns           95.3 ns
+  stdev min..n2                                                                                    6.9 ns
 
-zcr-with-2t: zc-ring-x1 reserve_slot_with round-trip (2 threads, spin) [duration=300.0s outer=1,939,577,260 inner=1 calls=1,939,577,260 adj/call=11.61ns labels=both]:
-                             first            last           range            count            mean        adjusted
-  z4  0.000_1              60.0 ns         89.0 ns         29.0 ns          120,087         76.9 ns         65.3 ns
-  z3  0.001                90.0 ns         99.0 ns          9.0 ns          337,768         91.1 ns         79.5 ns
-  p20 0.20                100.0 ns        100.0 ns          0.0 ns      453,567,412        100.0 ns         88.4 ns
-  p40 0.40                109.1 ns        109.1 ns          0.0 ns      270,088,945        109.1 ns         97.4 ns
-  p70 0.70                110.0 ns        110.0 ns          0.0 ns    1,088,271,545        110.0 ns         98.4 ns
-  n2  0.99                119.0 ns        140.0 ns         21.0 ns      108,409,852        123.6 ns        112.0 ns
-  n3  0.999               150.0 ns        180.1 ns         30.1 ns       16,669,309        165.3 ns        153.7 ns
-  n4  0.999_9             190.1 ns      3,776.5 ns      3,586.4 ns        1,917,422        464.8 ns        453.2 ns
-  n5  0.999_99          3,778.6 ns      4,730.9 ns        952.3 ns          175,615      4,074.0 ns      4,062.4 ns
-  n6  0.999_999         4,739.1 ns     12,345.3 ns      7,606.3 ns           17,365      5,735.8 ns      5,724.2 ns
-  n7  0.999_999_9      12,353.5 ns    167,247.9 ns    154,894.3 ns            1,748     34,554.8 ns     34,543.2 ns
-  n8  0.999_999_99    167,378.9 ns    220,463.1 ns     53,084.2 ns              173    193,322.9 ns    193,311.3 ns
-  n9  0.999_999_999   221,773.8 ns    385,351.7 ns    163,577.9 ns               17    265,320.6 ns    265,309.0 ns
-  n10 0.999_999_999_9 385,876.0 ns    553,123.8 ns    167,247.9 ns                2    469,499.9 ns    469,488.3 ns
-  mean                                                                                     109.6 ns         97.9 ns
-  stdev                                                                                     95.9 ns
-  mean min..n2                                                                             108.3 ns         96.7 ns
-  stdev min..n2                                                                              5.8 ns
-
-wink@3900x 26-07-06T15:43:41.979Z:~/data/prgs/rust/iiac-perf (main+1)
+wink@3900x 26-07-06T18:39:49.593Z:~/data/prgs/rust/iiac-perf (main+1)
 ```
 
 ## Testing

@@ -22,17 +22,13 @@ _No cycle currently in progress._
  detail goes in `notes/chores/chores-NN.md` design
  subsections (link via `[N]` ref).
 
-1. Measure the wait-policy seam in iiac-perf: raw loop vs
-   `_with(closure)` vs `_spin` must be zero-cost within
-   noise before the endpoints build on it (the measurement
-   clause of the shipped wait-policy hook) [[11]].
-2. Descriptor queue endpoints: paired DescSender (loan +
+1. Descriptor queue endpoints: paired DescSender (loan +
    send) / DescReceiver (recv) owning ring endpoint +
    registry access, so the demo's ~20-line send path
    becomes ~3 lines and `resolve`'s unsafe is audited once
    inside the crate (recv safe by construction); guard
    handed back on Full [[11]].
-3. Batch alloc/free demo: alongside the one-message
+2. Batch alloc/free demo: alongside the one-message
    alloc_free_1t loops, a variant that allocs X messages
    (5, 10, …) then frees them all, pool vs global
    allocator. We think the pool's rate stays constant
@@ -40,12 +36,12 @@ _No cycle currently in progress._
    the working set hot) while Box::new/drop slows as the
    batch outgrows malloc's thread-cache fast path — the
    demo should show it.
-4. Endpoint claims word: CAS-claimed producer/consumer roles
+3. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
    [details](ring-buffer-design.md#resolved-questions).
-5. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+4. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot_with [details](ring-buffer-design.md#api).
 
@@ -145,6 +141,7 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 - feat: demo seam lines on diff cores, SMT last [[15]]
 - refactor: drop reserve_slot, keep _with ladder [[16]]
 - refactor: drop reserve_slot_spin and alloc_spin [[17]]
+- docs: refresh iiac-perf numbers, seam closed [[18]]
 
 # References
 
@@ -160,3 +157,4 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 [15]: chores/chores-01.md#feat-demo-seam-lines-on-diff-cores-smt-last
 [16]: chores/chores-01.md#refactor-drop-reserve_slot-keep-_with-ladder
 [17]: chores/chores-01.md#refactor-drop-reserve_slot_spin-and-alloc_spin
+[18]: chores/chores-01.md#docs-refresh-iiac-perf-numbers-seam-closed
