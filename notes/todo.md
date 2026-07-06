@@ -47,7 +47,7 @@ _No cycle currently in progress._
    [details](ring-buffer-design.md#resolved-questions).
 5. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
-   reserve_slot [details](ring-buffer-design.md#api).
+   reserve_slot_with [details](ring-buffer-design.md#api).
 
 ## Ideas
 
@@ -127,7 +127,7 @@ _No cycle currently in progress._
   `tests/protocol.rs`; white-box tests (u32 wrap, attach
   header internals) stay in lib.rs. Do it when a trybuild
   compile-fail harness lands there too (pins the
-  "second reserve_slot does not compile" guarantee).
+  "second reservation does not compile" guarantee).
 
 ## Done
 
@@ -143,6 +143,7 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 - feat: wait-policy hook + spin models [[13]]
 - refactor: demo _closure forms + on_full params [[14]]
 - feat: demo seam lines on diff cores, SMT last [[15]]
+- refactor: drop reserve_slot, keep _with ladder [[16]]
 
 # References
 
@@ -156,3 +157,4 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 [13]: chores/chores-01.md#feat-wait-policy-hook--spin-models
 [14]: chores/chores-01.md#refactor-demo-_closure-forms--on_full-params
 [15]: chores/chores-01.md#feat-demo-seam-lines-on-diff-cores-smt-last
+[16]: chores/chores-01.md#refactor-drop-reserve_slot-keep-_with-ladder

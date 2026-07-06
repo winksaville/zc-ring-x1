@@ -322,8 +322,8 @@ fn validate_geometry(slot_size: u32, capacity: u32) -> Result<(), Error> {
     Ok(())
 }
 
-/// Check `T` fits a slot; called once per `reserve_slot` (both
-/// endpoints).
+/// Check `T` fits a slot; called once per `reserve_slot_with`
+/// (both endpoints).
 ///
 /// - Panics on a type-geometry mismatch — that is a programming
 ///   error, not a runtime condition.
@@ -450,7 +450,7 @@ mod tests {
         for w in cons.user().iter() {
             w.store(u32::MAX, Ordering::Relaxed);
         }
-        assert!(cons.reserve_slot::<Msg>().is_err());
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
     }
 
     #[test]
@@ -467,20 +467,20 @@ mod tests {
         // Fill: producer_idx runs MAX-1, MAX, 0, 1 — masked
         // slot positions 2, 3, 0, 1.
         for i in 0..4u64 {
-            let mut slot = prod.reserve_slot::<Msg>().unwrap();
+            let mut slot = prod.reserve_slot_with::<Msg>(|_| false).unwrap();
             slot.seq = i;
             slot.val = i;
             slot.commit();
         }
-        assert!(prod.reserve_slot::<Msg>().is_err());
+        assert!(prod.reserve_slot_with::<Msg>(|_| false).is_err());
 
         // Drain in order across the wrap.
         for i in 0..4u64 {
-            let msg = cons.reserve_slot::<Msg>().unwrap();
+            let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
             assert_eq!(msg.seq, i);
             msg.release();
         }
-        assert!(cons.reserve_slot::<Msg>().is_err());
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
     }
 
     #[test]
@@ -489,20 +489,20 @@ mod tests {
         let (mut prod, mut cons) = Ring::init(&mut r.0, 64, 4).unwrap().split();
 
         // Empty at start.
-        assert!(cons.reserve_slot::<Msg>().is_err());
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
 
         // Fill all 4 slots, then Full.
         for i in 0..4u64 {
-            let mut slot = prod.reserve_slot::<Msg>().unwrap();
+            let mut slot = prod.reserve_slot_with::<Msg>(|_| false).unwrap();
             slot.seq = i;
             slot.val = i * 10;
             slot.commit();
         }
-        assert!(prod.reserve_slot::<Msg>().is_err());
+        assert!(prod.reserve_slot_with::<Msg>(|_| false).is_err());
 
         // Drain in order; wrap: slot 0 is reused by seq 4.
         for i in 0..4u64 {
-            let msg = cons.reserve_slot::<Msg>().unwrap();
+            let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
             assert_eq!(
                 *msg,
                 Msg {
@@ -512,13 +512,13 @@ mod tests {
             );
             msg.release();
         }
-        assert!(cons.reserve_slot::<Msg>().is_err());
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
 
         // One more write lands in the masked-around slot 0.
-        let mut slot = prod.reserve_slot::<Msg>().unwrap();
+        let mut slot = prod.reserve_slot_with::<Msg>(|_| false).unwrap();
         slot.seq = 4;
         slot.commit();
-        let msg = cons.reserve_slot::<Msg>().unwrap();
+        let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
         assert_eq!(msg.seq, 4);
         msg.release();
     }
@@ -532,20 +532,20 @@ mod tests {
         let (mut prod, mut cons) = Ring::init(&mut r.0, 64, 4).unwrap().split();
 
         // Reserve then drop: nothing published.
-        let mut slot = prod.reserve_slot::<Msg>().unwrap();
+        let mut slot = prod.reserve_slot_with::<Msg>(|_| false).unwrap();
         slot.seq = 99;
         drop(slot);
-        assert!(cons.reserve_slot::<Msg>().is_err());
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
 
-        // Commit one, reserve_slot then drop: still unread, the
-        // next reserve_slot returns it again.
-        let mut slot = prod.reserve_slot::<Msg>().unwrap();
+        // Commit one, reserve then drop: still unread, the
+        // next reservation returns it again.
+        let mut slot = prod.reserve_slot_with::<Msg>(|_| false).unwrap();
         slot.seq = 1;
         slot.commit();
-        let msg = cons.reserve_slot::<Msg>().unwrap();
+        let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
         assert_eq!(msg.seq, 1);
         drop(msg);
-        let msg = cons.reserve_slot::<Msg>().unwrap();
+        let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
         assert_eq!(msg.seq, 1);
         msg.release();
     }
@@ -562,7 +562,7 @@ mod tests {
             s.spawn(move || {
                 for i in 0..COUNT {
                     loop {
-                        match prod.reserve_slot::<Msg>() {
+                        match prod.reserve_slot_with::<Msg>(|_| false) {
                             Ok(mut slot) => {
                                 slot.seq = i;
                                 slot.val = i * 3;
@@ -577,7 +577,7 @@ mod tests {
             s.spawn(move || {
                 for i in 0..COUNT {
                     loop {
-                        match cons.reserve_slot::<Msg>() {
+                        match cons.reserve_slot_with::<Msg>(|_| false) {
                             Ok(msg) => {
                                 assert_eq!(msg.seq, i);
                                 assert_eq!(msg.val, i * 3);
@@ -613,7 +613,7 @@ mod tests {
         // Fill the ring: the producer's policy gives up with
         // Err(Full).
         for i in 0..4 {
-            let mut slot = prod.reserve_slot::<Msg>().unwrap();
+            let mut slot = prod.reserve_slot_with::<Msg>(|_| false).unwrap();
             slot.seq = i;
             slot.commit();
         }

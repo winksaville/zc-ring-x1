@@ -6,8 +6,8 @@
 //! are testing.
 //!
 //! - Part 1, the ring: an SPSC pair moves typed messages
-//!   in place (reserve_slot → write → commit; reserve_slot
-//!   → read → release) — first both ends on one thread
+//!   in place (reserve → write → commit; reserve → read →
+//!   release) — first both ends on one thread
 //!   (the ring's own cost), then one producer thread to
 //!   one consumer thread: unpinned, pinned to two different
 //!   physical cores, and pinned to one physical core's two
@@ -188,7 +188,7 @@ fn spsc_ring_one_msg_1t() -> f64 {
         s.spawn(move || {
             pin_to_cpu(0);
             for i in 0..COUNT {
-                match producer.reserve_slot::<Msg>() {
+                match producer.reserve_slot_with::<Msg>(|_| false) {
                     Ok(mut slot) => {
                         slot.seq = i;
                         slot.commit();
@@ -197,7 +197,7 @@ fn spsc_ring_one_msg_1t() -> f64 {
                         panic!("spsc_ring_one_msg_1t: producer Full SHOULD NOT HAPPEN");
                     }
                 }
-                match consumer.reserve_slot::<Msg>() {
+                match consumer.reserve_slot_with::<Msg>(|_| false) {
                     Ok(msg) => {
                         assert_eq!(msg.seq, i);
                         msg.release();
@@ -231,16 +231,9 @@ fn spsc_ring_one_msg_2t(pin: PinPair) -> f64 {
                 pin_to_cpu(p);
             }
             for i in 0..COUNT {
-                loop {
-                    match producer.reserve_slot::<Msg>() {
-                        Ok(mut slot) => {
-                            slot.seq = i;
-                            slot.commit();
-                            break;
-                        }
-                        Err(Full) => std::hint::spin_loop(),
-                    }
-                }
+                let mut slot = producer.reserve_slot_spin::<Msg>();
+                slot.seq = i;
+                slot.commit();
             }
         });
         s.spawn(move || {
@@ -248,16 +241,9 @@ fn spsc_ring_one_msg_2t(pin: PinPair) -> f64 {
                 pin_to_cpu(c);
             }
             for i in 0..COUNT {
-                loop {
-                    match consumer.reserve_slot::<Msg>() {
-                        Ok(msg) => {
-                            assert_eq!(msg.seq, i);
-                            msg.release();
-                            break;
-                        }
-                        Err(Empty) => std::hint::spin_loop(),
-                    }
-                }
+                let msg = consumer.reserve_slot_spin::<Msg>();
+                assert_eq!(msg.seq, i);
+                msg.release();
             }
         });
     });
@@ -445,7 +431,7 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
                     .into_desc(pool_id, buf_slot)
                     .map_err(|(_, e)| e)
                     .unwrap(); // OK: pool_id came from this registry's register
-                match producer.reserve_slot::<Desc>() {
+                match producer.reserve_slot_with::<Desc>(|_| false) {
                     Ok(mut slot) => {
                         *slot = desc;
                         slot.commit();
@@ -454,7 +440,7 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
                         panic!("spsc_ring_one_pool_msg_1t: producer Full SHOULD NOT HAPPEN");
                     }
                 }
-                buf_slot = match consumer.reserve_slot::<Desc>() {
+                buf_slot = match consumer.reserve_slot_with::<Desc>(|_| false) {
                     Ok(slot) => {
                         let desc = *slot;
                         slot.release();
@@ -514,16 +500,9 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
                     .into_desc(pool_id, buf_slot)
                     .map_err(|(_, e)| e)
                     .unwrap(); // OK: pool_id came from this registry's register
-                loop {
-                    match producer.reserve_slot::<Desc>() {
-                        Ok(mut slot) => {
-                            *slot = desc;
-                            slot.commit();
-                            break;
-                        }
-                        Err(Full) => std::hint::spin_loop(),
-                    }
-                }
+                let mut slot = producer.reserve_slot_spin::<Desc>();
+                *slot = desc;
+                slot.commit();
             }
         });
         s.spawn(move || {
@@ -531,15 +510,11 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
                 pin_to_cpu(c);
             }
             for i in 0..COUNT {
-                let desc = loop {
-                    match consumer.reserve_slot::<Desc>() {
-                        Ok(slot) => {
-                            let desc = *slot;
-                            slot.release();
-                            break desc;
-                        }
-                        Err(Empty) => std::hint::spin_loop(),
-                    }
+                let desc = {
+                    let slot = consumer.reserve_slot_spin::<Desc>();
+                    let desc = *slot;
+                    slot.release();
+                    desc
                 };
                 // SAFETY: the desc was consumed into the ring
                 // by the producer and read after the commit →

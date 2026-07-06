@@ -8,12 +8,12 @@ use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use crate::{Header, USER_WORDS, check_type, slot_ptr};
 
-/// `reserve_slot` failed: no unread messages.
+/// `reserve_slot_with` failed: no unread messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Empty;
 
-/// The consuming endpoint: `reserve_slot` the oldest unread
-/// slot, read in place, `release`.
+/// The consuming endpoint: `reserve_slot_with` the oldest
+/// unread slot, read in place, `release`.
 pub struct Consumer<'a> {
     /// The ring's control block.
     header: &'a Header,
@@ -54,51 +54,25 @@ impl<'a> Consumer<'a> {
         &self.header.user
     }
 
-    /// Reserve the oldest unread slot as a `&T`, or [`Empty`].
+    /// Reserve the oldest unread slot as a `&T`, applying an
+    /// injected wait policy: retry until a message arrives or
+    /// the policy gives up → [`Empty`].
     ///
     /// - Only one slot may be reserved at a time: the guard
     ///   holds the `&mut Consumer` borrow, so a second
-    ///   `reserve_slot` before the guard is dropped or released
+    ///   reservation before the guard is dropped or released
     ///   does not compile.
     /// - Dropping the guard without [`ReadSlot::release`]
-    ///   leaves the slot unread — the next `reserve_slot`
+    ///   leaves the slot unread — the next reservation
     ///   returns it again.
-    pub fn reserve_slot<T>(&mut self) -> Result<ReadSlot<'_, T>, Empty>
-    where
-        T: FromBytes + KnownLayout + Immutable,
-    {
-        check_type::<T>(self.slot_size);
-        let c = self.header.consumer_idx.load(Ordering::Relaxed);
-        let p = self.header.producer_idx.load(Ordering::Acquire);
-        if p == c {
-            return Err(Empty);
-        }
-        // Raw pointer, not `&T`, for the same reason as in the
-        // producer's reserve_slot: release's store frees the
-        // slot for producer writes while a reference field
-        // would still be argument-protected.
-        let msg = slot_ptr(self.slots, c, self.mask, self.slot_size) as *const T;
-        Ok(ReadSlot {
-            header: self.header,
-            msg,
-            next_idx: c.wrapping_add(1),
-            _slot: PhantomData,
-        })
-    }
-
-    /// [`reserve_slot`](Consumer::reserve_slot) with an
-    /// injected wait policy: retry until a message arrives or
-    /// the policy gives up.
-    ///
     /// - `on_empty` is called after each failed attempt with
     ///   the attempt count (0-based, saturating); returning
-    ///   `false` gives up → `Err(Empty)`.
+    ///   `false` gives up → `Err(Empty)`. Pass `|_| false`
+    ///   for a single non-blocking probe.
     /// - The wait loop is the reservation itself (the guard
-    ///   borrows the endpoint, so retrying a `reserve_slot`
-    ///   call could not return it): `consumer_idx` is ours
-    ///   and loaded once; only `producer_idx` is re-read per
-    ///   attempt, so the no-wait fast path does exactly the
-    ///   loads `reserve_slot` does.
+    ///   borrows the endpoint, so retrying could not return
+    ///   it): `consumer_idx` is ours and loaded once; only
+    ///   `producer_idx` is re-read per attempt.
     /// - See [`policy`](crate::policy) for shipped policies
     ///   and the composition model.
     pub fn reserve_slot_with<T>(
@@ -122,7 +96,10 @@ impl<'a> Consumer<'a> {
             }
             attempt = attempt.saturating_add(1);
         }
-        // Raw pointer, not `&T` — see reserve_slot.
+        // Raw pointer, not `&T`: release's store frees the slot
+        // for producer writes while a reference field would
+        // still be argument-protected. Deref mints short-lived
+        // references instead.
         let msg = slot_ptr(self.slots, c, self.mask, self.slot_size) as *const T;
         Ok(ReadSlot {
             header: self.header,
@@ -132,7 +109,7 @@ impl<'a> Consumer<'a> {
         })
     }
 
-    /// [`reserve_slot`](Consumer::reserve_slot), spinning
+    /// Reserve the oldest unread slot, spinning
     /// until a message arrives —
     /// [`reserve_slot_with`](Consumer::reserve_slot_with)
     /// under the never-quitting
@@ -154,7 +131,7 @@ pub struct ReadSlot<'c, T> {
     /// The ring's control block (for the release store).
     header: &'c Header,
     /// The slot, viewed as the message type. Raw on purpose —
-    /// see the comment in [`Consumer::reserve_slot`].
+    /// see the comment in [`Consumer::reserve_slot_with`].
     msg: *const T,
     /// Value `consumer_idx` takes on release.
     next_idx: u32,
@@ -168,7 +145,7 @@ impl<T> Deref for ReadSlot<'_, T> {
     fn deref(&self) -> &T {
         // SAFETY: msg is in-bounds and aligned (check_type +
         // cache-line slot base), any byte pattern is a valid T
-        // (FromBytes bound at reserve_slot), and the index
+        // (FromBytes bound at reserve_slot_with), and the index
         // protocol gives this guard read access until release.
         unsafe { &*self.msg }
     }

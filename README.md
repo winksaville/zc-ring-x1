@@ -25,9 +25,10 @@ in sync with `src/`.
   cache-line multiple, every slot cache-line aligned.
 - Free-running `AtomicU32` indices, masked only at slot access;
   no sacrificial slot; lock-free with Acquire/Release pairing.
-- Guard API: `reserve_slot::<T>()` on either endpoint — write →
-  `commit()` on the producer side, read → `release()` on the
-  consumer side; dropping a guard abandons cleanly.
+- Guard API: `reserve_slot_with::<T>(policy)` (or the
+  `reserve_slot_spin::<T>()` convenience) on either endpoint —
+  write → `commit()` on the producer side, read → `release()` on
+  the consumer side; dropping a guard abandons cleanly.
 - IPC-ready: one contiguous region, no internal pointers, an
   init/attach handshake (magic published last, Release), and an
   all-atomic header so a misbehaving peer can corrupt data but
@@ -59,12 +60,12 @@ let mut region = Region([0; 512]);
 let (mut producer, mut consumer) =
     Ring::init(&mut region.0, 64, 4).unwrap().split();
 
-let mut slot = producer.reserve_slot::<Msg>().unwrap();
+let mut slot = producer.reserve_slot_with::<Msg>(|_| false).unwrap();
 slot.seq = 1;
 slot.val = 42;
 slot.commit(); // publish to the consumer
 
-let msg = consumer.reserve_slot::<Msg>().unwrap();
+let msg = consumer.reserve_slot_with::<Msg>(|_| false).unwrap();
 assert_eq!(msg.val, 42);
 msg.release(); // slot is free for reuse
 ```
@@ -197,12 +198,12 @@ state, with one party allowed to touch it:
 let mut msg = pool.alloc::<Msg>()?;   // get a message
 msg.seq = 42;                         // fill it in place
 let desc = registry.into_desc(pool_id, msg)?; // guard -> Desc
-let mut slot = producer.reserve_slot::<Desc>()?;
+let mut slot = producer.reserve_slot_with::<Desc>(|_| false)?;
 *slot = desc;                         // 8 bytes, not the payload
 slot.commit();
 
 // Receiver: ring consumer + freer (another thread).
-let slot = consumer.reserve_slot::<Desc>()?;
+let slot = consumer.reserve_slot_with::<Desc>(|_| false)?;
 let desc = *slot;
 slot.release();                       // ring slot free again
 // SAFETY: desc came from into_desc, arrived via the ring's

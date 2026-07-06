@@ -9,13 +9,13 @@ use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
 use crate::{Header, USER_WORDS, check_type, slot_ptr};
 
-/// `reserve_slot` failed: every slot holds an
+/// `reserve_slot_with` failed: every slot holds an
 /// uncommitted-or-unread message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Full;
 
-/// The producing endpoint: `reserve_slot`, write in place,
-/// `commit`.
+/// The producing endpoint: `reserve_slot_with`, write in
+/// place, `commit`.
 pub struct Producer<'a> {
     /// The ring's control block.
     header: &'a Header,
@@ -66,26 +66,49 @@ impl<'a> Producer<'a> {
         &self.header.user
     }
 
-    /// Reserve the next free slot as a `&mut T`, or [`Full`].
+    /// Reserve the next free slot as a `&mut T`, applying an
+    /// injected wait policy: retry until a slot frees up or
+    /// the policy gives up → [`Full`].
     ///
     /// - Only one slot may be reserved at a time: the guard
     ///   holds the `&mut Producer` borrow, so a second
-    ///   `reserve_slot` before the guard is dropped or
-    ///   committed does not compile.
+    ///   reservation before the guard is dropped or committed
+    ///   does not compile.
     /// - Dropping the guard without [`WriteSlot::commit`]
     ///   abandons the reservation (nothing published).
-    pub fn reserve_slot<T>(&mut self) -> Result<WriteSlot<'_, T>, Full>
+    /// - `on_full` is called after each failed attempt with
+    ///   the attempt count (0-based, saturating); returning
+    ///   `false` gives up → `Err(Full)`. Pass `|_| false`
+    ///   for a single non-blocking probe.
+    /// - The wait loop is the reservation itself (the guard
+    ///   borrows the endpoint, so retrying could not return
+    ///   it): `producer_idx` is ours and loaded once; only
+    ///   `consumer_idx` is re-read per attempt.
+    /// - See [`policy`](crate::policy) for shipped policies
+    ///   and the composition model.
+    pub fn reserve_slot_with<T>(
+        &mut self,
+        mut on_full: impl FnMut(u32) -> bool,
+    ) -> Result<WriteSlot<'_, T>, Full>
     where
         T: FromBytes + IntoBytes + KnownLayout,
     {
         check_type::<T>(self.slot_size);
+        // Ours alone: no peer moves it, load once.
         let p = self.header.producer_idx.load(Ordering::Relaxed);
-        let c = self.header.consumer_idx.load(Ordering::Acquire);
-        // `>=`, not `==`: a peer-corrupted consumer_idx makes
-        // occupancy look huge — fail Full, never hand out a
-        // slot the protocol doesn't own.
-        if p.wrapping_sub(c) >= self.capacity {
-            return Err(Full);
+        let mut attempt = 0u32;
+        loop {
+            // `>=`, not `==`: a peer-corrupted consumer_idx
+            // makes occupancy look huge — fail Full, never hand
+            // out a slot the protocol doesn't own.
+            let c = self.header.consumer_idx.load(Ordering::Acquire);
+            if p.wrapping_sub(c) < self.capacity {
+                break;
+            }
+            if !on_full(attempt) {
+                return Err(Full);
+            }
+            attempt = attempt.saturating_add(1);
         }
         // Raw pointer, not `&mut T`: a reference field would be
         // argument-protected for the whole `commit(self)` call,
@@ -101,56 +124,7 @@ impl<'a> Producer<'a> {
         })
     }
 
-    /// [`reserve_slot`](Producer::reserve_slot) with an
-    /// injected wait policy: retry until a slot frees up or
-    /// the policy gives up.
-    ///
-    /// - `on_full` is called after each failed attempt with
-    ///   the attempt count (0-based, saturating); returning
-    ///   `false` gives up → `Err(Full)`.
-    /// - The wait loop is the reservation itself (the guard
-    ///   borrows the endpoint, so retrying a `reserve_slot`
-    ///   call could not return it): `producer_idx` is ours
-    ///   and loaded once; only `consumer_idx` is re-read per
-    ///   attempt, so the no-wait fast path does exactly the
-    ///   loads `reserve_slot` does.
-    /// - See [`policy`](crate::policy) for shipped policies
-    ///   and the composition model.
-    pub fn reserve_slot_with<T>(
-        &mut self,
-        mut on_full: impl FnMut(u32) -> bool,
-    ) -> Result<WriteSlot<'_, T>, Full>
-    where
-        T: FromBytes + IntoBytes + KnownLayout,
-    {
-        check_type::<T>(self.slot_size);
-        // Ours alone: no peer moves it, load once.
-        let p = self.header.producer_idx.load(Ordering::Relaxed);
-        let mut attempt = 0u32;
-        loop {
-            // Same load + `>=` occupancy check as
-            // reserve_slot (see there for the corruption
-            // rationale).
-            let c = self.header.consumer_idx.load(Ordering::Acquire);
-            if p.wrapping_sub(c) < self.capacity {
-                break;
-            }
-            if !on_full(attempt) {
-                return Err(Full);
-            }
-            attempt = attempt.saturating_add(1);
-        }
-        // Raw pointer, not `&mut T` — see reserve_slot.
-        let msg = slot_ptr(self.slots, p, self.mask, self.slot_size) as *mut T;
-        Ok(WriteSlot {
-            header: self.header,
-            msg,
-            next_idx: p.wrapping_add(1),
-            _slot: PhantomData,
-        })
-    }
-
-    /// [`reserve_slot`](Producer::reserve_slot), spinning
+    /// Reserve the next free slot, spinning
     /// until a slot is available —
     /// [`reserve_slot_with`](Producer::reserve_slot_with)
     /// under the never-quitting
@@ -172,7 +146,7 @@ pub struct WriteSlot<'p, T> {
     /// The ring's control block (for the commit store).
     header: &'p Header,
     /// The slot, viewed as the message type. Raw on purpose —
-    /// see the comment in [`Producer::reserve_slot`].
+    /// see the comment in [`Producer::reserve_slot_with`].
     msg: *mut T,
     /// Value `producer_idx` takes on commit.
     next_idx: u32,
@@ -186,7 +160,7 @@ impl<T> Deref for WriteSlot<'_, T> {
     fn deref(&self) -> &T {
         // SAFETY: msg is in-bounds and aligned (check_type +
         // cache-line slot base), any byte pattern is a valid T
-        // (FromBytes bound at reserve_slot), and the index
+        // (FromBytes bound at reserve_slot_with), and the index
         // protocol gives this guard exclusive slot access until
         // commit.
         unsafe { &*self.msg }

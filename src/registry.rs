@@ -198,7 +198,7 @@ impl<const N: usize> Default for PoolRegistry<'_, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CACHE_LINE_SIZE, Empty, Exhausted, Full, Pool, PoolHeader, Ring};
+    use crate::{CACHE_LINE_SIZE, Exhausted, Pool, PoolHeader, Ring};
     use core::mem::size_of;
 
     /// Test message: one word carrying a sequence number.
@@ -373,29 +373,18 @@ mod tests {
                     };
                     buf.seq = i;
                     let desc = reg.into_desc(id, buf).map_err(|(_, e)| e).unwrap();
-                    loop {
-                        match producer.reserve_slot::<Desc>() {
-                            Ok(mut slot) => {
-                                *slot = desc;
-                                slot.commit();
-                                break;
-                            }
-                            Err(Full) => std::hint::spin_loop(),
-                        }
-                    }
+                    let mut slot = producer.reserve_slot_spin::<Desc>();
+                    *slot = desc;
+                    slot.commit();
                 }
             });
             s.spawn(move || {
                 for i in 0..COUNT {
-                    let desc = loop {
-                        match consumer.reserve_slot::<Desc>() {
-                            Ok(slot) => {
-                                let desc = *slot;
-                                slot.release();
-                                break desc;
-                            }
-                            Err(Empty) => std::hint::spin_loop(),
-                        }
+                    let desc = {
+                        let slot = consumer.reserve_slot_spin::<Desc>();
+                        let desc = *slot;
+                        slot.release();
+                        desc
                     };
                     // SAFETY: the desc was consumed into the
                     // ring by the producer and read after the

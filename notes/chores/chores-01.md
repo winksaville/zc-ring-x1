@@ -523,7 +523,7 @@ runs.
 
 ## feat: demo seam lines on diff cores, SMT last
 
-Commits:
+Commits: [[31]]
 
 On a CPU without SMT (Pi 5's Cortex-A76, one thread per
 core) the same-core section skips, and the `_closure` /
@@ -547,6 +547,72 @@ never printed the three-way comparison under real waiting.
   ~12M cross-core — we think each handoff waits out a
   scheduler timeslice, so that number measures the
   scheduler, not the ring.
+
+## Performance runs using becnches in iiac-perf
+
+Commits: [[32]]
+
+300s (5 min) iiac-perf round-trip runs recorded for the ring's
+three wait forms, which surfaced bug #1: the `raw`
+loop-on-`reserve_slot` pattern reads both indices every spin,
+while `_with` / `_spin` hoist the caller-owned index out of the
+loop — measurably slower and jitterier at 2t.
+
+- README.md gained the zcr-{raw,with,spin}-{1t,2t} benchmark
+  blocks from those runs.
+- notes/bugs.md filed bug #1 (drop the dominated `reserve_slot`
+  rung), which the "refactor: drop reserve_slot, keep _with
+  ladder" cycle below resolves.
+- The `becnches` misspelling in the header is Wink's, kept
+  verbatim from the commit title so the section is an exact
+  `git log --grep` match — not a chores-side typo.
+
+## refactor: drop reserve_slot, keep _with ladder
+
+Commits:
+
+`reserve_slot` on both endpoints was a strictly dominated API
+rung: `reserve_slot_with(|_| false)` does everything it did
+with identical loads, and its naive loop-on-the-fallible-call
+usage carried a measured +30 ns / ~2× body jitter under
+cross-core traffic (bug #1, whose raw-pattern benches live in
+iiac-perf's `zcr-raw-*`). Removing it leaves a two-rung ladder
+per endpoint — `reserve_slot_with` (fallible primitive) +
+`reserve_slot_spin` (forever-spin convenience).
+
+- `reserve_slot_with` is now the self-contained primitive: its
+  doc absorbed the single-probe (`|_| false`) note and the
+  raw-pointer / `>=`-corruption rationale the deleted method
+  used to host.
+- Call sites split by intent: single-probe (the `_1t` demos,
+  the assertion tests, the README examples) →
+  `reserve_slot_with(|_| false)`; loop-on-fallible spin waits
+  (the `_2t` demos, the registry tests) → `reserve_slot_spin`.
+- `threaded_spsc` keeps looping on `reserve_slot_with(|_| false)`
+  so the fallible primitive still has a threaded-contention
+  test distinct from `threaded_spsc_spin_variants` (which
+  covers the spin rung).
+- No `try_reserve_slot` alias yet: nothing outside tests makes
+  `_with(|_| false)` common, so per bug #1 the alias waits for
+  a real consumer.
+
+### ring-buffer-design.md: blocking intro reconciled
+
+The `## Blocking and user words` intro still read "the crate
+never blocks and never spins" — accurate before the
+wait-policy hook, but `reserve_slot_spin` spins now, so a bare
+method rename would have left an inline contradiction. The
+intro was reframed instead: the ring's fallible core never
+blocks, and *how* to wait is injected policy (a shipped
+`policy::spin` drives `reserve_slot_spin`); anything that
+actually sleeps still belongs to the layer above via the
+`user()` words. We think the rest of that section (the
+`user()` wakeup-protocol contract) is unaffected by the API
+change.
+
+### As-built ladder
+
+- `0.8.0` refactor: drop reserve_slot, keep _with ladder
 
 # References
 
@@ -580,3 +646,5 @@ never printed the three-way comparison under real waiting.
 [28]: https://github.com/winksaville/zc-ring-x1/commit/20852d556100 "20852d556100cc862f61b0c80b05d4fef656e63c"
 [29]: https://github.com/winksaville/zc-ring-x1/commit/88a696959c4e "88a696959c4e40c02a6f36e3c15a074d57daaefb"
 [30]: https://github.com/winksaville/zc-ring-x1/commit/b23b06a5dae5 "b23b06a5dae5c21a94e60bcf2e94b883d146e359"
+[31]: https://github.com/winksaville/zc-ring-x1/commit/e083cd429597 "e083cd4295978a75833af284e9dd1620c0ad63e8"
+[32]: https://github.com/winksaville/zc-ring-x1/commit/35f144b980f7 "35f144b980f78b893892f9958c3c6b3fa0c2909e"

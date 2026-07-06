@@ -19,12 +19,12 @@ fn main() {
 
     let (mut producer, mut consumer) = Ring::init(&mut region.0, 64, 4).unwrap().split();
 
-    let mut slot = producer.reserve_slot::<Msg>().unwrap();
+    let mut slot = producer.reserve_slot_with::<Msg>(|_| false).unwrap();
     slot.seq = 1;
     slot.val = 42;
     slot.commit(); // publish to the consumer
 
-    let msg = consumer.reserve_slot::<Msg>().unwrap();
+    let msg = consumer.reserve_slot_with::<Msg>(|_| false).unwrap();
     assert_eq!(msg.val, 42);
     msg.release(); // slot is free for reuse
     println!("readme example ok");

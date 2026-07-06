@@ -38,13 +38,13 @@ inter-process (shared memory).
   via atomic producer/consumer indices. MPMC is out of scope
   for this cycle;
   the layout should not preclude adding it later.
-- **In-place access API** — `reserve_slot` on either endpoint,
-  then commit (producer) or release (consumer), exposing
-  references into the buffer rather than returning values by
-  move.
+- **In-place access API** — `reserve_slot_with` on either
+  endpoint, then commit (producer) or release (consumer),
+  exposing references into the buffer rather than returning
+  values by move.
 - **Safety** — all `unsafe` encapsulated inside the crate with
-  documented invariants. The message path (reserve_slot, then
-  commit / release) is fully safe; the one `unsafe` public
+  documented invariants. The message path (reserve_slot_with,
+  then commit / release) is fully safe; the one `unsafe` public
   entry
   is `Ring::attach` — see [API](#api) for why it cannot be
   made safe.
@@ -185,7 +185,7 @@ Index scheme (resolves the atomic-width question):
   - producer commits 4 messages: `p = 4, c = 0` — occupancy
     4 == M, full; slot positions written were 0, 1, 2, 3
   - consumer releases 1: `p = 4, c = 1` — occupancy 3, one
-    slot free; the next reserve_slot writes slot `4 & 3 == 0`
+    slot free; the next reservation writes slot `4 & 3 == 0`
 
 Ordering: the producer loads `consumer_idx` with `Acquire`
 and publishes `producer_idx` with `Release`; the consumer
@@ -223,31 +223,38 @@ Construction (resolves the foreign-memory question):
   with the all-atomic header, a hostile peer can degrade the
   ring to garbage messages or spurious Full/Empty — never UB.
 
-Producer — reserve_slot/commit, in place:
+Producer — reserve_slot_with/commit, in place:
 
-- `producer.reserve_slot::<T>() ->
+- `producer.reserve_slot_with::<T>(on_full) ->
   Result<WriteSlot<'_, T>, Full>` — next free slot as `&mut T`
-  (zerocopy `FromBytes + IntoBytes + KnownLayout`); `T`
-  geometry is asserted against the slot size on each call (a
-  mismatch is a programming error, so it panics; typed
-  endpoints that check once are a follow-on — see
-  [todo.md](todo.md)).
+  (zerocopy `FromBytes + IntoBytes + KnownLayout`), retrying
+  under the injected wait policy — `on_full(attempt) -> bool`,
+  `|_| false` for a single non-blocking probe. `T` geometry is
+  asserted against the slot size on each call (a mismatch is a
+  programming error, so it panics; typed endpoints that check
+  once are a follow-on — see [todo.md](todo.md)).
+- `producer.reserve_slot_spin::<T>() -> WriteSlot<'_, T>` — the
+  forever-spin convenience (`reserve_slot_with` under
+  `policy::spin`), so no `Result`.
 - `WriteSlot::commit(self)` — publishes the slot
   (`producer_idx + 1`, `Release`). Dropping without commit
   abandons the reservation (nothing published).
 
-Consumer — reserve_slot/release, in place:
+Consumer — reserve_slot_with/release, in place:
 
-- `consumer.reserve_slot::<T>() ->
+- `consumer.reserve_slot_with::<T>(on_empty) ->
   Result<ReadSlot<'_, T>, Empty>` — oldest unread slot as
-  `&T`.
+  `&T`, retrying under the injected wait policy (`|_| false`
+  for a single non-blocking probe).
+- `consumer.reserve_slot_spin::<T>() -> ReadSlot<'_, T>` — the
+  forever-spin convenience, so no `Result`.
 - `ReadSlot::release(self)` — frees the slot
   (`consumer_idx + 1`, `Release`). Dropping without release
-  leaves the slot unread — the next reserve_slot returns it
+  leaves the slot unread — the next reservation returns it
   again.
 
 Each side reserves at most **one slot at a time**: the guard
-holds the endpoint's `&mut` borrow, so a second `reserve_slot`
+holds the endpoint's `&mut` borrow, so a second reservation
 while a guard is live is a compile error, not a runtime state.
 
 Both endpoints also expose `user() -> &[AtomicU32; 16]` — the
@@ -268,13 +275,15 @@ single-slot guard is the whole surface this cycle.
 
 ## Blocking and user words
 
-The crate never blocks and never spins. `reserve_slot`
-returning [`Full`]/[`Empty`] immediately is the entire API;
-what to do about it — spin, yield, park, await — is policy,
-and policy belongs to the layer above (an embedded caller may
-WFE on an interrupt, an async runtime wants a waker, a pinned
-busy-poll thread wants a pure spin; no single crate-blessed
-hybrid fits all three).
+The ring's fallible core never blocks: `reserve_slot_with`
+returning [`Full`]/[`Empty`] under a give-up policy (`|_| false`)
+is the primitive. *How* to wait on it — spin, yield, park,
+await — is injected policy: a shipped [`policy::spin`] drives
+the [`reserve_slot_spin`] convenience, but anything that
+actually sleeps belongs to the layer above (an embedded caller
+may WFE on an interrupt, an async runtime wants a waker, a
+pinned busy-poll thread wants a pure spin; no single
+crate-blessed hybrid fits all three).
 
 What the crate provides is mechanism: the header's `user`
 line — 16 `AtomicU32` words, zeroed by `Ring::init`, exposed
@@ -290,7 +299,7 @@ Contracts and cautions for that layer:
 
 - **Lost-wakeup discipline** — the sleep side must re-check
   the ring *after* publishing its "wake me" flag and before
-  sleeping (`set flag → reserve_slot once more → sleep`), and
+  sleeping (`set flag → reserve_slot_with once more → sleep`), and
   the wake side checks the flag *after* its commit/release
   (`commit → check flag → wake`). Skipping the re-check races
   a commit landing between flag-set and sleep: the waker saw
@@ -330,8 +339,9 @@ init/attach, alloc/free); descriptor queues and provenance
 remain design. The sections above are the as-built record of
 the ring itself.
 
-The ring's `reserve_slot` fuses three acts that a messaging
-system needs separated: it allocates message memory (the slot),
+The ring's reserve (`reserve_slot_with`) fuses three acts that
+a messaging system needs separated: it allocates message
+memory (the slot),
 assigns queue position (the reservation is the ring head), and
 opens a publication window (the guard exclusively borrows the
 endpoint, blocking all other sends). Getting a message must not

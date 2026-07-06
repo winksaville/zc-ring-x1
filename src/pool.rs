@@ -226,7 +226,7 @@ impl<'a> Pool<'a> {
     ///   removed underneath us, so there is no ABA hazard.
     /// - `T` geometry is asserted on each call (a mismatch is
     ///   a programming error, so it panics — same doctrine as
-    ///   `reserve_slot`). A zero-sized `T` is legal and still
+    ///   `reserve_slot_with`). A zero-sized `T` is legal and still
     ///   consumes a whole buffer: the buffer is the
     ///   allocation granule.
     pub fn alloc<T>(&mut self) -> Result<BufSlot<'a, T>, Exhausted>
