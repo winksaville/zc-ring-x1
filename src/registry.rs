@@ -373,7 +373,9 @@ mod tests {
                     };
                     buf.seq = i;
                     let desc = reg.into_desc(id, buf).map_err(|(_, e)| e).unwrap();
-                    let mut slot = producer.reserve_slot_spin::<Desc>();
+                    let mut slot = producer
+                        .reserve_slot_with::<Desc>(crate::policy::spin)
+                        .unwrap();
                     *slot = desc;
                     slot.commit();
                 }
@@ -381,7 +383,9 @@ mod tests {
             s.spawn(move || {
                 for i in 0..COUNT {
                     let desc = {
-                        let slot = consumer.reserve_slot_spin::<Desc>();
+                        let slot = consumer
+                            .reserve_slot_with::<Desc>(crate::policy::spin)
+                            .unwrap();
                         let desc = *slot;
                         slot.release();
                         desc

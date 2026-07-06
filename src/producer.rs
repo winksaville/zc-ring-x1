@@ -123,21 +123,6 @@ impl<'a> Producer<'a> {
             _slot: PhantomData,
         })
     }
-
-    /// Reserve the next free slot, spinning
-    /// until a slot is available —
-    /// [`reserve_slot_with`](Producer::reserve_slot_with)
-    /// under the never-quitting
-    /// [`policy::spin`](crate::policy::spin), so no `Result`.
-    pub fn reserve_slot_spin<T>(&mut self) -> WriteSlot<'_, T>
-    where
-        T: FromBytes + IntoBytes + KnownLayout,
-    {
-        match self.reserve_slot_with(crate::policy::spin) {
-            Ok(slot) => slot,
-            Err(Full) => unreachable!("policy::spin never gives up"),
-        }
-    }
 }
 
 /// A reserved write slot: `DerefMut` to write the message, then

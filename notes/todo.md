@@ -144,6 +144,7 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 - refactor: demo _closure forms + on_full params [[14]]
 - feat: demo seam lines on diff cores, SMT last [[15]]
 - refactor: drop reserve_slot, keep _with ladder [[16]]
+- refactor: drop reserve_slot_spin and alloc_spin [[17]]
 
 # References
 
@@ -158,3 +159,4 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 [14]: chores/chores-01.md#refactor-demo-_closure-forms--on_full-params
 [15]: chores/chores-01.md#feat-demo-seam-lines-on-diff-cores-smt-last
 [16]: chores/chores-01.md#refactor-drop-reserve_slot-keep-_with-ladder
+[17]: chores/chores-01.md#refactor-drop-reserve_slot_spin-and-alloc_spin

@@ -294,20 +294,6 @@ impl<'a> Pool<'a> {
         }
     }
 
-    /// [`alloc`](Pool::alloc), spinning until a buffer is
-    /// available — [`alloc_with`](Pool::alloc_with) under the
-    /// never-quitting [`policy::spin`](crate::policy::spin),
-    /// so no `Result`.
-    pub fn alloc_spin<T>(&mut self) -> BufSlot<'a, T>
-    where
-        T: FromBytes + IntoBytes + KnownLayout,
-    {
-        match self.alloc_with(crate::policy::spin) {
-            Ok(buf_slot) => buf_slot,
-            Err(Exhausted) => unreachable!("policy::spin never gives up"),
-        }
-    }
-
     /// Buffer size in bytes (geometry snapshot).
     pub fn buf_size(&self) -> u32 {
         self.buf_size
@@ -949,10 +935,12 @@ mod tests {
     }
 
     #[test]
-    fn alloc_spin_returns_directly() {
+    fn alloc_with_spin_returns_ok() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
-        let mut buf_slot = pool.alloc_spin::<Msg>();
+        // policy::spin never gives up, so with a buffer free it
+        // returns Ok on the first probe.
+        let mut buf_slot = pool.alloc_with::<Msg>(crate::policy::spin).unwrap();
         buf_slot.seq = 7;
         assert_eq!(buf_slot.seq, 7);
         buf_slot.free();

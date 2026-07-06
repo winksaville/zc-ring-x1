@@ -108,21 +108,6 @@ impl<'a> Consumer<'a> {
             _slot: PhantomData,
         })
     }
-
-    /// Reserve the oldest unread slot, spinning
-    /// until a message arrives —
-    /// [`reserve_slot_with`](Consumer::reserve_slot_with)
-    /// under the never-quitting
-    /// [`policy::spin`](crate::policy::spin), so no `Result`.
-    pub fn reserve_slot_spin<T>(&mut self) -> ReadSlot<'_, T>
-    where
-        T: FromBytes + KnownLayout + Immutable,
-    {
-        match self.reserve_slot_with(crate::policy::spin) {
-            Ok(slot) => slot,
-            Err(Empty) => unreachable!("policy::spin never gives up"),
-        }
-    }
 }
 
 /// A reserved read slot: `Deref` to read the message, then

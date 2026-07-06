@@ -639,8 +639,9 @@ mod tests {
 
     #[test]
     fn threaded_spsc_spin_variants() {
-        // The threaded_spsc flow through reserve_slot_spin on
-        // both ends — the shipped-policy model in use.
+        // The threaded_spsc flow through the shipped
+        // policy::spin on both ends — the shipped-policy model
+        // in use.
         const COUNT: u64 = if cfg!(miri) { 200 } else { 100_000 };
         let mut r = Region::new();
         let (mut prod, mut cons) = Ring::init(&mut r.0, 64, 4).unwrap().split();
@@ -648,7 +649,7 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(move || {
                 for i in 0..COUNT {
-                    let mut slot = prod.reserve_slot_spin::<Msg>();
+                    let mut slot = prod.reserve_slot_with::<Msg>(crate::policy::spin).unwrap();
                     slot.seq = i;
                     slot.val = i * 3;
                     slot.commit();
@@ -656,7 +657,7 @@ mod tests {
             });
             s.spawn(move || {
                 for i in 0..COUNT {
-                    let msg = cons.reserve_slot_spin::<Msg>();
+                    let msg = cons.reserve_slot_with::<Msg>(crate::policy::spin).unwrap();
                     assert_eq!(msg.seq, i);
                     assert_eq!(msg.val, i * 3);
                     msg.release();

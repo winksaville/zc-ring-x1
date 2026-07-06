@@ -21,20 +21,11 @@
 //!   payloads at rest in pool buffers — runs between them:
 //!   alloc → into_desc → ring → resolve → free, with the
 //!   same placement ladder as the raw ring.
-//! - The `_closure` / `_spin` lines are the wait-policy
-//!   seam exemplar: one workload written in all three forms
-//!   side by side — raw (the hand-rolled wait loop, the
-//!   fastest form we know for the shape and the baseline
-//!   the others are measured against), `_closure` (a
-//!   spinning closure through the `reserve_slot_with`
-//!   hook), and `_spin` (the shipped model). Calibrated
-//!   measurement lives in iiac-perf; these lines are the
-//!   eyeball check.
 
 use std::time::Instant;
 
 use zc_ring_x1::{
-    BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, Pool, PoolRegistry, Ring,
+    BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, Pool, PoolRegistry, Ring, policy,
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -231,7 +222,7 @@ fn spsc_ring_one_msg_2t(pin: PinPair) -> f64 {
                 pin_to_cpu(p);
             }
             for i in 0..COUNT {
-                let mut slot = producer.reserve_slot_spin::<Msg>();
+                let mut slot = producer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
                 slot.seq = i;
                 slot.commit();
             }
@@ -241,152 +232,7 @@ fn spsc_ring_one_msg_2t(pin: PinPair) -> f64 {
                 pin_to_cpu(c);
             }
             for i in 0..COUNT {
-                let msg = consumer.reserve_slot_spin::<Msg>();
-                assert_eq!(msg.seq, i);
-                msg.release();
-            }
-        });
-    });
-    start.elapsed().as_secs_f64()
-}
-
-/// spsc_ring_one_msg_1t through `reserve_slot_with` — the
-/// closure form of the three-way seam check (raw loop vs
-/// `_with(closure)` vs `_spin`).
-///
-/// The ring never blocks in this loop, so the policy asserts
-/// instead of waiting and the line measures the probe path's
-/// pure overhead — at ~3 ns/msg any per-call cost shows as a
-/// visible percentage.
-fn spsc_ring_one_msg_1t_closure() -> f64 {
-    let mut region = Region([0; size_of::<Region>()]);
-    let (mut producer, mut consumer) = Ring::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
-        .split();
-
-    let start = Instant::now();
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            pin_to_cpu(0);
-            for i in 0..COUNT {
-                let mut slot = producer
-                    .reserve_slot_with::<Msg>(|_| {
-                        panic!("spsc_ring_one_msg_1t_closure: producer Full SHOULD NOT HAPPEN")
-                    })
-                    .unwrap(); // OK: the policy panics instead of giving up
-                slot.seq = i;
-                slot.commit();
-                let msg = consumer
-                    .reserve_slot_with::<Msg>(|_| {
-                        panic!("spsc_ring_one_msg_1t_closure: consumer Empty SHOULD NOT HAPPEN")
-                    })
-                    .unwrap(); // OK: the policy panics instead of giving up
-                assert_eq!(msg.seq, i);
-                msg.release();
-            }
-        });
-    });
-    start.elapsed().as_secs_f64()
-}
-
-/// spsc_ring_one_msg_1t through `reserve_slot_spin` — the
-/// shipped-model form of the three-way seam check; like the
-/// raw 1t it never actually waits.
-fn spsc_ring_one_msg_1t_spin() -> f64 {
-    let mut region = Region([0; size_of::<Region>()]);
-    let (mut producer, mut consumer) = Ring::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
-        .split();
-
-    let start = Instant::now();
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            pin_to_cpu(0);
-            for i in 0..COUNT {
-                let mut slot = producer.reserve_slot_spin::<Msg>();
-                slot.seq = i;
-                slot.commit();
-                let msg = consumer.reserve_slot_spin::<Msg>();
-                assert_eq!(msg.seq, i);
-                msg.release();
-            }
-        });
-    });
-    start.elapsed().as_secs_f64()
-}
-
-/// spsc_ring_one_msg_2t through `reserve_slot_with` with a
-/// spinning closure — the closure form of the three-way seam
-/// check under real waiting.
-fn spsc_ring_one_msg_2t_closure(pin: PinPair) -> f64 {
-    let mut region = Region([0; size_of::<Region>()]);
-    let (mut producer, mut consumer) = Ring::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
-        .split();
-
-    let start = Instant::now();
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            if let Some((p, _)) = pin {
-                pin_to_cpu(p);
-            }
-            for i in 0..COUNT {
-                let mut slot = producer
-                    .reserve_slot_with::<Msg>(|_| {
-                        std::hint::spin_loop();
-                        true
-                    })
-                    .unwrap(); // OK: the closure never gives up
-                slot.seq = i;
-                slot.commit();
-            }
-        });
-        s.spawn(move || {
-            if let Some((_, c)) = pin {
-                pin_to_cpu(c);
-            }
-            for i in 0..COUNT {
-                let msg = consumer
-                    .reserve_slot_with::<Msg>(|_| {
-                        std::hint::spin_loop();
-                        true
-                    })
-                    .unwrap(); // OK: the closure never gives up
-                assert_eq!(msg.seq, i);
-                msg.release();
-            }
-        });
-    });
-    start.elapsed().as_secs_f64()
-}
-
-/// spsc_ring_one_msg_2t through `reserve_slot_spin` — the
-/// shipped-model form of the three-way seam check under real
-/// waiting.
-fn spsc_ring_one_msg_2t_spin(pin: PinPair) -> f64 {
-    let mut region = Region([0; size_of::<Region>()]);
-    let (mut producer, mut consumer) = Ring::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
-        .split();
-
-    let start = Instant::now();
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            if let Some((p, _)) = pin {
-                pin_to_cpu(p);
-            }
-            for i in 0..COUNT {
-                let mut slot = producer.reserve_slot_spin::<Msg>();
-                slot.seq = i;
-                slot.commit();
-            }
-        });
-        s.spawn(move || {
-            if let Some((_, c)) = pin {
-                pin_to_cpu(c);
-            }
-            for i in 0..COUNT {
-                let msg = consumer.reserve_slot_spin::<Msg>();
+                let msg = consumer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
                 assert_eq!(msg.seq, i);
                 msg.release();
             }
@@ -500,7 +346,7 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
                     .into_desc(pool_id, buf_slot)
                     .map_err(|(_, e)| e)
                     .unwrap(); // OK: pool_id came from this registry's register
-                let mut slot = producer.reserve_slot_spin::<Desc>();
+                let mut slot = producer.reserve_slot_with::<Desc>(policy::spin).unwrap(); // OK: policy::spin never gives up
                 *slot = desc;
                 slot.commit();
             }
@@ -511,7 +357,7 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
             }
             for i in 0..COUNT {
                 let desc = {
-                    let slot = consumer.reserve_slot_spin::<Desc>();
+                    let slot = consumer.reserve_slot_with::<Desc>(policy::spin).unwrap(); // OK: policy::spin never gives up
                     let desc = *slot;
                     slot.release();
                     desc
@@ -663,19 +509,9 @@ fn main() {
     report("pool_alloc_free_1t (core 0):", pool_alloc_free_1t());
     report("global_alloc_free_1t (core 0):", global_alloc_free_1t());
 
-    // Single thread, core 0. The _with/_spin lines are the
-    // wait-policy seam check: same loop as the raw line
-    // above them, through the hook and the shipped model.
+    // Single thread, core 0.
     println!();
     report("spsc_ring_one_msg_1t (core 0):", spsc_ring_one_msg_1t());
-    report(
-        "spsc_ring_one_msg_1t_closure (core 0):",
-        spsc_ring_one_msg_1t_closure(),
-    );
-    report(
-        "spsc_ring_one_msg_1t_spin (core 0):",
-        spsc_ring_one_msg_1t_spin(),
-    );
     report(
         "spsc_ring_one_pool_msg_1t (core 0):",
         spsc_ring_one_pool_msg_1t(),
@@ -709,14 +545,6 @@ fn main() {
                 spsc_ring_one_msg_2t(far),
             );
             report(
-                &format!("spsc_ring_one_msg_2t_closure (diff cores {p}+{c}):"),
-                spsc_ring_one_msg_2t_closure(far),
-            );
-            report(
-                &format!("spsc_ring_one_msg_2t_spin (diff cores {p}+{c}):"),
-                spsc_ring_one_msg_2t_spin(far),
-            );
-            report(
                 &format!("spsc_ring_one_pool_msg_2t (diff cores {p}+{c}):"),
                 spsc_ring_one_pool_msg_2t(far),
             );
@@ -738,14 +566,6 @@ fn main() {
             report(
                 &format!("spsc_ring_one_msg_2t (same core {p}+{c}):"),
                 spsc_ring_one_msg_2t(smt),
-            );
-            report(
-                &format!("spsc_ring_one_msg_2t_closure (same core {p}+{c}):"),
-                spsc_ring_one_msg_2t_closure(smt),
-            );
-            report(
-                &format!("spsc_ring_one_msg_2t_spin (same core {p}+{c}):"),
-                spsc_ring_one_msg_2t_spin(smt),
             );
             report(
                 &format!("spsc_ring_one_pool_msg_2t (same core {p}+{c}):"),

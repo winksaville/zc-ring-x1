@@ -569,7 +569,7 @@ loop — measurably slower and jitterier at 2t.
 
 ## refactor: drop reserve_slot, keep _with ladder
 
-Commits:
+Commits: [[33]]
 
 `reserve_slot` on both endpoints was a strictly dominated API
 rung: `reserve_slot_with(|_| false)` does everything it did
@@ -614,6 +614,53 @@ change.
 
 - `0.8.0` refactor: drop reserve_slot, keep _with ladder
 
+## refactor: drop reserve_slot_spin and alloc_spin
+
+Commits:
+
+With `reserve_slot` gone, the endpoints' `reserve_slot_spin`
+(and the pool's parallel `alloc_spin`) were the only remaining
+`_spin` conveniences — each a three-line wrapper over
+`*_with(policy::spin)` that hid the always-`Ok` unwrap. They
+carry their weight only if callers reach for spin often; no
+consumer outside the demo and tests does, so they go, leaving
+one rung per operation (`*_with` + a shipped `policy::spin`
+policy). `policy::spin` stays public — it is the migration
+target and what the base demo lines now pass.
+
+- Spin call sites migrate to `*_with(policy::spin).unwrap()`
+  (`// OK: policy::spin never gives up` on non-test sites):
+  the base 2t demos, the registry / lib / pool tests.
+- `Pool::alloc_spin` removed for symmetry (todo named only
+  `reserve_slot_spin`, but the same rationale applies); its
+  lone test became `alloc_with_spin_returns_ok`.
+
+### demo: the three-way wait-policy seam collapses
+
+The demo carried a `raw` / `_closure` / `_spin` seam exemplar
+— one workload in three wait forms, side by side, as an
+eyeball zero-cost check. Two removals dissolved it:
+`reserve_slot` (0.8.0) took the hand-rolled `raw` form, and
+`reserve_slot_spin` (here) took `_spin`. What was left —
+`_closure` (an inline spinning closure) vs the base line
+(`policy::spin`) — is the same `reserve_slot_with` call twice
+with a differently-spelled policy, so the `_closure` and
+`_spin` demo fns were dropped as redundant. The base
+`spsc_ring_one_msg_{1t,2t}` lines remain as the single
+demonstration of the API. Calibrated seam measurement was
+always iiac-perf's job (todo), not the demo's.
+
+### README: spin benchmark blocks removed
+
+The `zcr-spin-1t` / `zcr-spin-2t` measurement blocks named a
+method that no longer exists. They were dropped rather than
+relabeled; fresh iiac-perf numbers land in a later pass. The
+`zcr-raw-*` / `zcr-with-*` blocks stay untouched.
+
+### As-built ladder
+
+- `0.9.0` refactor: drop reserve_slot_spin and alloc_spin
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"
@@ -648,3 +695,4 @@ change.
 [30]: https://github.com/winksaville/zc-ring-x1/commit/b23b06a5dae5 "b23b06a5dae5c21a94e60bcf2e94b883d146e359"
 [31]: https://github.com/winksaville/zc-ring-x1/commit/e083cd429597 "e083cd4295978a75833af284e9dd1620c0ad63e8"
 [32]: https://github.com/winksaville/zc-ring-x1/commit/35f144b980f7 "35f144b980f78b893892f9958c3c6b3fa0c2909e"
+[33]: https://github.com/winksaville/zc-ring-x1/commit/0897d0a2edce "0897d0a2edced6719f2ce5e65cc263da7514ff47"

@@ -233,9 +233,6 @@ Producer — reserve_slot_with/commit, in place:
   asserted against the slot size on each call (a mismatch is a
   programming error, so it panics; typed endpoints that check
   once are a follow-on — see [todo.md](todo.md)).
-- `producer.reserve_slot_spin::<T>() -> WriteSlot<'_, T>` — the
-  forever-spin convenience (`reserve_slot_with` under
-  `policy::spin`), so no `Result`.
 - `WriteSlot::commit(self)` — publishes the slot
   (`producer_idx + 1`, `Release`). Dropping without commit
   abandons the reservation (nothing published).
@@ -246,8 +243,6 @@ Consumer — reserve_slot_with/release, in place:
   Result<ReadSlot<'_, T>, Empty>` — oldest unread slot as
   `&T`, retrying under the injected wait policy (`|_| false`
   for a single non-blocking probe).
-- `consumer.reserve_slot_spin::<T>() -> ReadSlot<'_, T>` — the
-  forever-spin convenience, so no `Result`.
 - `ReadSlot::release(self)` — frees the slot
   (`consumer_idx + 1`, `Release`). Dropping without release
   leaves the slot unread — the next reservation returns it
@@ -278,9 +273,9 @@ single-slot guard is the whole surface this cycle.
 The ring's fallible core never blocks: `reserve_slot_with`
 returning [`Full`]/[`Empty`] under a give-up policy (`|_| false`)
 is the primitive. *How* to wait on it — spin, yield, park,
-await — is injected policy: a shipped [`policy::spin`] drives
-the [`reserve_slot_spin`] convenience, but anything that
-actually sleeps belongs to the layer above (an embedded caller
+await — is injected policy: the crate ships [`policy::spin`]
+for a pure busy-wait, but anything that actually sleeps
+belongs to the layer above (an embedded caller
 may WFE on an interrupt, an async runtime wants a waker, a
 pinned busy-poll thread wants a pure spin; no single
 crate-blessed hybrid fits all three).

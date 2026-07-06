@@ -25,10 +25,10 @@ in sync with `src/`.
   cache-line multiple, every slot cache-line aligned.
 - Free-running `AtomicU32` indices, masked only at slot access;
   no sacrificial slot; lock-free with Acquire/Release pairing.
-- Guard API: `reserve_slot_with::<T>(policy)` (or the
-  `reserve_slot_spin::<T>()` convenience) on either endpoint —
-  write → `commit()` on the producer side, read → `release()` on
-  the consumer side; dropping a guard abandons cleanly.
+- Guard API: `reserve_slot_with::<T>(policy)` on either
+  endpoint — write → `commit()` on the producer side, read →
+  `release()` on the consumer side; dropping a guard abandons
+  cleanly.
 - IPC-ready: one contiguous region, no internal pointers, an
   init/attach handshake (magic published last, Release), and an
   all-atomic header so a misbehaving peer can corrupt data but
@@ -280,25 +280,6 @@ zcr-with-1t: zc-ring-x1 reserve_slot_with round-trip (1 thread) [duration=300.0s
   mean min..n2                                                                        4.7 ns         3.9 ns
   stdev min..n2                                                                       0.2 ns
 
-zcr-spin-1t: zc-ring-x1 reserve_slot_spin round-trip (1 thread) [duration=300.0s outer=1,499,844,275 inner=32 calls=47,995,016,800 adj/call=0.84ns labels=both]:
-                            first           last         range            count           mean       adjusted
-  z4  0.000_1              4.4 ns         4.4 ns        0.0 ns               14         4.4 ns         3.5 ns
-  p10 0.10                 4.7 ns         4.7 ns        0.0 ns      291,777,769         4.7 ns         3.9 ns
-  p60 0.60                 5.0 ns         5.0 ns        0.0 ns    1,033,313,169         5.0 ns         4.2 ns
-  n2  0.99                 5.3 ns         5.6 ns        0.3 ns      159,905,642         5.4 ns         4.6 ns
-  n3  0.999                5.9 ns         6.6 ns        0.6 ns       13,575,384         6.2 ns         5.3 ns
-  n4  0.999_9              6.9 ns       121.8 ns      114.9 ns        1,124,174        14.6 ns        13.7 ns
-  n5  0.999_99           122.1 ns       151.6 ns       29.4 ns          133,236       127.9 ns       127.1 ns
-  n6  0.999_999          151.9 ns     2,490.4 ns    2,338.4 ns           13,326       366.4 ns       365.6 ns
-  n7  0.999_999_9      2,492.4 ns     2,654.2 ns      161.8 ns            1,412     2,515.2 ns     2,514.3 ns
-  n8  0.999_999_99     2,656.3 ns     7,491.6 ns    4,835.3 ns              134     5,650.3 ns     5,649.5 ns
-  n9  0.999_999_999    7,495.7 ns    11,804.7 ns    4,309.0 ns               14     8,460.0 ns     8,459.2 ns
-  n10 0.999_999_999_9 12,656.6 ns    12,656.6 ns        0.0 ns                1    12,656.6 ns    12,655.8 ns
-  mean                                                                                  5.0 ns         4.2 ns
-  stdev                                                                                 3.9 ns
-  mean min..n2                                                                          5.0 ns         4.2 ns
-  stdev min..n2                                                                         0.2 ns
-
 zcr-raw-2t: zc-ring-x1 raw round-trip (2 threads, spin) [duration=300.0s outer=1,674,401,787 inner=1 calls=1,674,401,787 adj/call=11.61ns labels=both]:
                                first              last             range          count              mean          adjusted
   z4  0.000_1                20.0 ns           99.0 ns           79.0 ns         88,909           82.0 ns           70.4 ns
@@ -343,27 +324,6 @@ zcr-with-2t: zc-ring-x1 reserve_slot_with round-trip (2 threads, spin) [duration
   stdev                                                                                     95.9 ns
   mean min..n2                                                                             108.3 ns         96.7 ns
   stdev min..n2                                                                              5.8 ns
-
-zcr-spin-2t: zc-ring-x1 reserve_slot_spin round-trip (2 threads, spin) [duration=300.0s outer=1,943,706,240 inner=1 calls=1,943,706,240 adj/call=11.61ns labels=both]:
-                             first            last           range            count            mean        adjusted
-  z4  0.000_1              60.0 ns         90.0 ns         30.0 ns          233,489         88.2 ns         76.6 ns
-  z3  0.001                99.0 ns         99.0 ns          0.0 ns           28,303         99.0 ns         87.4 ns
-  p20 0.20                100.0 ns        100.0 ns          0.0 ns      430,216,244        100.0 ns         88.4 ns
-  p40 0.40                109.1 ns        109.1 ns          0.0 ns      311,656,855        109.1 ns         97.4 ns
-  p70 0.70                110.0 ns        110.0 ns          0.0 ns    1,114,601,304        110.0 ns         98.4 ns
-  n2  0.99                119.0 ns        140.0 ns         21.0 ns       71,119,124        123.7 ns        112.1 ns
-  n3  0.999               150.0 ns        180.1 ns         30.1 ns       14,150,068        164.5 ns        152.9 ns
-  n4  0.999_9             190.1 ns      3,778.6 ns      3,588.5 ns        1,506,594        477.6 ns        466.0 ns
-  n5  0.999_99          3,786.8 ns      4,780.0 ns        993.3 ns          174,678      4,106.4 ns      4,094.8 ns
-  n6  0.999_999         4,788.2 ns     12,656.6 ns      7,868.4 ns           17,637      5,804.5 ns      5,792.9 ns
-  n7  0.999_999_9      12,664.8 ns    168,165.4 ns    155,500.5 ns            1,749     33,716.1 ns     33,704.5 ns
-  n8  0.999_999_99    168,296.4 ns    221,904.9 ns     53,608.4 ns              176    192,789.0 ns    192,777.4 ns
-  n9  0.999_999_999   223,477.8 ns    385,351.7 ns    161,873.9 ns               17    264,634.4 ns    264,622.8 ns
-  n10 0.999_999_999_9 385,613.8 ns    391,381.0 ns      5,767.2 ns                2    388,497.4 ns    388,485.8 ns
-  mean                                                                                     109.3 ns         97.6 ns
-  stdev                                                                                     94.9 ns
-  mean min..n2                                                                             108.1 ns         96.5 ns
-  stdev min..n2                                                                              5.2 ns
 
 wink@3900x 26-07-06T15:43:41.979Z:~/data/prgs/rust/iiac-perf (main+1)
 ```
