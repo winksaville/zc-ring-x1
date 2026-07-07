@@ -15,9 +15,9 @@ measured A/B against SPSC and a fan-in comparator in
 iiac-perf. Design:
 [MPSC ring (sibling primitive)](ring-buffer-design.md#mpsc-ring-sibling-primitive).
 
-- 0.11.0-0 docs: mpsc ring design + plan (current)
-- 0.11.0-1 feat: mpsc ring layout + init/attach
-- 0.11.0-2 feat: mpsc send_with + consumer recv
+- 0.11.0-0 docs: mpsc ring design + plan (done)
+- 0.11.0-1 feat: mpsc ring layout + init/attach (done)
+- 0.11.0-2 feat: mpsc send_with + consumer recv (current)
 - 0.11.0-3 feat: demo mpsc flow lines
 - 0.11.0-4 docs: mpsc iiac-perf numbers
 - 0.11.0 feat: mpsc ring sibling primitive (close-out)

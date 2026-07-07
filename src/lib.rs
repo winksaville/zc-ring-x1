@@ -22,12 +22,20 @@ use core::mem::{align_of, size_of};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 mod consumer;
+// The MPSC ring needs CAS (the claim), so it is gated; the
+// SPSC ring protocol stays load/store-only. (The pool's
+// free-stack also uses CAS and predates the gate — see
+// notes/bugs.md.)
+#[cfg(target_has_atomic = "32")]
+mod mpsc;
 pub mod policy;
 mod pool;
 mod producer;
 mod registry;
 
 pub use consumer::{Consumer, Empty, ReadSlot};
+#[cfg(target_has_atomic = "32")]
+pub use mpsc::{MpscHeader, MpscRing, mpsc_region_size};
 pub use pool::{BufSlot, Exhausted, Pool, PoolHeader, PoolResolver};
 pub use producer::{Full, Producer, WriteSlot};
 pub use registry::{Desc, PoolId, PoolRegistry, RegistryError};

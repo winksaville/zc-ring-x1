@@ -10,6 +10,13 @@ insert / delete / reorder.
 
 ## Bugs
 
-_No known bugs._
+1. Pool free-stack CAS is not cfg-gated: `src/pool.rs` calls
+   `compare_exchange` unconditionally, so the whole crate
+   fails to build on load/store-only targets (thumbv6m) —
+   contradicting the design's "the atomic floor rises only
+   for pool users". The MPSC module gates on
+   `target_has_atomic = "32"`; pool (and registry, which
+   uses Pool) should gate the same way. Found while adding
+   the gate for MPSC (0.11.0-1).
 
 # References
