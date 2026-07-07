@@ -23,6 +23,12 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::{CACHE_LINE_SIZE, CacheAligned, Error, USER_WORDS};
 
+mod consumer;
+mod producer;
+
+pub use consumer::{MpscConsumer, MpscReadSlot};
+pub use producer::MpscProducer;
+
 /// Layout marker written by [`MpscRing::init`]; distinct from
 /// the SPSC magic so cross-kind attach fails toward
 /// [`Error::BadMagic`].
@@ -36,6 +42,18 @@ const MPSC_LAYOUT_VERSION: u32 = 1;
 /// tombstone encoding reserves index-arithmetic headroom (see
 /// the design doc's "MPSC open questions").
 const MPSC_MAX_CAPACITY: u32 = 1 << 30;
+
+/// Tombstone offset: an unwound `send_with` commits
+/// `pos + 1 + TOMBSTONE` instead of `pos + 1`, marking a
+/// claimed slot the consumer must release without delivering.
+///
+/// - Unambiguous at both wait points: the consumer at `c`
+///   legitimately sees only `seq - (c+1)` of `-1` (not yet
+///   committed) or `0` (committed), so exactly `2^31` means
+///   tombstone; a producer's wrapping-signed diff reads a
+///   tombstoned previous lap as negative — "full" — until the
+///   consumer skips it, which is the correct backpressure.
+pub(crate) const TOMBSTONE: u32 = 1 << 31;
 
 /// Control block at offset 0 of an MPSC region — same
 /// four-line shape as the SPSC [`Header`](crate::Header), but
@@ -88,9 +106,6 @@ const _: () = assert!(size_of::<MpscHeader>() == 4 * CACHE_LINE_SIZE);
 /// - Region layout: [`MpscHeader`], the seq array (`M ×
 ///   AtomicU32`, padded up to a cache line), then M slots of N
 ///   bytes.
-// Fields feed the endpoint handles landing in the next commit
-// (`split`, send_with/recv); the allow goes with it.
-#[allow(dead_code)]
 pub struct MpscRing<'a> {
     /// The region's control block.
     header: &'a MpscHeader,
@@ -217,6 +232,32 @@ impl<'a> MpscRing<'a> {
             mask: capacity - 1,
             _region: PhantomData,
         })
+    }
+
+    /// Split into one producer handle and the consumer handle.
+    ///
+    /// - The producer is `Clone`: one clone per producing
+    ///   thread (MPSC contract). The consumer is unique per
+    ///   process; cross-process, exactly one consuming process
+    ///   is the caller's contract (see [`MpscRing::attach`]).
+    pub fn split(self) -> (MpscProducer<'a>, MpscConsumer<'a>) {
+        (
+            MpscProducer::new(
+                self.header,
+                self.seqs,
+                self.slots,
+                self.slot_size,
+                self.mask,
+            ),
+            MpscConsumer::new(
+                self.header,
+                self.seqs,
+                self.slots,
+                self.slot_size,
+                self.capacity,
+                self.mask,
+            ),
+        )
     }
 }
 
@@ -405,5 +446,285 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err, Error::BadMagic);
+    }
+
+    use crate::{Empty, Full};
+    use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+    /// Test message; two words so a torn write would be
+    /// visible, `val` doubles as the producer id in threaded
+    /// tests.
+    #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Debug, PartialEq)]
+    #[repr(C)]
+    struct Msg {
+        seq: u64,
+        val: u64,
+    }
+
+    #[test]
+    fn mpsc_roundtrip_full_empty() {
+        let mut r = Region::new();
+        let (prod, mut cons) = MpscRing::init(&mut r.0, 64, 4).unwrap().split();
+
+        // Empty at start.
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+
+        // Fill all 4 slots, then Full on a single probe.
+        for i in 0..4u64 {
+            prod.send_with::<Msg>(
+                |_| false,
+                |m| {
+                    m.seq = i;
+                    m.val = i * 10;
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            prod.send_with::<Msg>(|_| false, |_| {}).err().unwrap(),
+            Full
+        );
+
+        // Drain in order; then empty again.
+        for i in 0..4u64 {
+            let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+            assert_eq!(
+                *msg,
+                Msg {
+                    seq: i,
+                    val: i * 10
+                }
+            );
+            msg.release();
+        }
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+
+        // One more send lands in the masked-around slot 0.
+        prod.send_with::<Msg>(
+            |_| false,
+            |m| {
+                m.seq = 4;
+                m.val = 0;
+            },
+        )
+        .unwrap();
+        let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+        assert_eq!(msg.seq, 4);
+        msg.release();
+    }
+
+    #[test]
+    fn mpsc_policies_count_and_give_up() {
+        let mut r = Region::new();
+        let (prod, mut cons) = MpscRing::init(&mut r.0, 64, 4).unwrap().split();
+
+        // Empty ring: the consumer's policy sees 0-based
+        // attempts and its `false` becomes Err(Empty).
+        let mut seen = Vec::new();
+        let err = cons
+            .reserve_slot_with::<Msg>(|attempt| {
+                seen.push(attempt);
+                attempt < 2
+            })
+            .err()
+            .unwrap();
+        assert_eq!(err, Empty);
+        assert_eq!(seen, [0, 1, 2]);
+
+        // Fill the ring: the producer's policy gives up with
+        // Err(Full), and the failed send has zero footprint —
+        // the fill closure never ran.
+        for i in 0..4u64 {
+            prod.send_with::<Msg>(|_| false, |m| m.seq = i).unwrap();
+        }
+        let mut seen = Vec::new();
+        let err = prod
+            .send_with::<Msg>(
+                |attempt| {
+                    seen.push(attempt);
+                    attempt < 2
+                },
+                |_| panic!("fill ran on a full ring"),
+            )
+            .err()
+            .unwrap();
+        assert_eq!(err, Full);
+        assert_eq!(seen, [0, 1, 2]);
+
+        // With room / messages available the policy is never
+        // consulted.
+        let msg = cons
+            .reserve_slot_with::<Msg>(|_| panic!("policy consulted with a message available"))
+            .unwrap();
+        assert_eq!(msg.seq, 0);
+        msg.release();
+        prod.send_with::<Msg>(
+            |_| panic!("policy consulted with room available"),
+            |m| m.seq = 4,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    // Dropping the guard is the behavior under test.
+    #[allow(clippy::drop_non_drop)]
+    fn mpsc_abandoned_read_guard_redelivers() {
+        let mut r = Region::new();
+        let (prod, mut cons) = MpscRing::init(&mut r.0, 64, 4).unwrap().split();
+
+        prod.send_with::<Msg>(|_| false, |m| m.seq = 1).unwrap();
+        let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+        assert_eq!(msg.seq, 1);
+        drop(msg);
+        let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+        assert_eq!(msg.seq, 1);
+        msg.release();
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+    }
+
+    #[test]
+    fn mpsc_panicking_fill_tombstones_and_skips() {
+        let mut r = Region::new();
+        let (prod, mut cons) = MpscRing::init(&mut r.0, 64, 4).unwrap().split();
+
+        // A committed message, a panicked fill, another
+        // committed message.
+        prod.send_with::<Msg>(|_| false, |m| m.seq = 1).unwrap();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            prod.send_with::<Msg>(
+                |_| false,
+                |m| {
+                    m.seq = 99; // partially filled, then…
+                    panic!("fill panics");
+                },
+            )
+        }));
+        assert!(unwound.is_err());
+        prod.send_with::<Msg>(|_| false, |m| m.seq = 2).unwrap();
+
+        // The consumer sees 1 then 2; the tombstoned slot is
+        // released without delivery.
+        let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+        assert_eq!(msg.seq, 1);
+        msg.release();
+        let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+        assert_eq!(msg.seq, 2);
+        msg.release();
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+
+        // The skipped slot is claimable again: a full lap
+        // still fits 4 messages.
+        for i in 3..7u64 {
+            prod.send_with::<Msg>(|_| false, |m| m.seq = i).unwrap();
+        }
+        assert!(prod.send_with::<Msg>(|_| false, |_| {}).is_err());
+        for i in 3..7u64 {
+            let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+            assert_eq!(msg.seq, i);
+            msg.release();
+        }
+    }
+
+    #[test]
+    fn mpsc_indices_survive_u32_wrap() {
+        let mut r = Region::new();
+        let ring = MpscRing::init(&mut r.0, 64, 4).unwrap();
+        // Simulate a long-running ring two commits shy of the
+        // u32 wrap: indices at MAX-1, and each slot's seq must
+        // equal the free-running position that will next claim
+        // it (positions MAX-1, MAX, 0, 1 → slots 2, 3, 0, 1).
+        let start = u32::MAX - 1;
+        ring.header.producer_idx.store(start, Ordering::Relaxed);
+        ring.header.consumer_idx.store(start, Ordering::Relaxed);
+        for (slot, pos) in [(2u32, u32::MAX - 1), (3, u32::MAX), (0, 0), (1, 1)] {
+            // SAFETY: slot < capacity; test mirrors init.
+            unsafe { &*ring.seqs.add(slot as usize) }.store(pos, Ordering::Relaxed);
+        }
+        let (prod, mut cons) = ring.split();
+
+        // Fill across the wrap, then Full.
+        for i in 0..4u64 {
+            prod.send_with::<Msg>(|_| false, |m| m.seq = i).unwrap();
+        }
+        assert!(prod.send_with::<Msg>(|_| false, |_| {}).is_err());
+
+        // Drain in order across the wrap.
+        for i in 0..4u64 {
+            let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+            assert_eq!(msg.seq, i);
+            msg.release();
+        }
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+    }
+
+    #[test]
+    fn threaded_mpsc_two_producers() {
+        // Reduced under Miri: interpreted spin loops are slow.
+        const COUNT: u64 = if cfg!(miri) { 100 } else { 50_000 };
+        const PRODUCERS: u64 = 2;
+        let mut r = Region::new();
+        let (prod, mut cons) = MpscRing::init(&mut r.0, 64, 4).unwrap().split();
+
+        std::thread::scope(|s| {
+            for p in 0..PRODUCERS {
+                let prod = prod.clone();
+                s.spawn(move || {
+                    for i in 0..COUNT {
+                        prod.send_with::<Msg>(crate::policy::spin, |m| {
+                            m.seq = i;
+                            m.val = p;
+                        })
+                        .unwrap(); // OK: policy::spin never gives up
+                    }
+                });
+            }
+            s.spawn(move || {
+                // Global arrival order is claim order; only
+                // per-producer FIFO is promised.
+                let mut next = [0u64; PRODUCERS as usize];
+                for _ in 0..PRODUCERS * COUNT {
+                    let msg = cons.reserve_slot_with::<Msg>(crate::policy::spin).unwrap(); // OK: policy::spin never gives up
+                    let p = msg.val as usize;
+                    assert_eq!(msg.seq, next[p], "per-producer order broken");
+                    next[p] += 1;
+                    msg.release();
+                }
+                assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+            });
+        });
+    }
+
+    #[test]
+    fn threaded_mpsc_shared_reference_producers() {
+        // The Sync path: two threads share one &MpscProducer
+        // instead of cloning.
+        const COUNT: u64 = if cfg!(miri) { 100 } else { 50_000 };
+        let mut r = Region::new();
+        let (prod, mut cons) = MpscRing::init(&mut r.0, 64, 4).unwrap().split();
+        let prod = &prod;
+
+        std::thread::scope(|s| {
+            for p in 0..2u64 {
+                s.spawn(move || {
+                    for i in 0..COUNT {
+                        prod.send_with::<Msg>(crate::policy::spin, |m| {
+                            m.seq = i;
+                            m.val = p;
+                        })
+                        .unwrap(); // OK: policy::spin never gives up
+                    }
+                });
+            }
+            s.spawn(move || {
+                let mut next = [0u64; 2];
+                for _ in 0..2 * COUNT {
+                    let msg = cons.reserve_slot_with::<Msg>(crate::policy::spin).unwrap(); // OK: policy::spin never gives up
+                    let p = msg.val as usize;
+                    assert_eq!(msg.seq, next[p]);
+                    next[p] += 1;
+                    msg.release();
+                }
+            });
+        });
     }
 }

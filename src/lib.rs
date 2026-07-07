@@ -35,7 +35,7 @@ mod registry;
 
 pub use consumer::{Consumer, Empty, ReadSlot};
 #[cfg(target_has_atomic = "32")]
-pub use mpsc::{MpscHeader, MpscRing, mpsc_region_size};
+pub use mpsc::{MpscConsumer, MpscHeader, MpscProducer, MpscReadSlot, MpscRing, mpsc_region_size};
 pub use pool::{BufSlot, Exhausted, Pool, PoolHeader, PoolResolver};
 pub use producer::{Full, Producer, WriteSlot};
 pub use registry::{Desc, PoolId, PoolRegistry, RegistryError};
