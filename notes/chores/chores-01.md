@@ -687,7 +687,7 @@ pass, and it also closes the seam-measurement clause of Todo #1
 
 ## feat: mpsc ring sibling primitive
 
-Commits:
+Commits: [[37]],[[38]],[[39]],[[40]],[[41]],[[42]]
 
 N senders sharing one queue needs a multi-producer ring, and
 the SPSC hot path (load/store-only, ~2 ns 1t) must not pay
@@ -780,3 +780,9 @@ variant might feed back into the SPSC protocol).
 [34]: https://github.com/winksaville/zc-ring-x1/commit/af9dc6af764f "af9dc6af764f51c28ba9400a4f86ee4b6acee265"
 [35]: https://github.com/winksaville/vc-template-x1/commit/d485bb5d34b7 "d485bb5d34b72453ccb44f16967730ace2e17dc9"
 [36]: https://github.com/winksaville/zc-ring-x1/commit/3f07aec032f5 "3f07aec032f55b456912120aed8ca14a891986fe"
+[37]: https://github.com/winksaville/zc-ring-x1/commit/2541a91de248 "2541a91de2487b32a0e1796637e7423e7db82487"
+[38]: https://github.com/winksaville/zc-ring-x1/commit/40cdd59c9e93 "40cdd59c9e939389568559e4c2de3031ac23336b"
+[39]: https://github.com/winksaville/zc-ring-x1/commit/7ac7801f04f0 "7ac7801f04f0462a99c881570743a735e0db86fb"
+[40]: https://github.com/winksaville/zc-ring-x1/commit/9f49ded808f5 "9f49ded808f579fa35922e2dd881c47ecd8f6718"
+[41]: https://github.com/winksaville/zc-ring-x1/commit/e095b7d55cf6 "e095b7d55cf6d93ccd73e91bcb0b8015af1ae5ac"
+[42]: https://github.com/winksaville/zc-ring-x1/commit/bdd880945d06 "bdd880945d068dbe3efa5e7535f99c4bf6a43053"
