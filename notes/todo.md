@@ -19,7 +19,7 @@ iiac-perf. Design:
 - 0.11.0-1 feat: mpsc ring layout + init/attach (done)
 - 0.11.0-2 feat: mpsc send_with + consumer recv (done)
 - 0.11.0-3 feat: demo mpsc flow lines (done)
-- 0.11.0-4 docs: mpsc iiac-perf numbers (current)
+- 0.11.0-4 docs: mpsc iiac-perf numbers (done)
 - 0.11.0 feat: mpsc ring sibling primitive (close-out)
 
 ## Todo
