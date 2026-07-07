@@ -12,6 +12,9 @@
 //!   one consumer thread: unpinned, pinned to two different
 //!   physical cores, and pinned to one physical core's two
 //!   SMT siblings (shared L1/L2, when the CPU has SMT).
+//!   The MPSC sibling runs beside it at each placement
+//!   (send_with closure fill), plus a 2-producer + 1-consumer
+//!   line — the shape only the MPSC ring can run.
 //! - Part 2, the pool: an allocator thread allocs and
 //!   fills `BufSlot`s and hands them to a freer thread —
 //!   "send" today is moving the guard (see the README's
@@ -25,7 +28,8 @@
 use std::time::Instant;
 
 use zc_ring_x1::{
-    BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, Pool, PoolRegistry, Ring, policy,
+    BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, MpscRing, Pool, PoolRegistry, Ring,
+    policy,
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -36,18 +40,29 @@ const COUNT: u64 = 1_000_000;
 /// under pressure is the interesting case).
 const DEPTH: u32 = 64;
 
-/// The demo message; one word carrying the sequence number
-/// the consumer asserts.
+/// The demo message: the sequence number the consumer
+/// asserts, and `val` — spare payload, doubling as the
+/// producer id in the multi-producer line.
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Debug, PartialEq)]
 #[repr(C)]
 struct Msg {
     seq: u64,
+    val: u64,
 }
 
 /// Region for either primitive: biggest header (ring, 4
 /// lines) + DEPTH one-line slots/buffers.
 #[repr(C, align(64))]
 struct Region([u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE]);
+
+/// Region for the MPSC ring: header + per-slot seq array
+/// (DEPTH × 4 B, padded to a line) + DEPTH one-line slots.
+#[repr(C, align(64))]
+struct MpscRegion(
+    [u8; 4 * CACHE_LINE_SIZE
+        + (DEPTH as usize * 4).next_multiple_of(CACHE_LINE_SIZE)
+        + DEPTH as usize * CACHE_LINE_SIZE],
+);
 
 /// Group a count into comma-separated thousands
 /// (`1234567` → `"1,234,567"`).
@@ -234,6 +249,120 @@ fn spsc_ring_one_msg_2t(pin: PinPair) -> f64 {
             for i in 0..COUNT {
                 let msg = consumer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
                 assert_eq!(msg.seq, i);
+                msg.release();
+            }
+        });
+    });
+    start.elapsed().as_secs_f64()
+}
+
+/// Move COUNT messages single thread through the MPSC ring,
+/// pinned to cpu 0 — the sibling of spsc_ring_one_msg_1t, so
+/// the two lines read as the seam between the protocols
+/// (claim CAS + seq vs load/store); return elapsed seconds.
+fn mpsc_ring_one_msg_1t() -> f64 {
+    let mut region = MpscRegion([0; size_of::<MpscRegion>()]);
+    let (producer, mut consumer) = MpscRing::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
+        .unwrap() // OK: MpscRegion is sized/aligned for header + seqs + DEPTH slots
+        .split();
+
+    let start = Instant::now();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            pin_to_cpu(0);
+            for i in 0..COUNT {
+                producer.send_with::<Msg>(|_| false, |m| m.seq = i).unwrap(); // OK: room is guaranteed, the consumer drains in lockstep
+                match consumer.reserve_slot_with::<Msg>(|_| false) {
+                    Ok(msg) => {
+                        assert_eq!(msg.seq, i);
+                        msg.release();
+                    }
+                    Err(Empty) => {
+                        panic!("mpsc_ring_one_msg_1t: consumer Empty SHOULD NOT HAPPEN");
+                    }
+                }
+            }
+        });
+    });
+    start.elapsed().as_secs_f64()
+}
+
+/// Move COUNT messages producer-thread → consumer-thread
+/// through the MPSC ring — the sibling of
+/// spsc_ring_one_msg_2t at the same placements, measuring
+/// what the MPSC protocol costs when you don't need multiple
+/// producers; return elapsed seconds.
+///
+/// - `pin` — `Some((p, c))` pins the producer to cpu `p` and
+///   the consumer to cpu `c`; `None` lets the scheduler place
+///   them (the number then depends on where they land).
+fn mpsc_ring_one_msg_2t(pin: PinPair) -> f64 {
+    let mut region = MpscRegion([0; size_of::<MpscRegion>()]);
+    let (producer, mut consumer) = MpscRing::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
+        .unwrap() // OK: MpscRegion is sized/aligned for header + seqs + DEPTH slots
+        .split();
+
+    let start = Instant::now();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            if let Some((p, _)) = pin {
+                pin_to_cpu(p);
+            }
+            for i in 0..COUNT {
+                producer
+                    .send_with::<Msg>(policy::spin, |m| m.seq = i)
+                    .unwrap(); // OK: policy::spin never gives up
+            }
+        });
+        s.spawn(move || {
+            if let Some((_, c)) = pin {
+                pin_to_cpu(c);
+            }
+            for i in 0..COUNT {
+                let msg = consumer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
+                assert_eq!(msg.seq, i);
+                msg.release();
+            }
+        });
+    });
+    start.elapsed().as_secs_f64()
+}
+
+/// Move COUNT messages (COUNT/2 per producer) from two
+/// producer threads into one consumer — the line the SPSC
+/// ring cannot produce: claim contention on the shared
+/// producer index. Unpinned (a pinned variant would need a
+/// third discovered cpu); per-producer FIFO is asserted, the
+/// interleave is whatever the claim race said. Returns
+/// elapsed seconds.
+fn mpsc_ring_one_msg_3t() -> f64 {
+    let mut region = MpscRegion([0; size_of::<MpscRegion>()]);
+    let (producer, mut consumer) = MpscRing::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
+        .unwrap() // OK: MpscRegion is sized/aligned for header + seqs + DEPTH slots
+        .split();
+
+    let start = Instant::now();
+    std::thread::scope(|s| {
+        for p in 0..2u64 {
+            let producer = producer.clone();
+            s.spawn(move || {
+                for i in 0..COUNT / 2 {
+                    producer
+                        .send_with::<Msg>(policy::spin, |m| {
+                            m.seq = i;
+                            m.val = p;
+                        })
+                        .unwrap(); // OK: policy::spin never gives up
+                }
+            });
+        }
+        s.spawn(move || {
+            let mut next = [0u64; 2];
+            for _ in 0..COUNT {
+                let msg = consumer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
+                let p = msg.val as usize;
+                assert_eq!(msg.seq, next[p], "per-producer order broken");
+                next[p] += 1;
                 msg.release();
             }
         });
@@ -483,7 +612,7 @@ fn global_alloc_free_1t() -> f64 {
         s.spawn(move || {
             pin_to_cpu(0);
             for i in 0..COUNT {
-                let mut buf = std::hint::black_box(Box::new(Msg { seq: 0 }));
+                let mut buf = std::hint::black_box(Box::new(Msg { seq: 0, val: 0 }));
                 buf.seq = i;
                 std::hint::black_box(buf.seq);
                 drop(buf);
@@ -512,6 +641,7 @@ fn main() {
     // Single thread, core 0.
     println!();
     report("spsc_ring_one_msg_1t (core 0):", spsc_ring_one_msg_1t());
+    report("mpsc_ring_one_msg_1t (core 0):", mpsc_ring_one_msg_1t());
     report(
         "spsc_ring_one_pool_msg_1t (core 0):",
         spsc_ring_one_pool_msg_1t(),
@@ -528,12 +658,23 @@ fn main() {
         spsc_ring_one_msg_2t(None),
     );
     report(
+        "mpsc_ring_one_msg_2t (unpinned):",
+        mpsc_ring_one_msg_2t(None),
+    );
+    report(
         "spsc_ring_one_pool_msg_2t (unpinned):",
         spsc_ring_one_pool_msg_2t(None),
     );
     report(
         "std_mpsc_one_pool_msg_2t (unpinned):",
         std_mpsc_one_pool_msg_2t(None),
+    );
+
+    // Three threads (2 producers + 1 consumer): the
+    // multi-producer line only the MPSC ring can run.
+    report(
+        "mpsc_ring_one_msg_3t (2p+1c unpinned):",
+        mpsc_ring_one_msg_3t(),
     );
 
     // Two threads, different physical cores.
@@ -543,6 +684,10 @@ fn main() {
             report(
                 &format!("spsc_ring_one_msg_2t (diff cores {p}+{c}):"),
                 spsc_ring_one_msg_2t(far),
+            );
+            report(
+                &format!("mpsc_ring_one_msg_2t (diff cores {p}+{c}):"),
+                mpsc_ring_one_msg_2t(far),
             );
             report(
                 &format!("spsc_ring_one_pool_msg_2t (diff cores {p}+{c}):"),
@@ -566,6 +711,10 @@ fn main() {
             report(
                 &format!("spsc_ring_one_msg_2t (same core {p}+{c}):"),
                 spsc_ring_one_msg_2t(smt),
+            );
+            report(
+                &format!("mpsc_ring_one_msg_2t (same core {p}+{c}):"),
+                mpsc_ring_one_msg_2t(smt),
             );
             report(
                 &format!("spsc_ring_one_pool_msg_2t (same core {p}+{c}):"),
