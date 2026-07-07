@@ -6,21 +6,7 @@ uses links or reference links for more details.
 
 ## In Progress
 
-**feat: mpsc ring sibling primitive**
-
-N senders sharing one queue needs a multi-producer ring, and
-the SPSC hot path (load/store-only, ~2 ns 1t) must not pay
-for it — so MPSC lands as a separate sibling primitive,
-measured A/B against SPSC and a fan-in comparator in
-iiac-perf. Design:
-[MPSC ring (sibling primitive)](ring-buffer-design.md#mpsc-ring-sibling-primitive).
-
-- 0.11.0-0 docs: mpsc ring design + plan (done)
-- 0.11.0-1 feat: mpsc ring layout + init/attach (done)
-- 0.11.0-2 feat: mpsc send_with + consumer recv (done)
-- 0.11.0-3 feat: demo mpsc flow lines (done)
-- 0.11.0-4 docs: mpsc iiac-perf numbers (done)
-- 0.11.0 feat: mpsc ring sibling primitive (close-out)
+_No cycle currently in progress._
 
 ## Todo
 
@@ -54,7 +40,17 @@ iiac-perf. Design:
    - naturally bounded by pool capacity;
    - composes per-sender with MPSC — see
      [Overflow readiness](ring-buffer-design.md#overflow-readiness).
-3. Batch alloc/free demo: alongside the one-message
+3. Explore why zcr-mpsc-2t measures faster than zcr-with-2t
+   (73.9 vs 100.1 ns adjusted mean at 300s, 1p/1c) and
+   whether the mechanism can improve SPSC [[20]]:
+   - we think SPSC bounces two index lines per handoff
+     (each side polls the line the other writes) while
+     MPSC's only shared hot word is the slot seq;
+   - verify with perf cache-transfer counters and/or the
+     padded-seq variant (a design open question);
+   - if confirmed, a seam-word variant might feed back
+     into the SPSC protocol.
+4. Batch alloc/free demo: alongside the one-message
    alloc_free_1t loops, a variant that allocs X messages
    (5, 10, …) then frees them all, pool vs global
    allocator. We think the pool's rate stays constant
@@ -62,12 +58,12 @@ iiac-perf. Design:
    the working set hot) while Box::new/drop slows as the
    batch outgrows malloc's thread-cache fast path — the
    demo should show it.
-4. Endpoint claims word: CAS-claimed producer/consumer roles
+5. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
    [details](ring-buffer-design.md#resolved-questions).
-5. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+6. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot_with [details](ring-buffer-design.md#api).
 
@@ -158,11 +154,6 @@ iiac-perf. Design:
 Completed tasks are moved from `## Todo` to here, `## Done`, as they are completed
 and older `## Done` sections are moved to [done.md](done.md) to keep this file small.
 
-- docs: messaging layer design (pools + queues) [[6]]
-- feat: message pool allocator [[7]]
-- feat: ring + pool demo binary [[8]]
-- feat: demo alloc/free perf loops [[9]]
-- feat: demo cpu-pinned placement variants [[10]]
 - feat: descriptor queues over the SPSC ring [[12]]
 - feat: wait-policy hook + spin models [[13]]
 - refactor: demo _closure forms + on_full params [[14]]
@@ -170,14 +161,10 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 - refactor: drop reserve_slot, keep _with ladder [[16]]
 - refactor: drop reserve_slot_spin and alloc_spin [[17]]
 - docs: refresh iiac-perf numbers, seam closed [[18]]
+- feat: mpsc ring sibling primitive [[19]]
 
 # References
 
-[6]: chores/chores-01.md#docs-messaging-layer-design-pools--queues
-[7]: chores/chores-01.md#feat-message-pool-allocator
-[8]: chores/chores-01.md#feat-ring--pool-demo-binary
-[9]: chores/chores-01.md#feat-demo-allocfree-perf-loops
-[10]: chores/chores-01.md#feat-demo-cpu-pinned-placement-variants
 [11]: chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [12]: chores/chores-01.md#feat-descriptor-queues-over-the-spsc-ring
 [13]: chores/chores-01.md#feat-wait-policy-hook--spin-models
@@ -186,3 +173,5 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 [16]: chores/chores-01.md#refactor-drop-reserve_slot-keep-_with-ladder
 [17]: chores/chores-01.md#refactor-drop-reserve_slot_spin-and-alloc_spin
 [18]: chores/chores-01.md#docs-refresh-iiac-perf-numbers-seam-closed
+[19]: chores/chores-01.md#feat-mpsc-ring-sibling-primitive
+[20]: chores/chores-01.md#outcome-the-2t-surprise

@@ -12,6 +12,9 @@
 //!   serialization step. Each side reserves at most one slot at
 //!   a time; the guard holds the endpoint borrow until commit /
 //!   release (or drop).
+//! - A multi-producer sibling, [`MpscRing`], lives in the
+//!   `mpsc` module (gated on CAS support) — see its module
+//!   docs for the claim/seq protocol and closure-send API.
 //!
 //! [notes/ring-buffer-design.md]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/ring-buffer-design.md
 

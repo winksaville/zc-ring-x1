@@ -689,6 +689,59 @@ pass, and it also closes the seam-measurement clause of Todo #1
 
 Commits:
 
+N senders sharing one queue needs a multi-producer ring, and
+the SPSC hot path (load/store-only, ~2 ns 1t) must not pay
+for it — so MPSC lands as a separate sibling primitive,
+measured A/B against SPSC in iiac-perf. Design:
+[MPSC ring (sibling primitive)](../ring-buffer-design.md#mpsc-ring-sibling-primitive).
+
+- Vyukov's bounded MPMC restricted to MP/SC:
+  - producers CAS-claim `producer_idx`;
+  - a per-slot seq array publishes each slot independently
+    (claim order ≠ commit order under concurrency);
+  - the consumer stays CAS-free, and producers never read
+    `consumer_idx` — fullness comes from the slot seq.
+- Closure send (`send_with`) makes claim abandonment
+  unrepresentable; a panicking fill publishes a tombstoned
+  commit (`pos + 1 + 2^31`) the consumer releases without
+  delivering — an unwind cannot wedge the queue.
+- Own magic (`"ZCM1"`) and layout version; the module is
+  gated on `target_has_atomic = "32"`. Filing the gate found
+  bug #1: the pool's free-stack CAS is ungated, so
+  load/store-only targets already fail to build.
+- Demo grew mpsc lines at every placement plus the 2p+1c
+  shape; iiac-perf grew `zcr-mpsc-1t`/`zcr-mpsc-2t` (bench
+  code in the sibling repo, committed there separately).
+- Deferred to the design's measurement plan: the 2p+1c
+  contention bench and the fan-in comparator — the
+  round-trip harness needs a competing-producer shape
+  first.
+
+### Outcome: the 2t surprise
+
+300s adjusted means: `zcr-with-1t` 2.3 ns vs `zcr-mpsc-1t`
+4.4 ns — the uncontended claim CAS + seq publish costs
+~2.1 ns, as expected. Cross-thread at 1p/1c the sign flips:
+`zcr-mpsc-2t` 73.9 ns vs `zcr-with-2t` 100.1 ns — the MPSC
+protocol measures *faster*, with a wider spread (p10 35.8 /
+p90 89.9 vs SPSC's tight 88–98). We think the SPSC
+round-trip bounces two index cache lines per handoff (each
+side polls the line the other writes) while the MPSC
+handoff's only shared hot word is the slot seq — neither
+side ever reads the other's index line. Promoted to a
+`## Todo` entry (explore via perf cache-transfer counters
+and/or the padded-seq variant; if confirmed, a seam-word
+variant might feed back into the SPSC protocol).
+
+### As-built ladder
+
+- `0.11.0-0` docs: mpsc ring design + plan
+- `0.11.0-1` feat: mpsc ring layout + init/attach
+- `0.11.0-2` feat: mpsc send_with + consumer recv
+- `0.11.0-3` feat: demo mpsc flow lines
+- `0.11.0-4` docs: mpsc iiac-perf numbers
+- `0.11.0` feat: mpsc ring sibling primitive
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/32fec004bd30 "32fec004bd300cc072a052fd0f80882a582c790f"

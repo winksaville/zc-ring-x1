@@ -13,8 +13,9 @@ kept for history.
 Project design docs:
 
 - [ring-buffer-design.md](ring-buffer-design.md) — the
-  zero-copy ring buffer (requirements, layout, API,
-  validation), kept in sync with `src/`.
+  zero-copy ring buffer and its MPSC sibling (terminology,
+  requirements, layout, API, validation), kept in sync with
+  `src/`.
 
 
 Examples chore file:
