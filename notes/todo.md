@@ -6,7 +6,59 @@ uses links or reference links for more details.
 
 ## In Progress
 
-_No cycle currently in progress._
+**refactor: versioned primitive module dirs**
+
+The three primitives sit at uneven depths — `mpsc/` is a
+directory, SPSC is spread across `lib.rs` plus top-level
+`producer.rs` / `consumer.rs`, and the pool is one
+`pool.rs` — and there is nowhere for a second implementation
+of a primitive to live for A/B comparison in iiac-perf. Give
+each primitive a `{primitive}/v0/` module dir so all three
+are siblings and a future `v1` slots in beside `v0` as a
+peer.
+
+Decisions (the versioning discussion, folded in):
+
+- **Structure** — `src/spsc/v0/`, `src/mpsc/v0/`,
+  `src/pool/v0/`; version is the inner axis, so each
+  primitive versions independently.
+- **Names unchanged** — keep the current type names inside
+  `v0` (`Ring`, `MpscRing`, `Pool`, …); a champion alias per
+  module (`spsc::Ring = spsc::v0::Ring`) plus the existing
+  crate-root re-exports keep the public API identical, so the
+  cycle is a pure move. `spsc::v0::Ring` is newly reachable
+  for explicit version pinning.
+- **Shared core stays in `lib.rs`** — `Error`,
+  `CACHE_LINE_SIZE`, `USER_WORDS`, `slot_ptr`, `check_type`,
+  `CacheAligned` are crate-wide; versions reach them via
+  `crate::`.
+- **`Full` / `Empty` promote to the shared core** — defined
+  in the SPSC endpoint files today but imported by mpsc
+  (`crate::{Empty, Full}`); leaving them inside `spsc/v0/`
+  would couple sibling primitives (and any future
+  `spsc::v1`) to one version's module. Crate-root re-exports
+  keep the public API unchanged.
+- **`-1` also moves the SPSC core out of `lib.rs`** —
+  `Header`, `Ring`, `MAGIC`, `LAYOUT_VERSION`, `header_ptr`,
+  `region_size`, `validate_geometry` go into `spsc/v0/`
+  alongside `producer.rs` / `consumer.rs`.
+- **registry stays top-level** — its placement waits for the
+  descriptor-queue endpoints work.
+- **Cargo feature-gating deferred** — coexistence needs no
+  features; per-version build-size exclusion only pays off
+  once a `v1` exists, so features land with the first fork.
+- **Close-out doc sync** — `ring-buffer-design.md`'s
+  as-built intro names top-level `producer.rs` /
+  `consumer.rs`; sync it to the new layout at close-out.
+
+Plan ladder:
+
+- `0.12.0-0` chore: open versioned module dir refactor
+  (current)
+- `0.12.0-1` refactor: spsc into a v0 module dir
+- `0.12.0-2` refactor: mpsc into a v0 module dir
+- `0.12.0-3` refactor: pool into a v0 module dir
+- `0.12.0` refactor: versioned primitive module dirs
 
 ## Todo
 

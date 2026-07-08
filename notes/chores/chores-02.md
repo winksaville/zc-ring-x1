@@ -11,51 +11,21 @@ approached ~1000 lines. Reference numbering restarts at `[1]`
 (file-local — see
 [Reference numbering](../../AGENTS.md#reference-numbering)).
 
-## refactor: sibling module dirs (spsc, mpsc, pool)
+## docs: execution contexts + ISR blue-sky goal
+
+Commits: [[1]]
+
+Design-doc pass out of conversation (no ladder): the
+arbitrary-graph topology bullet, the Execution contexts
+subsection (thread/ISR sole-owner and sharing cases), the
+blue-sky ISR-to-ISR goal with its gotchas, and the
+2t-surprise cache-line-bounce mechanism sharpened in
+[chores-01](chores-01.md#outcome-the-2t-surprise).
+
+## refactor: versioned primitive module dirs
 
 Commits:
 
-The three ring/pool primitives sit at uneven depths: `mpsc/`
-is already a directory, but the SPSC ring is spread across
-top-level `src/producer.rs` / `src/consumer.rs` plus its
-core types in `src/lib.rs`, and the pool is a single
-`src/pool.rs`. Give SPSC and pool their own directories so
-all three read as siblings and `src/lib.rs` narrows to the
-genuinely shared core.
-
-Provisional plan (rough — the ladder is nailed down with the
-user before the cycle opens):
-
-- `src/spsc/` — move `producer.rs`, `consumer.rs`, and the
-  SPSC-specific core out of `lib.rs`: `Header`, `Ring`,
-  `MAGIC`, `LAYOUT_VERSION`, `header_ptr`, `region_size`,
-  `validate_geometry`.
-- `src/pool/` — promote `pool.rs` to `pool/mod.rs` (split
-  further only if a real seam appears).
-- `src/lib.rs` — keeps only what all three share:
-  `CacheAligned`, `CACHE_LINE_SIZE`, `USER_WORDS`, `Error`,
-  `check_type` / `type_fits`, `slot_ptr`; plus the crate's
-  public re-exports.
-
-### Open design questions
-
-Settle these with the user before writing the ladder:
-
-- **Public name surface** — keep the flat re-exports
-  (`Producer`, `Consumer`, `Ring`) for source compat, or
-  namespace them (`spsc::Ring`, `mpsc::MpscRing`)? Namespacing
-  would let the `Mpsc*` prefixes drop, at the cost of a
-  breaking rename.
-- **Where `registry` lives** — the descriptor registry is
-  SPSC-flavored today; does it move under `spsc/`, stay
-  top-level as cross-cutting, or wait for the descriptor-queue
-  endpoints work (Todo #1)?
-- **Shared core home** — leave the shared bits inline in
-  `lib.rs`, or lift them into a `core`/`common` submodule so
-  `lib.rs` is purely wiring + re-exports?
-- **Pool as a directory now vs later** — `pool.rs` is one
-  file with no internal seam yet; a bare `pool/mod.rs` buys
-  symmetry but nothing structural. Worth it, or leave pool a
-  file until it actually splits?
-
 # References
+
+[1]: https://github.com/winksaville/zc-ring-x1/commit/2ea448654c9a "2ea448654c9a4b7f758e017d56161d9d731ab425"
