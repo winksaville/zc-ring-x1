@@ -34,7 +34,7 @@ use core::sync::atomic::AtomicU32;
 #[cfg(target_has_atomic = "32")]
 pub mod mpsc;
 pub mod policy;
-mod pool;
+pub mod pool;
 mod registry;
 pub mod spsc;
 
