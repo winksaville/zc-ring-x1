@@ -6,59 +6,7 @@ uses links or reference links for more details.
 
 ## In Progress
 
-**refactor: versioned primitive module dirs**
-
-The three primitives sit at uneven depths — `mpsc/` is a
-directory, SPSC is spread across `lib.rs` plus top-level
-`producer.rs` / `consumer.rs`, and the pool is one
-`pool.rs` — and there is nowhere for a second implementation
-of a primitive to live for A/B comparison in iiac-perf. Give
-each primitive a `{primitive}/v0/` module dir so all three
-are siblings and a future `v1` slots in beside `v0` as a
-peer.
-
-Decisions (the versioning discussion, folded in):
-
-- **Structure** — `src/spsc/v0/`, `src/mpsc/v0/`,
-  `src/pool/v0/`; version is the inner axis, so each
-  primitive versions independently.
-- **Names unchanged** — keep the current type names inside
-  `v0` (`Ring`, `MpscRing`, `Pool`, …); a default-version
-  re-export per module (`spsc::Ring = spsc::v0::Ring`) plus
-  the existing crate-root re-exports keep the public API
-  identical, so the cycle is a pure move. `spsc::v0::Ring` is
-  newly reachable for explicit version pinning.
-- **Shared core stays in `lib.rs`** — `Error`,
-  `CACHE_LINE_SIZE`, `USER_WORDS`, `slot_ptr`, `check_type`,
-  `CacheAligned` are crate-wide; versions reach them via
-  `crate::`.
-- **`Full` / `Empty` promote to the shared core** — defined
-  in the SPSC endpoint files today but imported by mpsc
-  (`crate::{Empty, Full}`); leaving them inside `spsc/v0/`
-  would couple sibling primitives (and any future
-  `spsc::v1`) to one version's module. Crate-root re-exports
-  keep the public API unchanged.
-- **`-1` also moves the SPSC core out of `lib.rs`** —
-  `Header`, `Ring`, `MAGIC`, `LAYOUT_VERSION`, `header_ptr`,
-  `region_size`, `validate_geometry` go into `spsc/v0/`
-  alongside `producer.rs` / `consumer.rs`.
-- **registry stays top-level** — its placement waits for the
-  descriptor-queue endpoints work.
-- **Cargo feature-gating deferred** — coexistence needs no
-  features; per-version build-size exclusion only pays off
-  once a `v1` exists, so features land with the first fork.
-- **Close-out doc sync** — `ring-buffer-design.md`'s
-  as-built intro names top-level `producer.rs` /
-  `consumer.rs`; sync it to the new layout at close-out.
-
-Plan ladder:
-
-- `0.12.0-0` chore: open versioned module dir refactor
-  (done)
-- `0.12.0-1` refactor: spsc into a v0 module dir (done)
-- `0.12.0-2` refactor: mpsc into a v0 module dir (done)
-- `0.12.0-3` refactor: pool into a v0 module dir (done)
-- `0.12.0` refactor: versioned primitive module dirs
+_No cycle currently in progress._
 
 ## Todo
 
@@ -206,24 +154,12 @@ Plan ladder:
 Completed tasks are moved from `## Todo` to here, `## Done`, as they are completed
 and older `## Done` sections are moved to [done.md](done.md) to keep this file small.
 
-- feat: descriptor queues over the SPSC ring [[12]]
-- feat: wait-policy hook + spin models [[13]]
-- refactor: demo _closure forms + on_full params [[14]]
-- feat: demo seam lines on diff cores, SMT last [[15]]
-- refactor: drop reserve_slot, keep _with ladder [[16]]
-- refactor: drop reserve_slot_spin and alloc_spin [[17]]
-- docs: refresh iiac-perf numbers, seam closed [[18]]
 - feat: mpsc ring sibling primitive [[19]]
+- refactor: versioned primitive module dirs [[12]]
 
 # References
 
 [11]: chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[12]: chores/chores-01.md#feat-descriptor-queues-over-the-spsc-ring
-[13]: chores/chores-01.md#feat-wait-policy-hook--spin-models
-[14]: chores/chores-01.md#refactor-demo-_closure-forms--on_full-params
-[15]: chores/chores-01.md#feat-demo-seam-lines-on-diff-cores-smt-last
-[16]: chores/chores-01.md#refactor-drop-reserve_slot-keep-_with-ladder
-[17]: chores/chores-01.md#refactor-drop-reserve_slot_spin-and-alloc_spin
-[18]: chores/chores-01.md#docs-refresh-iiac-perf-numbers-seam-closed
+[12]: chores/chores-02.md#refactor-versioned-primitive-module-dirs
 [19]: chores/chores-01.md#feat-mpsc-ring-sibling-primitive
 [20]: chores/chores-01.md#outcome-the-2t-surprise

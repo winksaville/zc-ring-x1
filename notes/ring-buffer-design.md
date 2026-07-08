@@ -5,10 +5,13 @@ Design notes for the zero-copy ring buffer. This file uses
 requirements, constraints, the memory layout, the API, and
 the validation ladder, and is kept in sync with the
 implementation in `src/` (as-built): `lib.rs` holds the
-region-level machinery (header, init/attach/split, geometry
-helpers) and re-exports the endpoint modules `producer.rs`
-(Producer, WriteSlot, Full) and `consumer.rs` (Consumer,
-ReadSlot, Empty).
+shared core (errors, `Full`/`Empty`, geometry helpers);
+each primitive lives in a versioned module dir —
+`src/spsc/v0/` (`mod.rs`: Header/Ring, `producer.rs`:
+Producer/WriteSlot, `consumer.rs`: Consumer/ReadSlot),
+`src/mpsc/v0/`, `src/pool/v0/` — behind a per-module
+default-version re-export; the crate root re-exports the
+defaults.
 
 ## Goal
 
@@ -652,7 +655,7 @@ iiac-perf (sibling repo) grows an mpsc set alongside `zcr`:
 ## Messaging layer: pools and descriptor queues
 
 Design for the layer above the ring. The pool half is
-as-built as of the 0.6.0 cycle (`src/pool.rs`: layout,
+as-built as of the 0.6.0 cycle (`src/pool/v0/mod.rs`: layout,
 init/attach, alloc/free); descriptor queues and provenance
 remain design. The sections above are the as-built record of
 the ring itself.

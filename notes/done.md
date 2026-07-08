@@ -14,6 +14,13 @@ See [Todo format](../AGENTS.md#todo-format)
 - feat: ring + pool demo binary [[8]]
 - feat: demo alloc/free perf loops [[9]]
 - feat: demo cpu-pinned placement variants [[10]]
+- feat: descriptor queues over the SPSC ring [[12]]
+- feat: wait-policy hook + spin models [[13]]
+- refactor: demo _closure forms + on_full params [[14]]
+- feat: demo seam lines on diff cores, SMT last [[15]]
+- refactor: drop reserve_slot, keep _with ladder [[16]]
+- refactor: drop reserve_slot_spin and alloc_spin [[17]]
+- docs: refresh iiac-perf numbers, seam closed [[18]]
 
 # References
 
@@ -27,3 +34,10 @@ See [Todo format](../AGENTS.md#todo-format)
 [8]: chores/chores-01.md#feat-ring--pool-demo-binary
 [9]: chores/chores-01.md#feat-demo-allocfree-perf-loops
 [10]: chores/chores-01.md#feat-demo-cpu-pinned-placement-variants
+[12]: chores/chores-01.md#feat-descriptor-queues-over-the-spsc-ring
+[13]: chores/chores-01.md#feat-wait-policy-hook--spin-models
+[14]: chores/chores-01.md#refactor-demo-_closure-forms--on_full-params
+[15]: chores/chores-01.md#feat-demo-seam-lines-on-diff-cores-smt-last
+[16]: chores/chores-01.md#refactor-drop-reserve_slot-keep-_with-ladder
+[17]: chores/chores-01.md#refactor-drop-reserve_slot_spin-and-alloc_spin
+[18]: chores/chores-01.md#docs-refresh-iiac-perf-numbers-seam-closed
