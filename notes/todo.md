@@ -54,8 +54,8 @@ Decisions (the versioning discussion, folded in):
 Plan ladder:
 
 - `0.12.0-0` chore: open versioned module dir refactor
-  (current)
-- `0.12.0-1` refactor: spsc into a v0 module dir
+  (done)
+- `0.12.0-1` refactor: spsc into a v0 module dir (done)
 - `0.12.0-2` refactor: mpsc into a v0 module dir
 - `0.12.0-3` refactor: pool into a v0 module dir
 - `0.12.0` refactor: versioned primitive module dirs

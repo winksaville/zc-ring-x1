@@ -6,11 +6,8 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicU32, Ordering};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
-use crate::{Header, USER_WORDS, check_type, slot_ptr};
-
-/// `reserve_slot_with` failed: no unread messages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Empty;
+use super::Header;
+use crate::{Empty, USER_WORDS, check_type, slot_ptr};
 
 /// The consuming endpoint: `reserve_slot_with` the oldest
 /// unread slot, read in place, `release`.

@@ -7,12 +7,8 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, Ordering};
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
-use crate::{Header, USER_WORDS, check_type, slot_ptr};
-
-/// `reserve_slot_with` failed: every slot holds an
-/// uncommitted-or-unread message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Full;
+use super::Header;
+use crate::{Full, USER_WORDS, check_type, slot_ptr};
 
 /// The producing endpoint: `reserve_slot_with`, write in
 /// place, `commit`.
