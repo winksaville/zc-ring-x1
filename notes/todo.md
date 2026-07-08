@@ -23,11 +23,11 @@ Decisions (the versioning discussion, folded in):
   `src/pool/v0/`; version is the inner axis, so each
   primitive versions independently.
 - **Names unchanged** — keep the current type names inside
-  `v0` (`Ring`, `MpscRing`, `Pool`, …); a champion alias per
-  module (`spsc::Ring = spsc::v0::Ring`) plus the existing
-  crate-root re-exports keep the public API identical, so the
-  cycle is a pure move. `spsc::v0::Ring` is newly reachable
-  for explicit version pinning.
+  `v0` (`Ring`, `MpscRing`, `Pool`, …); a default-version
+  re-export per module (`spsc::Ring = spsc::v0::Ring`) plus
+  the existing crate-root re-exports keep the public API
+  identical, so the cycle is a pure move. `spsc::v0::Ring` is
+  newly reachable for explicit version pinning.
 - **Shared core stays in `lib.rs`** — `Error`,
   `CACHE_LINE_SIZE`, `USER_WORDS`, `slot_ptr`, `check_type`,
   `CacheAligned` are crate-wide; versions reach them via
@@ -56,7 +56,7 @@ Plan ladder:
 - `0.12.0-0` chore: open versioned module dir refactor
   (done)
 - `0.12.0-1` refactor: spsc into a v0 module dir (done)
-- `0.12.0-2` refactor: mpsc into a v0 module dir
+- `0.12.0-2` refactor: mpsc into a v0 module dir (done)
 - `0.12.0-3` refactor: pool into a v0 module dir
 - `0.12.0` refactor: versioned primitive module dirs
 

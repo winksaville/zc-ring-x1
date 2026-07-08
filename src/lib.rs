@@ -17,8 +17,8 @@
 //!   `mpsc` module (gated on CAS support) — see its module
 //!   docs for the claim/seq protocol and closure-send API.
 //!   Primitive modules hold versioned sibling implementations
-//!   (`spsc::v0`, …) behind per-module champion aliases; this
-//!   crate root re-exports the champions.
+//!   (`spsc::v0`, …) behind per-module default-version
+//!   re-exports; this crate root re-exports the defaults.
 //!
 //! [notes/ring-buffer-design.md]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/ring-buffer-design.md
 
@@ -32,7 +32,7 @@ use core::sync::atomic::AtomicU32;
 // free-stack also uses CAS and predates the gate — see
 // notes/bugs.md.)
 #[cfg(target_has_atomic = "32")]
-mod mpsc;
+pub mod mpsc;
 pub mod policy;
 mod pool;
 mod registry;
