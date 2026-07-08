@@ -733,6 +733,41 @@ side ever reads the other's index line. Promoted to a
 and/or the padded-seq variant; if confirmed, a seam-word
 variant might feed back into the SPSC protocol).
 
+The mechanism sharpened — a per-message count of the cache
+lines that cross the producer↔consumer core boundary. Both
+rings carry two shared index words plus the slots; what
+differs is *who reads whom*:
+
+- SPSC bounces both index lines every handoff:
+  - `producer_idx` — producer writes it on commit
+    (`producer.rs` `commit`), consumer reads it on the
+    non-empty check (`consumer.rs` reserve loop) → the line
+    transfers producer→consumer.
+  - `consumer_idx` — consumer writes it on release,
+    producer reads it on the non-full check → the line
+    transfers consumer→producer.
+- MPSC at 1p/1c (the claim CAS uncontended) bounces one:
+  - `producer_idx` is touched *only* by the producer (its
+    claim CAS; the consumer never reads it) → stays hot in
+    the producer's L1.
+  - `consumer_idx` is touched *only* by the consumer
+    (its own resume state; producers read fullness from the
+    seq) → stays hot in the consumer's L1.
+  - only the slot `seq` crosses — the producer commits it
+    (`seq[pos] = pos+1`, Release), the consumer reads then
+    releases it (`seq[c] = c+capacity`, Release).
+
+We think that halving — two bouncing lines down to one — is
+the ~26 ns gap. What MPSC trades for it: the seq array's
+footprint, and, once there are ≥2 producers, CAS contention
+on `producer_idx` that the 1p case never pays. The
+per-slot-independent seq is *forced* by concurrency (claim
+order ≠ commit order), but its side effect at 1p/1c is
+retiring one of SPSC's two cross-core reads — which is why
+a seam-word SPSC variant (give SPSC a seq-like publish word
+so neither side reads the other's index) is the feedback
+path worth testing.
+
 ### As-built ladder
 
 - `0.11.0-0` docs: mpsc ring design + plan

@@ -18,6 +18,43 @@ its message directly into buffer memory, the consumer reads it
 in place. The same layout must work intra-process (threads) and
 inter-process (shared memory).
 
+**Blue-sky goal: ISR-to-ISR messaging.** A stretch target —
+the same rings carrying messages between *interrupt service
+routines*, no thread in the loop: N producing ISRs into one
+consuming ISR, up to N:M for fan-out / consolidation (entities
+as a graph of ISR nodes,
+[Execution contexts](#execution-contexts)). Lock-free rings
+suit ISRs — no lock means no priority inversion — but the
+gotchas are real:
+
+- **No blocking, ever** — an ISR bails, never waits, on Full
+  or Empty (the `|_| false` policy); backpressure must be drop
+  or an overflow FIFO, never a spin.
+- **Something must fire the consumer** — a consuming ISR runs
+  only when triggered, so an all-ISR system needs a doorbell
+  (a software interrupt / IPI raised after commit); the ring
+  does not provide it.
+- **The CAS floor splits the styles by target** — a shared
+  MPSC ring's multi-producer claim needs an atomic RMW on
+  `producer_idx`:
+  - has-CAS (`target_has_atomic = "32"`, ≥ Cortex-M3) —
+    hardware CAS provides the claim, nothing extra needed.
+  - no-CAS (M0 / thumbv6m) — two ways to keep N producers:
+    - EI/DI-emulated claim: disable interrupts around the
+      RMW to stand in for the CAS. Keeps the shared ring.
+      Costs a brief all-interrupt blackout per claim, and is
+      single-core only — a second core still needs a
+      hardware spinlock.
+    - fan-in: each producer gets its own SPSC ring — no
+      shared claim, no CAS, no EI/DI — and the consumer
+      polls the N rings.
+- **Latency is bounded, not constant** — MPSC CAS retries
+  under nested-ISR contention are bounded, but a hard
+  real-time budget must account for them.
+- **panic=abort assumed** — the tombstone/unwind path never
+  runs in an ISR, so a panicking fill aborts rather than
+  degrading; fine, but a property to design around.
+
 ## Terminology
 
 The vocabulary the rest of the document builds on, defined
@@ -99,6 +136,13 @@ once before first use:
 - **Cache-line separation** — producer- and consumer-owned
   indices are padded/aligned to separate cache lines to avoid
   false sharing.
+- **SPSC roles forbid concurrent access, not multiple
+  owners** — the single-producer and single-consumer contract
+  is "at most one accessor in an endpoint at a time," a
+  *serialization* requirement via a serializer/mutex-type
+  entity, not a fixed thread identity.
+  How threads and ISRs each satisfy it is
+  [Execution contexts](#execution-contexts).
 - **Typed access over untyped slots** — the slot geometry
   (M, N) is a property of the buffer, independent of any
   message type; a `T` is a zerocopy view into a slot, valid
@@ -109,6 +153,50 @@ once before first use:
 - **zerocopy, core-only** — depend on zerocopy with default
   features compatible with `no_std`; no other runtime
   dependencies.
+
+### Execution contexts
+
+An *execution context* — a thread or an ISR — drives
+endpoints (a process is only the address-space
+boundary around one or more of them,
+[System model](#system-model-overview)). Each satisfies the
+serialization rule above — one accessor in an endpoint at a
+time — differently:
+
+- **Thread, sole owner of an endpoint** — one thread owns the
+  endpoint; no sharing, fully lock-free.
+- **Threads sharing an endpoint** — several take turns under a
+  mutex:
+  - producer and consumer sides are symmetric;
+  - the mutex allows only one thread at a time to use the
+    endpoint;
+  - cost is blocking — the endpoint is no longer lock-free.
+- **ISR, sole owner of an endpoint** — the canonical embedded
+  ring: the ISR exclusively owns *one* end (say the producer),
+  a thread owns the other.
+  - Safe without interrupt disable, because the protocol
+    enforces the two preconditions that make preemption safe:
+    - a field the ISR writes (its index, its in-flight slot)
+      is read-only to the partner — single writer;
+    - the shared control words are accessed atomically.
+  - Preemption is then just another interleaving of the
+    handoff — no different from running the two ends on
+    separate cores.
+  - Why *sole* ownership: an ISR can't be serialized by a lock
+    (it preempts, can't block on a thread-held one), so it
+    must never *share* an endpoint — only own one outright.
+- **ISR sharing an endpoint with a thread** — possible, but the
+  "special care" path:
+  - the thread guards its access with interrupts disabled
+    (irqsave — the only way to be atomic against a same-core
+    ISR);
+  - the ISR must try-and-bail: test the access flag, and if
+    taken, abandon rather than spin;
+  - it hinges on the thread being able to disable interrupts.
+- **Lock-free concurrency instead** — many producers, or a
+  thread + ISR without the irq-disable dance:
+  - use the MPSC ring; its CAS claim serializes without a
+    lock.
 
 ## Memory layout
 
@@ -606,6 +694,24 @@ section that expands it.
   [details](#layer-requirements).
   - Precondition: both endpoints have the message's pool
     registered.
+- Entities form an arbitrary directed graph
+  [details](#execution-contexts).
+  - A ring is an edge; a node is an *execution context* — a
+    thread or an ISR — that may hold endpoints for many
+    rings at once, in either role, and own or free into
+    several pools: consume ring A, produce on B and C,
+    allocate from pool P.
+  - A *process* is not a node but a boundary: an address
+    space grouping one or more execution contexts and owning
+    the pool mappings and registries. An edge crossing it
+    enters another address space — shared memory plus a
+    registered pool.
+  - The two many-to-one realizations (shared MPSC ring,
+    fan-in of SPSC rings) are two edge-shapes for the same
+    consumer in-degree; neither is privileged.
+  - Fan-out (one producer, many edges) is equally
+    admissible — nothing in the primitives assumes a node
+    has degree 1.
 - Each process keeps its own pool registry
   [details](#descriptor-and-registry-design-070).
   - It maps pool ids to that process's view (mapping) of
