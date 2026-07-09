@@ -2,11 +2,11 @@
 //! config, thread pinning, and a fixed-duration round-trip
 //! drive loop over injected send/recv closures.
 //!
-//! - [`Cfg`] / [`Cfg::parse`] — the shared CLI grammar
-//!   (`-d`/`--duration`, `--pin main,worker`, `-t`/`--ticks`,
-//!   `--decimals <n>`);
-//!   anything else lands in `positionals` for the example to
-//!   interpret ([`usage_exit`] for rejects).
+//! - [`Cfg`] / [`CommonArgs`] — the runtime configuration and
+//!   the shared clap flags (`-d`/`--duration`, `-t`/`--ticks`,
+//!   `--decimals <n>`) the binaries flatten into their own
+//!   `Parser` structs; [`parse_pin`] for a `--pin MAIN,WORKER`
+//!   value.
 //! - [`pin_to_cpu`] — sched_setaffinity pinning (Linux; no-op
 //!   stub elsewhere).
 //! - [`drive`] — the round-trip loop: send a counter, receive
@@ -39,7 +39,8 @@ pub const STOP: u64 = u64::MAX;
 /// path.
 const CLOCK_CHECK_EVERY: u64 = 4096;
 
-/// Parsed CLI configuration for a probed example run.
+/// Runtime configuration for a probed measurement run, built
+/// from the parsed CLI args.
 pub struct Cfg {
     /// Wall-clock budget per flavor.
     pub duration: Duration,
@@ -49,59 +50,63 @@ pub struct Cfg {
     pub ticks: bool,
     /// Fractional digits on report value columns.
     pub decimals: usize,
-    /// Non-flag arguments, in order, for the caller to
-    /// interpret (e.g. flavor names).
-    pub positionals: Vec<String>,
 }
 
-/// Print `usage` and exit 2.
-pub fn usage_exit(usage: &str) -> ! {
-    eprintln!("usage: {usage}");
-    std::process::exit(2);
+/// The CLI flags shared by the probed measurement binaries;
+/// `#[command(flatten)]` into each binary's `Parser` struct.
+#[derive(clap::Args, Debug)]
+pub struct CommonArgs {
+    /// Wall-clock seconds per cell (each flavor × placement
+    /// combination runs this long)
+    #[arg(
+        short = 'd',
+        long = "duration",
+        value_name = "SECS",
+        default_value_t = 5.0
+    )]
+    pub duration: f64,
+
+    /// Report raw TSC ticks instead of nanoseconds
+    ///
+    /// Probes store hardware tick deltas; by default reports
+    /// convert them to ns via the calibrated ticks-per-ns
+    /// ratio. This flag shows the stored ticks unconverted.
+    #[arg(short = 't', long)]
+    pub ticks: bool,
+
+    /// Fractional digits on report value columns
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub decimals: usize,
 }
 
-impl Cfg {
-    /// Parse the process args against the shared grammar;
-    /// [`usage_exit`]s on a malformed flag. Defaults: 5 s,
-    /// unpinned, ns reporting, 1 decimal.
-    pub fn parse(usage: &str) -> Cfg {
-        let mut cfg = Cfg {
-            duration: Duration::from_secs(5),
-            pin: None,
-            ticks: false,
-            decimals: 1,
-            positionals: Vec::new(),
-        };
-        let mut args = std::env::args().skip(1);
-        while let Some(a) = args.next() {
-            match a.as_str() {
-                "-d" | "--duration" => {
-                    let secs: f64 = args
-                        .next()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or_else(|| usage_exit(usage));
-                    cfg.duration = Duration::from_secs_f64(secs);
-                }
-                "--pin" => {
-                    let v = args.next().unwrap_or_else(|| usage_exit(usage));
-                    let (m, w) = v.split_once(',').unwrap_or_else(|| usage_exit(usage));
-                    let m = m.parse().unwrap_or_else(|_| usage_exit(usage));
-                    let w = w.parse().unwrap_or_else(|_| usage_exit(usage));
-                    cfg.pin = Some((m, w));
-                }
-                "-t" | "--ticks" => cfg.ticks = true,
-                "--decimals" => {
-                    cfg.decimals = args
-                        .next()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or_else(|| usage_exit(usage));
-                }
-                _ if a.starts_with('-') => usage_exit(usage),
-                _ => cfg.positionals.push(a),
-            }
+impl CommonArgs {
+    /// Build the runtime [`Cfg`], attaching the binary-specific
+    /// `pin` (only `tp-cell` exposes one).
+    pub fn to_cfg(&self, pin: Option<(usize, usize)>) -> Cfg {
+        Cfg {
+            duration: Duration::from_secs_f64(self.duration),
+            pin,
+            ticks: self.ticks,
+            decimals: self.decimals,
         }
-        cfg
     }
+}
+
+/// clap value parser for `--pin MAIN,WORKER`: two
+/// comma-separated logical CPU numbers.
+pub fn parse_pin(s: &str) -> Result<(usize, usize), String> {
+    let (m, w) = s
+        .split_once(',')
+        .ok_or_else(|| format!("expected MAIN,WORKER (e.g. 0,1), got `{s}`"))?;
+    let m = m
+        .trim()
+        .parse()
+        .map_err(|_| format!("MAIN is not a CPU number: `{m}`"))?;
+    let w = w
+        .trim()
+        .parse()
+        .map_err(|_| format!("WORKER is not a CPU number: `{w}`"))?;
+    Ok((m, w))
 }
 
 /// Pin the calling thread to `cpu` via sched_setaffinity;

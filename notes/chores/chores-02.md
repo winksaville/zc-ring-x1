@@ -419,6 +419,22 @@ prints the finished markdown tables. Plan:
   installable `tp-cell` bin (requested at `-1`: a proper
   name and `cargo install`-ability; examples can't install).
 
+- **clap help + banner + README** (`0.14.0-4`, added during
+  the `-3` review): the hand-rolled arg parsing gave a bare
+  usage line; converted to clap (derive; `wrap_help`) in the
+  vc-x1 style — `about` carries a `name version - tagline`
+  banner that also opens every normal run (saved output
+  identifies its build), `-h` concise / `--help` detailed
+  via doc-comment paragraphs, `--pin` moved to tp-cell only
+  (tp-matrix discovers placements). `CommonArgs` (shared
+  flags) lives in tp_runner and flattens into each binary's
+  `Parser`. README rewritten for the what-do-these-do
+  reader: the measurement in one paragraph, one section per
+  binary with sample output, requirements. Note: the bins
+  report the tp_matrix crate version (0.1.0), not the
+  workspace version-of-record — revisit if that ever
+  confuses a saved table.
+
 ### Counter verification (0.14.0-3)
 
 Two A/B checks pin the in-process counters to perf(1):

@@ -15,3 +15,4 @@ publish = false
 tprobe = { path = "../tprobe" }
 tp_runner = { path = "../tp_runner" }
 zc-ring-x1 = { path = ".." }
+clap = { version = "4.6.1", features = ["derive", "wrap_help"] }

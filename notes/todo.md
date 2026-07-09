@@ -23,6 +23,10 @@ files accidentally committed at the 0.13.0 close-out.
   also replaces the tp_roundtrip example with the
   installable tp-cell bin (single cell, better name)
 - 0.14.0-3 docs: tp-matrix README + verification (done)
+- 0.14.0-4 feat: tp-matrix clap help + banner + README
+  (done) — informative --help / concise -h (vc-x1
+  style), name+version+tagline banner first on every run,
+  README fleshed out for the what-do-these-do reader
 - 0.14.0 feat: tp-matrix perf counters + tables (close-out)
 
 ## Todo

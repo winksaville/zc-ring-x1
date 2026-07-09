@@ -9,13 +9,28 @@
 //! Cells run sequentially in this process; each cell re-pins
 //! (or unpins) the threads and collects its own fill counters.
 
+use clap::Parser;
+
 use tp_matrix::{CellResult, Flavor, run_cell};
 use tp_runner::topo::{Placement, discover_placements};
-use tp_runner::{Cfg, usage_exit};
+use tp_runner::{Cfg, CommonArgs};
 use tprobe::{TProbe, ticks};
 
-/// The CLI grammar ([`Cfg::parse`]; no positionals).
-const USAGE: &str = "tp-matrix [-d secs-per-cell] [-t] [--decimals n]";
+/// Banner: name, version, and tagline on one line — the first
+/// line of every run and of `-h`/`--help`.
+const TOP_ABOUT: &str = concat!(
+    "tp-matrix ",
+    env!("CARGO_PKG_VERSION"),
+    " - run the full measurement matrix, markdown tables out"
+);
+
+/// The tp-matrix CLI.
+#[derive(Parser, Debug)]
+#[command(name = "tp-matrix", version, about = TOP_ABOUT, max_term_width = 80)]
+struct Cli {
+    #[command(flatten)]
+    common: CommonArgs,
+}
 
 /// Probe indices in [`CellResult::probes`] trip order.
 const M_SEND: usize = 0;
@@ -100,16 +115,15 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     }
 }
 
-/// Entry point: run the matrix, emit the two tables.
+/// Entry point: banner, run the matrix, emit the two tables.
 fn main() {
-    let cfg = Cfg::parse(USAGE);
-    if !cfg.positionals.is_empty() {
-        usage_exit(USAGE);
-    }
+    let cli = Cli::parse();
+    println!("{TOP_ABOUT}");
+    let cfg: Cfg = cli.common.to_cfg(None);
     let placements = discover_placements();
     let unit = if cfg.ticks { "tk" } else { "ns" };
     println!(
-        "tp-matrix: {} cells, {:.1}s each; phase cells are mean/stdev of the trimmed \
+        "{} cells, {:.1}s each; phase cells are mean/stdev of the trimmed \
          min-p99 band in {unit}; att in polls/waiting reserve; fills/RT = cross-core \
          cache-line fills per round trip",
         placements.len() * 2,

@@ -12,6 +12,7 @@ description = "Runner for phase-probed measurement examples (config, pinning, dr
 publish = false
 
 [dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
 tprobe = { path = "../tprobe" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
