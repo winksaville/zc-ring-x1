@@ -13,10 +13,16 @@
 //!   the echo; probing lives in the caller's closures.
 //! - [`report`] — flavor header + the phase reports in trip
 //!   order.
+//! - [`perf`] (Linux) — per-process hardware event counters
+//!   via `perf_event_open`, for cache-fill counting inside
+//!   measurement cells.
 //!
 //! Deliberately not a benchmark harness: no adaptive loop
 //! sizing, overhead calibration, or bench registry — for that
 //! scale of machinery use iiac-perf.
+
+#[cfg(target_os = "linux")]
+pub mod perf;
 
 use std::time::{Duration, Instant};
 

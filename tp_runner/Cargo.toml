@@ -16,3 +16,4 @@ tprobe = { path = "../tprobe" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+perf-event2 = "0.7.4"

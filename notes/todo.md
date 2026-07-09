@@ -17,8 +17,8 @@ counters itself via `perf_event_open`, and emits the
 markdown tables. Also removes the stray `*-pin-*.txt` raw
 files accidentally committed at the 0.13.0 close-out.
 
-- 0.14.0-0 docs: tp-matrix plan + txt cleanup (current)
-- 0.14.0-1 feat: tp-matrix perf counter module
+- 0.14.0-0 docs: tp-matrix plan + txt cleanup (done)
+- 0.14.0-1 feat: tp-matrix perf counter module (done)
 - 0.14.0-2 feat: tp-matrix cells bin + tables
 - 0.14.0-3 docs: tp-matrix README + verification
 - 0.14.0 feat: tp-matrix perf counters + tables (close-out)
