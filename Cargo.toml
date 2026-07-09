@@ -3,7 +3,7 @@ name = "zc-ring-x1"
 # Version-of-record (see notes/versioning.md): advanced through
 # the cycle's X.Y.Z-N phases; the -N rides in the semver
 # prerelease slot.
-version = "0.14.0-1"
+version = "0.14.0-2"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"
@@ -16,12 +16,8 @@ zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
-# The local probe + runner crates (see tprobe/ and
-# tp_runner/), used by the phase-probed examples only — not
-# part of the library.
-[dev-dependencies]
-tprobe = { path = "tprobe" }
-tp_runner = { path = "tp_runner" }
-
+# Local measurement crates (probes, runner, cells+bins); dev
+# tooling only — not dependencies of the library. See
+# tp_matrix/ for the installable tp-cell / tp-matrix binaries.
 [workspace]
-members = ["tprobe", "tp_runner"]
+members = ["tprobe", "tp_runner", "tp_matrix"]

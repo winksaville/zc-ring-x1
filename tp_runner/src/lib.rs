@@ -23,6 +23,7 @@
 
 #[cfg(target_os = "linux")]
 pub mod perf;
+pub mod topo;
 
 use std::time::{Duration, Instant};
 
@@ -122,6 +123,29 @@ pub fn pin_to_cpu(cpu: usize) {
 /// Non-Linux stub: `--pin` becomes a no-op.
 #[cfg(not(target_os = "linux"))]
 pub fn pin_to_cpu(_cpu: usize) {}
+
+/// Reset the calling thread's affinity to every online CPU —
+/// the undo for [`pin_to_cpu`], needed when one process runs
+/// pinned and unpinned cells in sequence.
+#[cfg(target_os = "linux")]
+pub fn unpin_current() {
+    // SAFETY: cpu_set_t is a plain bitmask; CPU_ZERO/CPU_SET
+    // initialize it fully before sched_setaffinity reads it.
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut set);
+        let n = libc::sysconf(libc::_SC_NPROCESSORS_ONLN).max(1) as usize;
+        for cpu in 0..n {
+            libc::CPU_SET(cpu, &mut set);
+        }
+        let rc = libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &set);
+        assert_eq!(rc, 0, "sched_setaffinity(all) failed");
+    }
+}
+
+/// Non-Linux stub: affinity is untouched, so nothing to undo.
+#[cfg(not(target_os = "linux"))]
+pub fn unpin_current() {}
 
 /// A spin wait policy: hint and keep trying. Matches the
 /// `on_full`/`on_empty` closure shape of the ring endpoints.

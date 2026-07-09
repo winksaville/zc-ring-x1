@@ -23,6 +23,53 @@ const BOUNDARY_NAMES: &[&str] = &[
     "min", "p1", "p10", "p20", "p30", "p40", "p50", "p60", "p70", "p80", "p90", "p99", "max",
 ];
 
+/// Mean and stdev of the trimmed min-p99 band (samples whose
+/// mid-rank falls below 0.99), in stored units — the values the
+/// rendered report shows as `mean min-p99` / `stdev min-p99`.
+/// `None` when the histogram is empty or every sample landed in
+/// the top band.
+pub(crate) fn trimmed_stats(hist: &Histogram<u64>) -> Option<(f64, f64)> {
+    let sample_count = hist.len();
+    if sample_count == 0 {
+        return None;
+    }
+    let mut sum = 0u128;
+    let mut cnt = 0u64;
+    let mut cum = 0u64;
+    for iv in hist.iter_recorded() {
+        let value = iv.value_iterated_to();
+        let count = iv.count_at_value();
+        let mid_rank = (cum as f64 + count as f64 / 2.0) / sample_count as f64;
+        if mid_rank < 0.99 {
+            sum += value as u128 * count as u128;
+            cnt += count;
+        }
+        cum += count;
+    }
+    if cnt == 0 {
+        return None;
+    }
+    let mean = sum as f64 / cnt as f64;
+    let mut var_sum = 0.0f64;
+    let mut cum = 0u64;
+    for iv in hist.iter_recorded() {
+        let value = iv.value_iterated_to();
+        let count = iv.count_at_value();
+        let mid_rank = (cum as f64 + count as f64 / 2.0) / sample_count as f64;
+        if mid_rank < 0.99 {
+            let diff = value as f64 - mean;
+            var_sum += diff * diff * count as f64;
+        }
+        cum += count;
+    }
+    let stdev = if cnt > 1 {
+        (var_sum / cnt as f64).sqrt()
+    } else {
+        0.0
+    };
+    Some((mean, stdev))
+}
+
 /// Display unit for a rendered band table.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Unit {
@@ -161,35 +208,7 @@ pub(crate) fn render(kind: &str, name: &str, hist: &Histogram<u64>, unit: Unit, 
         fmt_commas_f64(conv_f(hist.stdev()), decimals),
     );
 
-    let trim_count: u64 = band_count[..n_bands - 1].iter().sum();
-    if trim_count > 0 {
-        let trim_sum: u128 = band_sum[..n_bands - 1].iter().sum();
-        let trim_mean = trim_sum as f64 / trim_count as f64;
-
-        let mut trim_var_sum = 0.0f64;
-        let mut trim_var_count = 0u64;
-        let mut cum = 0u64;
-        for iv in hist.iter_recorded() {
-            let value = iv.value_iterated_to();
-            let count = iv.count_at_value();
-            let mid_rank = (cum as f64 + count as f64 / 2.0) / sample_count as f64;
-            let idx = BOUNDARY_PCTS[1..]
-                .iter()
-                .position(|&b| mid_rank < b)
-                .unwrap_or(n_bands - 1); // OK: rank ≥ last boundary → top band
-            if idx < n_bands - 1 {
-                let diff = value as f64 - trim_mean;
-                trim_var_sum += diff * diff * count as f64;
-                trim_var_count += count;
-            }
-            cum += count;
-        }
-        let trim_stdev = if trim_var_count > 1 {
-            (trim_var_sum / trim_var_count as f64).sqrt()
-        } else {
-            0.0
-        };
-
+    if let Some((trim_mean, trim_stdev)) = trimmed_stats(hist) {
         println!(
             "{INDENT}{:<label_w$} {:>skip$}{GAP}{:>mean_w$} {unit}",
             "mean min-p99",

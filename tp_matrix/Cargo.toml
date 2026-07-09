@@ -1,0 +1,17 @@
+# Local dev crate: the phase-probed ring round-trip cells and
+# their two binaries — tp-cell (one cell, human-readable
+# reports) and tp-matrix (every cell, markdown tables).
+# Installable: cargo install --path tp_matrix
+[package]
+name = "tp_matrix"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+description = "Phase-probed zc-ring round-trip cells: tp-cell and tp-matrix binaries"
+publish = false
+
+[dependencies]
+tprobe = { path = "../tprobe" }
+tp_runner = { path = "../tp_runner" }
+zc-ring-x1 = { path = ".." }

@@ -61,6 +61,27 @@ impl TProbe {
         }
     }
 
+    /// Number of recorded samples.
+    pub fn count(&self) -> u64 {
+        self.hist.len()
+    }
+
+    /// Whether this probe stores unitless counts
+    /// ([`new_counts`](TProbe::new_counts)) rather than tick
+    /// deltas — callers rendering values decide conversion by
+    /// this.
+    pub fn is_counts(&self) -> bool {
+        self.counts
+    }
+
+    /// Mean and stdev of the trimmed min-p99 band, in stored
+    /// units (ticks, or raw counts for a `new_counts` probe) —
+    /// the report's `mean min-p99` / `stdev min-p99` lines.
+    /// `None` when empty.
+    pub fn trimmed_stats(&self) -> Option<(f64, f64)> {
+        band_table::trimmed_stats(&self.hist)
+    }
+
     /// Record a single sample, in tick-counter deltas. Values
     /// of 0 are clamped to 1 since the histogram's lower bound
     /// is 1; back-to-back tick reads can produce 0 on fast cores.
