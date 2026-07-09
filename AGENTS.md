@@ -317,7 +317,7 @@ cycle gets its own distinct descriptive title — never one shared
 cycle title uniquified by a step marker. The cycle's chores
 section header carries the anticipated *close-out* title. To keep
 a cycle's commits collectable with one `git log --grep`, give the
-step titles a common greppable stem (e.g. `ring buffer`).
+step titles a common greppable stem (e.g. `config loader`).
 
 ## Notes file conventions
 
@@ -430,8 +430,8 @@ Example shape:
 
 ```
 # Todo
-- Add new feature X [details](features.md#feature-x)
-- Fix bug Y [[1]]
+1. Add new feature X [details](features.md#feature-x)
+2. Fix bug Y [[1]]
 
 # Done
 - Fixed issue Z [[2]],[[3]]
