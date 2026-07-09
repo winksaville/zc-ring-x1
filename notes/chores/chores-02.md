@@ -82,6 +82,82 @@ Decisions (the versioning discussion, folded in):
   (close-out: bookkeeping + design-doc as-built sync; its
   SHA backfills on the next push)
 
+## perf: explore spsc vs mpsc 2t gap
+
+Commits:
+
+Picks up the Todo left by the mpsc cycle's
+[Outcome: the 2t surprise](chores-01.md#outcome-the-2t-surprise)
+[[6]]: at 1p/1c cross-thread the MPSC ring measures ~26%
+faster than SPSC (73.9 vs 100.1 ns adjusted mean at 300s).
+We think SPSC bounces two index cache lines per handoff
+(each side polls the line the other writes) while MPSC's
+only shared hot word is the slot seq line. This cycle
+verifies that mechanism with measurements that live in this
+repo, so the result is reproducible here rather than only
+in the sibling iiac-perf checkout.
+
+Plan:
+
+- **Local `tprobe/` dev crate** (`0.13.0-1`): iiac-perf is
+  binary-only, so its probes can't be imported. Copy, as
+  close to verbatim as possible, iiac-perf 0.20.0's
+  `tprobe.rs`, `tprobe2.rs`, `ticks.rs` + `ticks/`,
+  `band_table.rs`, `bands.rs`, and the two `fmt_commas`
+  helpers into a local crate (only external dep:
+  `hdrhistogram`), provenance noted in module docs.
+  - Root `Cargo.toml` gains `[workspace]` membership and a
+    path dev-dependency.
+  - A crate boundary from day one keeps future extraction
+    (or unification with iiac-perf) a file-level move, not
+    a rewrite. Verbatim-copy discipline limits drift while
+    two copies exist.
+  - `TProbe2` is copied for completeness but not used here:
+    its record buffer grows unbounded (tens of millions of
+    round trips × 24 B per record), and its report drains
+    all sites into one histogram, so it can't separate
+    phases anyway. `TProbe` is the fit.
+- **Phase-probed round trip** (`0.13.0-2`):
+  `examples/tp_roundtrip.rs`, the same 1p/1c main → worker
+  → main round trip as iiac-perf's `zcr-with-2t` /
+  `zcr-mpsc-2t`, both ring flavors, four `TProbe`s — main
+  send, main recv, worker recv, worker send (worker probes
+  return via `JoinHandle`). Fixed-duration loop, no
+  adaptive harness: the comparison is A/B under identical
+  framing, so calibrated overhead subtraction isn't needed.
+  `--duration` / `--pin` / flavor args.
+- **Measurements + findings** (`0.13.0-3`): run unpinned,
+  same-CCX (pin 0,1), cross-CCX (pin 0,3); plus `perf stat`
+  with Zen 2's `ls_refills_from_sys.ls_mabresp_lcl_cache`
+  (demand fills served from another core's cache — the
+  cross-core line-transfer counter). Record protocol,
+  numbers, and conclusion here; if the data supports it,
+  file a seam-word SPSC variant Todo (give SPSC a seq-like
+  publish word so neither side reads the other's index
+  line).
+
+### Preliminary evidence: cross-core fill counters
+
+Exploratory 10 s runs of the existing iiac-perf 0.20.0
+benches under `perf stat` (before this cycle's in-repo
+instrumentation), `ls_mabresp_lcl_cache` fills divided by
+round trips:
+
+| placement          | zcr-with-2t | zcr-mpsc-2t |
+|--------------------|-------------|-------------|
+| pin 0,1 (same CCX) | 10.3        | 7.2         |
+| pin 0,3 (cross CCX)| 10.2        | 7.0         |
+| unpinned           | 10.2        | 7.1         |
+
+SPSC pays ~3 more cross-core line transfers per round trip
+(~1.5 per handoff), stable across placements — consistent
+with the two-index-lines hypothesis. Absolute counts exceed
+the naive 2-vs-1 line accounting because each spin poll
+after an invalidation refetches the line; the ratio matches
+the ~26% latency gap. The 2t gap itself also reproduces at
+10 s unpinned: adjusted means 131.5 ns (SPSC) vs 93.9 ns
+(MPSC).
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/2ea448654c9a "2ea448654c9a4b7f758e017d56161d9d731ab425"
@@ -89,3 +165,4 @@ Decisions (the versioning discussion, folded in):
 [3]: https://github.com/winksaville/zc-ring-x1/commit/6daa99e3a0f8 "6daa99e3a0f81df6fca2c4b2e178e9d4ccaa8180"
 [4]: https://github.com/winksaville/zc-ring-x1/commit/9e25f853111d "9e25f853111d5757dc16fae8401dbdc0fe10fff6"
 [5]: https://github.com/winksaville/zc-ring-x1/commit/423ac89b4abb "423ac89b4abb1c9330c30724cb9d1256cf95b510"
+[6]: chores-01.md#outcome-the-2t-surprise

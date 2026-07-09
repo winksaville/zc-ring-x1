@@ -6,7 +6,22 @@ uses links or reference links for more details.
 
 ## In Progress
 
-_No cycle currently in progress._
+**perf: explore spsc vs mpsc 2t gap**
+
+At 1p/1c cross-thread the MPSC ring measures ~26% faster
+than SPSC (73.9 vs 100.1 ns adjusted mean at 300s) [[20]].
+We think SPSC bounces two index cache lines per handoff
+(each side polls the line the other writes) while MPSC's
+only shared hot word is the slot seq. Verify from this repo
+— cross-core cache-fill counters plus a phase-probed round
+trip — so the measurement is reproducible here. Details:
+[chores section](chores/chores-02.md#perf-explore-spsc-vs-mpsc-2t-gap).
+
+- 0.13.0-0 docs: 2t gap exploration plan (current)
+- 0.13.0-1 feat: 2t gap tprobe dev crate
+- 0.13.0-2 feat: 2t gap probed roundtrip example
+- 0.13.0-3 docs: 2t gap measurements + findings
+- 0.13.0 perf: explore spsc vs mpsc 2t gap (close-out)
 
 ## Todo
 
@@ -40,17 +55,7 @@ _No cycle currently in progress._
    - naturally bounded by pool capacity;
    - composes per-sender with MPSC — see
      [Overflow readiness](ring-buffer-design.md#overflow-readiness).
-3. Explore why zcr-mpsc-2t measures faster than zcr-with-2t
-   (73.9 vs 100.1 ns adjusted mean at 300s, 1p/1c) and
-   whether the mechanism can improve SPSC [[20]]:
-   - we think SPSC bounces two index lines per handoff
-     (each side polls the line the other writes) while
-     MPSC's only shared hot word is the slot seq;
-   - verify with perf cache-transfer counters and/or the
-     padded-seq variant (a design open question);
-   - if confirmed, a seam-word variant might feed back
-     into the SPSC protocol.
-4. Batch alloc/free demo: alongside the one-message
+3. Batch alloc/free demo: alongside the one-message
    alloc_free_1t loops, a variant that allocs X messages
    (5, 10, …) then frees them all, pool vs global
    allocator. We think the pool's rate stays constant
@@ -58,12 +63,12 @@ _No cycle currently in progress._
    the working set hot) while Box::new/drop slows as the
    batch outgrows malloc's thread-cache fast path — the
    demo should show it.
-5. Endpoint claims word: CAS-claimed producer/consumer roles
+4. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
    [details](ring-buffer-design.md#resolved-questions).
-6. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+5. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot_with [details](ring-buffer-design.md#api).
 
