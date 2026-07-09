@@ -12,10 +12,10 @@ their workload closures.
   pass through for the example to interpret.
 - `pin_to_cpu` — `sched_setaffinity` pinning (Linux; no-op
   stub elsewhere).
-- `drive` — the measured loop: send a counter, receive the
-  echo, one `TProbe` per phase; wall clock checked every 4096
-  iterations; the counter skips `STOP` so callers can use it
-  as a shutdown sentinel.
+- `drive` — the round-trip loop: send a counter, receive the
+  echo; probing lives in the caller's closures; wall clock
+  checked every 4096 iterations; the counter skips `STOP` so
+  callers can use it as a shutdown sentinel.
 - `report` — flavor header + phase reports in trip order.
 
 Deliberately not a benchmark harness — no adaptive loop

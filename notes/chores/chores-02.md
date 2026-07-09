@@ -168,6 +168,15 @@ Plan:
   file a seam-word SPSC variant Todo (give SPSC a seq-like
   publish word so neither side reads the other's index
   line).
+- **Spin-wait probes** (`0.13.0-5`, added during `-4`
+  review): decompose the recv phases — a spin-time probe
+  (first failed attempt → reserve success) and an attempts
+  histogram per recv side, recorded only when the reserve
+  actually waited (the zero-spin fraction falls out of the
+  count difference vs the phase probe). `TProbe` grows a
+  counts flavor (`new_counts`) and the band table a count
+  unit (`ct`, no tick→ns conversion). Matrix re-run at
+  `--decimals 3`, with exact fills/RT for the ~0 SMT cells.
 - **Close-out** additionally seeds the crate's own notes —
   `tprobe/notes/design.md` (design rationale that outlived
   the doc comments: probe-type trade-offs, ticks
@@ -189,20 +198,34 @@ ls_refills_from_sys.ls_mabresp_lcl_dram -- \
   target/release/examples/tp_roundtrip <flavor> -d 10 [--pin m,w]
 ```
 
-Phase values are the report's trimmed `mean min-p99` in ns;
-`fills/RT` is `ls_mabresp_lcl_cache` (demand fills served
-from another core's cache) divided by round trips.
+One round trip (RT) is main send → worker recv → worker
+send → main recv: main places the counter in the request
+ring, the worker echoes it on the response ring. Columns:
+
+- `m.send` / `w.send` — the producer phase on that side, in
+  ns: reserve + fill + commit (`send_with` for mpsc); the
+  time to place a message in the ring, never waiting for
+  space (one message in flight, 8 slots).
+- `w.recv` / `m.recv` — the consumer phase, in ns: spin
+  wait for the message to arrive + read + release.
+- Phase values are the report's trimmed `mean min-p99`.
+- `RTs/10s` — completed round trips in the 10 s run; the
+  wall-clock cost of one RT ≈ 10 s / RTs (e.g. 52.6M →
+  ~190 ns/RT).
+- `fills/RT` — `ls_mabresp_lcl_cache` (demand fills served
+  from another core's cache, i.e. cache lines that crossed
+  between the cores) divided by round trips.
 
 | placement  | flavor | m.send | w.recv | w.send | m.recv | RTs/10s | fills/RT |
 |------------|--------|-------:|-------:|-------:|-------:|--------:|---------:|
-| 0,1 CCX    | spsc   |   21.8 |   98.2 |   37.9 |   94.4 |   52.6M |     10.0 |
-| 0,1 CCX    | mpsc   |   11.9 |   65.8 |   12.8 |   71.4 |   72.9M |      6.7 |
-| 0,3 x-CCX  | spsc   |  108.8 |  504.0 |  135.1 |  476.9 |   14.5M |      9.8 |
-| 0,3 x-CCX  | mpsc   |   58.2 |  348.8 |   52.7 |  425.1 |   17.4M |      6.8 |
-| 0,12 SMT   | spsc   |    8.6 |   32.5 |    8.6 |   31.7 |  131.2M |       ~0 |
-| 0,12 SMT   | mpsc   |    8.8 |   47.5 |   13.3 |   50.8 |  104.0M |       ~0 |
-| unpinned   | spsc   |   22.9 |  102.6 |   40.2 |  100.0 |   53.9M |     10.0 |
-| unpinned   | mpsc   |   11.3 |   68.3 |   13.7 |   77.5 |   66.3M |      6.7 |
+| 0,1 CCX    | spsc   |   21.8 |   98.2 |   37.9 |   94.4 |   52.6M |   10.042 |
+| 0,1 CCX    | mpsc   |   11.9 |   65.8 |   12.8 |   71.4 |   72.9M |    6.687 |
+| 0,3 x-CCX  | spsc   |  108.8 |  504.0 |  135.1 |  476.9 |   14.5M |    9.848 |
+| 0,3 x-CCX  | mpsc   |   58.2 |  348.8 |   52.7 |  425.1 |   17.4M |    6.768 |
+| 0,12 SMT   | spsc   |    8.6 |   32.5 |    8.6 |   31.7 |  131.2M |   0.0004 |
+| 0,12 SMT   | mpsc   |    8.8 |   47.5 |   13.3 |   50.8 |  104.0M |   0.0007 |
+| unpinned   | spsc   |   22.9 |  102.6 |   40.2 |  100.0 |   53.9M |    9.954 |
+| unpinned   | mpsc   |   11.3 |   68.3 |   13.7 |   77.5 |   66.3M |    6.714 |
 
 ### Findings: the gap is line-transfer economics
 
@@ -243,6 +266,57 @@ from another core's cache) divided by round trips.
   SPSC variant** (per-slot publish word, indices
   endpoint-private, still load/store-only — no CAS needed
   at 1p) is worth building. Filed as a Todo.
+
+### Spin decomposition (0.13.0-5)
+
+Where the wait goes: the matrix re-run with the spin probes
+at `--decimals 3` (same command shape as
+[Measurements (0.13.0-4)](#measurements-0130-4)) decomposes
+each recv phase into its wait and its work. Columns (trimmed
+`mean min-p99`, `w.` worker / `m.` main):
+
+- `spin` — the wait inside the recv phase, in ns: first
+  failed attempt → reserve success; recorded only when the
+  reserve actually waited.
+- `att` — polls per waiting reserve, a count: how many
+  times the wait-policy closure ran before the message was
+  visible.
+- `fills/RT` — cross-core cache-line fills per round trip,
+  as in the Measurements table (this run's values).
+
+| placement  | flavor | w.spin  | w.att | m.spin  | m.att | fills/RT |
+|------------|--------|--------:|------:|--------:|------:|---------:|
+| 0,1 CCX    | spsc   |   104.5 |   6.8 |   104.0 |   7.0 |   10.001 |
+| 0,1 CCX    | mpsc   |    74.0 |   4.2 |    72.6 |   4.0 |    6.591 |
+| 0,3 x-CCX  | spsc   |   543.9 |  28.8 |   544.9 |  27.9 |   10.082 |
+| 0,3 x-CCX  | mpsc   |   331.5 |  14.5 |   324.9 |  13.9 |    6.737 |
+| 0,12 SMT   | spsc   |    40.1 |   2.0 |    40.2 |   2.1 |   0.0009 |
+| 0,12 SMT   | mpsc   |    63.9 |   2.7 |    68.3 |   2.9 |   0.0010 |
+| unpinned   | spsc   |   125.3 |   7.6 |   126.4 |   8.0 |    9.834 |
+| unpinned   | mpsc   |   101.8 |   5.0 |   103.0 |   5.1 |    6.631 |
+
+- **Essentially every recv waits**: the spin/attempts probe
+  counts trail the phase counts by < 0.01%, so the zero-spin
+  case is negligible at 1 message in flight.
+- **recv ≈ spin + ~18 ns tail** at every placement and both
+  flavors — the post-arrival read + release is a fixed cost;
+  all placement and flavor differences live in the wait.
+- **Attempts retell the fills story from software**: at
+  same-CCX SPSC's consumer polls ~7 times per message vs
+  MPSC's ~4 — each failed poll after an invalidation
+  refetches the line (~15–25 ns per attempt, consistent with
+  an L3-mediated line hop; ~19–23 ns cross-CCX). Fewer lines
+  bouncing → the message-ready signal stabilizes sooner →
+  fewer refetches.
+- At SMT both flavors poll only ~2–3 times and SPSC's wait
+  is shorter (40 vs 64–68 ns) — with the transfer cost gone,
+  what remains is the protocol's own store→visible latency,
+  where SPSC's plain index store beats MPSC's seq handoff.
+- Caveat: the spin instrumentation costs throughput (~20%
+  fewer round trips than the `-4` matrix — the waits absorb
+  the peer's extra tick reads and histogram records), so
+  phase means here run slightly hot. Use the `-4` table for
+  phase costs, this one for the decomposition.
 
 ### Preliminary evidence: cross-core fill counters
 

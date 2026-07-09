@@ -23,6 +23,9 @@ trip — so the measurement is reproducible here. Details:
 - 0.13.0-3 refactor: 2t gap tp_runner crate + READMEs
   (done)
 - 0.13.0-4 docs: 2t gap measurements + findings (done)
+- 0.13.0-5 feat: 2t gap spin-wait probes (done) —
+  attempts + spin-time decomposition of the recv phases,
+  band-table count unit, matrix re-run at --decimals 3
 - 0.13.0 perf: explore spsc vs mpsc 2t gap (close-out;
   also seeds tprobe/notes/design.md and
   tprobe/notes/chores/chores-01.md)

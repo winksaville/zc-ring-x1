@@ -122,7 +122,12 @@ impl TProbeSpan {
             let delta = r.end_tsc.saturating_sub(r.start_tsc);
             self.hist.record(delta.max(1)).unwrap(); // OK: clamped ≥1, and any real delta is under the 1e12 bound
         }
-        band_table::render("tprobe-span", &self.name, &self.hist, as_ticks, decimals);
+        let unit = if as_ticks {
+            band_table::Unit::Ticks
+        } else {
+            band_table::Unit::Ns
+        };
+        band_table::render("tprobe-span", &self.name, &self.hist, unit, decimals);
     }
 }
 

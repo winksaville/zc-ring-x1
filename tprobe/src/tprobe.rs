@@ -27,6 +27,9 @@ use crate::ticks;
 pub struct TProbe {
     name: String,
     hist: Histogram<u64>,
+    /// Values are unitless counts, not ticks — reports render
+    /// with the `ct` unit and never convert to ns.
+    counts: bool,
 }
 
 impl TProbe {
@@ -44,6 +47,17 @@ impl TProbe {
         Self {
             name: name.to_string(),
             hist: Histogram::<u64>::new_with_bounds(1, 1_000_000_000_000, 3).unwrap(), // OK: constant bounds are valid
+            counts: false,
+        }
+    }
+
+    /// Create an empty probe whose recorded values are unitless
+    /// counts (e.g. spin attempts) rather than tick deltas;
+    /// reports render with the `ct` unit and never convert.
+    pub fn new_counts(name: &str) -> Self {
+        TProbe {
+            counts: true,
+            ..TProbe::new(name)
         }
     }
 
@@ -57,9 +71,19 @@ impl TProbe {
     /// Render a band-table report for this probe. `as_ticks`
     /// controls the display unit: `false` converts stored tick
     /// deltas to nanoseconds (default for the CLI); `true` shows
-    /// raw ticks (`-t`/`--ticks`). `decimals` is the fractional
+    /// raw ticks (`-t`/`--ticks`); a [`new_counts`] probe always
+    /// renders unitless counts. `decimals` is the fractional
     /// digits on every value column.
+    ///
+    /// [`new_counts`]: TProbe::new_counts
     pub fn report(&self, as_ticks: bool, decimals: usize) {
-        band_table::render("tprobe", &self.name, &self.hist, as_ticks, decimals);
+        let unit = if self.counts {
+            band_table::Unit::Count
+        } else if as_ticks {
+            band_table::Unit::Ticks
+        } else {
+            band_table::Unit::Ns
+        };
+        band_table::render("tprobe", &self.name, &self.hist, unit, decimals);
     }
 }

@@ -9,8 +9,8 @@
 //!   interpret ([`usage_exit`] for rejects).
 //! - [`pin_to_cpu`] — sched_setaffinity pinning (Linux; no-op
 //!   stub elsewhere).
-//! - [`drive`] — the measured loop: send a counter, receive
-//!   the echo, one [`TProbe`] per phase.
+//! - [`drive`] — the round-trip loop: send a counter, receive
+//!   the echo; probing lives in the caller's closures.
 //! - [`report`] — flavor header + the phase reports in trip
 //!   order.
 //!
@@ -21,7 +21,6 @@
 use std::time::{Duration, Instant};
 
 use tprobe::TProbe;
-use tprobe::ticks;
 
 /// Sentinel available to callers as a shutdown message;
 /// [`drive`]'s counter skips it so payload values never
@@ -126,18 +125,16 @@ pub fn spin(_attempt: u32) -> bool {
 }
 
 /// Drive `dur` worth of round trips: send the counter via
-/// `send`, receive the echo via `recv`; the two phases record
-/// into `send_probe` / `recv_probe`. Returns when the budget
-/// is spent (checked every [`CLOCK_CHECK_EVERY`] iterations).
-/// The counter skips [`STOP`] so callers can use it as a
-/// shutdown sentinel afterwards.
-pub fn drive(
-    dur: Duration,
-    send_probe: &mut TProbe,
-    recv_probe: &mut TProbe,
-    mut send: impl FnMut(u64),
-    mut recv: impl FnMut() -> u64,
-) {
+/// `send`, receive the echo via `recv`. Returns when the
+/// budget is spent (checked every [`CLOCK_CHECK_EVERY`]
+/// iterations). The counter skips [`STOP`] so callers can use
+/// it as a shutdown sentinel afterwards.
+///
+/// All probing lives in the closures — the loop itself
+/// measures nothing, so callers control exactly what each
+/// probe brackets (and record into their histograms *after*
+/// their phase-end tick reads, off the measured path).
+pub fn drive(dur: Duration, mut send: impl FnMut(u64), mut recv: impl FnMut() -> u64) {
     let start = Instant::now();
     let mut counter: u64 = 0;
     loop {
@@ -146,12 +143,8 @@ pub fn drive(
             if counter == STOP {
                 counter = 1;
             }
-            let s = ticks::read_ticks();
             send(counter);
-            send_probe.record(ticks::read_ticks().wrapping_sub(s));
-            let s = ticks::read_ticks();
             let v = recv();
-            recv_probe.record(ticks::read_ticks().wrapping_sub(s));
             assert_eq!(v, counter, "echo mismatch");
         }
         if start.elapsed() >= dur {

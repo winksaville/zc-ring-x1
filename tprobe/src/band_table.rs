@@ -23,19 +23,22 @@ const BOUNDARY_NAMES: &[&str] = &[
     "min", "p1", "p10", "p20", "p30", "p40", "p50", "p60", "p70", "p80", "p90", "p99", "max",
 ];
 
-/// Render a band-table report for `hist`, interpreting stored
-/// values as hardware ticks. `kind` is the header label
-/// (`"tprobe"`, `"tprobe-span"`, …) and `name` is the probe's
-/// name. `as_ticks=false` converts to ns; `true` keeps raw
-/// ticks. `decimals` is the fractional digits on every value
-/// column.
-pub(crate) fn render(
-    kind: &str,
-    name: &str,
-    hist: &Histogram<u64>,
-    as_ticks: bool,
-    decimals: usize,
-) {
+/// Display unit for a rendered band table.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unit {
+    /// Convert stored ticks to nanoseconds (`ns`).
+    Ns,
+    /// Raw stored ticks (`tk`).
+    Ticks,
+    /// Unitless counts (`ct`) — no conversion.
+    Count,
+}
+
+/// Render a band-table report for `hist`. `kind` is the header
+/// label (`"tprobe"`, `"tprobe-span"`, …) and `name` is the
+/// probe's name. `unit` picks the display unit / conversion;
+/// `decimals` is the fractional digits on every value column.
+pub(crate) fn render(kind: &str, name: &str, hist: &Histogram<u64>, unit: Unit, decimals: usize) {
     let sample_count = hist.len();
     println!("  {kind}: {name} [count={}]", fmt_commas(sample_count));
     if sample_count == 0 {
@@ -43,10 +46,15 @@ pub(crate) fn render(
         return;
     }
 
-    let unit = if as_ticks { "tk" } else { "ns" };
+    let to_ns = unit == Unit::Ns;
+    let unit = match unit {
+        Unit::Ns => "ns",
+        Unit::Ticks => "tk",
+        Unit::Count => "ct",
+    };
     let tpn = ticks::ticks_per_ns();
-    let conv = |v: u64| -> f64 { if as_ticks { v as f64 } else { v as f64 / tpn } };
-    let conv_f = |v: f64| -> f64 { if as_ticks { v } else { v / tpn } };
+    let conv = |v: u64| -> f64 { if to_ns { v as f64 / tpn } else { v as f64 } };
+    let conv_f = |v: f64| -> f64 { if to_ns { v / tpn } else { v } };
 
     let n_bands = BOUNDARY_PCTS.len() - 1;
     let mut band_first = vec![u64::MAX; n_bands];
