@@ -6,29 +6,7 @@ uses links or reference links for more details.
 
 ## In Progress
 
-**perf: explore spsc vs mpsc 2t gap**
-
-At 1p/1c cross-thread the MPSC ring measures ~26% faster
-than SPSC (73.9 vs 100.1 ns adjusted mean at 300s) [[20]].
-We think SPSC bounces two index cache lines per handoff
-(each side polls the line the other writes) while MPSC's
-only shared hot word is the slot seq. Verify from this repo
-— cross-core cache-fill counters plus a phase-probed round
-trip — so the measurement is reproducible here. Details:
-[chores section](chores/chores-02.md#perf-explore-spsc-vs-mpsc-2t-gap).
-
-- 0.13.0-0 docs: 2t gap exploration plan (done)
-- 0.13.0-1 feat: 2t gap tprobe dev crate (done)
-- 0.13.0-2 feat: 2t gap probed roundtrip example (done)
-- 0.13.0-3 refactor: 2t gap tp_runner crate + READMEs
-  (done)
-- 0.13.0-4 docs: 2t gap measurements + findings (done)
-- 0.13.0-5 feat: 2t gap spin-wait probes (done) —
-  attempts + spin-time decomposition of the recv phases,
-  band-table count unit, matrix re-run at --decimals 3
-- 0.13.0 perf: explore spsc vs mpsc 2t gap (close-out;
-  also seeds tprobe/notes/design.md and
-  tprobe/notes/chores/chores-01.md)
+_No cycle currently in progress._
 
 ## Todo
 
@@ -73,7 +51,22 @@ trip — so the measurement is reproducible here. Details:
      where transfers ≈ 0 — the protocol itself is cheaper);
    - costs a seq array in the layout (layout_version bump)
      — measure A/B with tp_roundtrip before adopting.
-4. Batch alloc/free demo: alongside the one-message
+4. tp-matrix: in-process perf counters + table emitter, so
+   reproducing the measurement tables is one command with
+   no perf(1)/bash/scraping:
+   - tp_runner grows a Linux `perf` module wrapping
+     `perf_event_open` (inherit on, so worker threads
+     count; raw Zen 2 `ls_refills_from_sys` encodings,
+     verified A/B against `perf stat`) and a `tp-matrix`
+     bin that runs every flavor × placement cell
+     in-process and emits the chores-style markdown
+     tables;
+   - installable: `cargo install --path tp_runner`;
+   - replaces the scrape-by-hand steps of
+     [Reproducing the measurement matrix](../tprobe/README.md#reproducing-the-measurement-matrix);
+   - also the measurement tool for the seam-word SPSC
+     variant's A/B (Todo #3).
+5. Batch alloc/free demo: alongside the one-message
    alloc_free_1t loops, a variant that allocs X messages
    (5, 10, …) then frees them all, pool vs global
    allocator. We think the pool's rate stays constant
@@ -81,12 +74,12 @@ trip — so the measurement is reproducible here. Details:
    the working set hot) while Box::new/drop slows as the
    batch outgrows malloc's thread-cache fast path — the
    demo should show it.
-5. Endpoint claims word: CAS-claimed producer/consumer roles
+6. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
    [details](ring-buffer-design.md#resolved-questions).
-6. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+7. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot_with [details](ring-buffer-design.md#api).
 
@@ -177,13 +170,10 @@ trip — so the measurement is reproducible here. Details:
 Completed tasks are moved from `## Todo` to here, `## Done`, as they are completed
 and older `## Done` sections are moved to [done.md](done.md) to keep this file small.
 
-- feat: mpsc ring sibling primitive [[19]]
-- refactor: versioned primitive module dirs [[12]]
+- perf: explore spsc vs mpsc 2t gap [[12]]
 
 # References
 
 [11]: chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[12]: chores/chores-02.md#refactor-versioned-primitive-module-dirs
-[19]: chores/chores-01.md#feat-mpsc-ring-sibling-primitive
-[20]: chores/chores-01.md#outcome-the-2t-surprise
+[12]: chores/chores-02.md#perf-explore-spsc-vs-mpsc-2t-gap
 [21]: chores/chores-02.md#findings-the-gap-is-line-transfer-economics

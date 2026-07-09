@@ -16,6 +16,10 @@ Project design docs:
   zero-copy ring buffer and its MPSC sibling (terminology,
   requirements, layout, API, validation), kept in sync with
   `src/`.
+- [../tprobe/notes/design.md](../tprobe/notes/design.md) —
+  the tprobe measurement crate (probe primitives, ticks,
+  report renderer, the tprobe/tp_runner split); the crate
+  keeps its own notes so they travel on extraction.
 
 
 Examples chore file:

@@ -21,6 +21,8 @@ See [Todo format](../AGENTS.md#todo-format)
 - refactor: drop reserve_slot, keep _with ladder [[16]]
 - refactor: drop reserve_slot_spin and alloc_spin [[17]]
 - docs: refresh iiac-perf numbers, seam closed [[18]]
+- feat: mpsc ring sibling primitive [[19]]
+- refactor: versioned primitive module dirs [[20]]
 
 # References
 
@@ -41,3 +43,5 @@ See [Todo format](../AGENTS.md#todo-format)
 [16]: chores/chores-01.md#refactor-drop-reserve_slot-keep-_with-ladder
 [17]: chores/chores-01.md#refactor-drop-reserve_slot_spin-and-alloc_spin
 [18]: chores/chores-01.md#docs-refresh-iiac-perf-numbers-seam-closed
+[19]: chores/chores-01.md#feat-mpsc-ring-sibling-primitive
+[20]: chores/chores-02.md#refactor-versioned-primitive-module-dirs

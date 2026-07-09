@@ -1,0 +1,109 @@
+mpsc round trip [duration=10.0s pin=main=0,worker=1]:
+  tprobe: mpsc main send (send_with) [count=60,981,248]
+                   first              last             range            count      mean
+    p1-p10         0.264 ns          0.264 ns          0.264 ns     7,520,128     0.264 ns
+    p10-p20        9.755 ns          9.755 ns          0.264 ns             4     9.755 ns
+    p50-p60       10.019 ns         10.019 ns          0.264 ns    50,651,685    10.019 ns
+    p90-p99       20.038 ns         20.038 ns          0.264 ns     1,907,178    20.038 ns
+    p99-max       30.057 ns    242,037.901 ns    242,008.108 ns       902,253    38.724 ns
+    mean                                                                          9.554 ns
+    stdev                                                                        39.620 ns
+    mean min-p99                                                                  9.116 ns
+    stdev min-p99                                                                 3.779 ns
+
+  tprobe: mpsc worker recv (reserve+release) [count=60,981,248]
+                    first                last               range            count       mean
+    min-p1          0.264 ns           70.395 ns           70.395 ns         1,331     41.899 ns
+    p10-p20        80.151 ns           80.151 ns            0.264 ns    16,944,984     80.151 ns
+    p30-p40        80.414 ns           80.414 ns            0.264 ns     7,722,203     80.414 ns
+    p60-p70        90.170 ns           90.170 ns            0.264 ns    30,866,931     90.170 ns
+    p90-p99        90.433 ns          150.546 ns           60.377 ns     4,559,499    115.451 ns
+    p99-max       160.301 ns    2,617,737.655 ns    2,617,577.617 ns       886,300    488.639 ns
+    mean                                                                               93.829 ns
+    stdev                                                                             1,229.026 ns
+    mean min-p99                                                                       88.008 ns
+    stdev min-p99                                                                      10.178 ns
+
+  tprobe: mpsc worker recv spin (wait only) [count=60,979,101]
+                    first                last               range            count       mean
+    min-p1         20.038 ns           59.849 ns           40.075 ns        16,980     52.518 ns
+    p1-p10         60.113 ns           60.113 ns            0.264 ns     8,918,882     60.113 ns
+    p20-p30        69.868 ns           69.868 ns            0.264 ns     8,081,716     69.868 ns
+    p50-p60        70.132 ns           70.132 ns            0.264 ns    38,650,996     70.132 ns
+    p90-p99        79.887 ns          140.000 ns           60.377 ns     4,265,329     96.455 ns
+    p99-max       140.264 ns    2,617,737.655 ns    2,617,597.655 ns     1,045,198    396.894 ns
+    mean                                                                               76.067 ns
+    stdev                                                                             1,178.119 ns
+    mean min-p99                                                                       70.474 ns
+    stdev min-p99                                                                       9.055 ns
+
+  tprobe: mpsc worker recv attempts [count=60,979,101]
+                  first             last            range            count      mean
+    min-p1        1.000 ct         3.000 ct         3.000 ct       165,514     2.952 ct
+    p40-p50       4.000 ct         4.000 ct         1.000 ct    56,626,926     4.000 ct
+    p90-p99       5.000 ct         8.000 ct         4.000 ct     4,150,430     5.967 ct
+    p99-max       9.000 ct    17,359.000 ct    17,351.000 ct        36,231    22.497 ct
+    mean                                                                       4.142 ct
+    stdev                                                                      4.612 ct
+    mean min-p99                                                               4.131 ct
+    stdev min-p99                                                              0.607 ct
+
+  tprobe: mpsc worker send (send_with) [count=60,981,248]
+                   first              last             range            count       mean
+    p1-p10         0.264 ns          0.264 ns          0.264 ns     6,504,225      0.264 ns
+    p50-p60       10.019 ns         10.019 ns          0.264 ns    54,105,230     10.019 ns
+    p99-max       20.038 ns    959,512.996 ns    959,493.222 ns       371,793    222.434 ns
+    mean                                                                          10.273 ns
+    stdev                                                                        682.686 ns
+    mean min-p99                                                                   8.972 ns
+    stdev min-p99                                                                  3.019 ns
+
+  tprobe: mpsc main recv (reserve+release) [count=60,981,248]
+                    first                last               range            count       mean
+    min-p1          0.264 ns           70.395 ns           70.395 ns        54,088     69.105 ns
+    p1-p10         80.151 ns           80.151 ns            0.264 ns     7,561,580     80.151 ns
+    p10-p20        80.414 ns           80.414 ns            0.264 ns     8,298,114     80.414 ns
+    p50-p60        90.170 ns           90.170 ns            0.264 ns    39,648,094     90.170 ns
+    p90-p99        90.433 ns          140.527 ns           50.358 ns     4,715,678    109.459 ns
+    p99-max       150.283 ns    2,619,897.504 ns    2,619,747.486 ns       703,694    716.479 ns
+    mean                                                                               96.298 ns
+    stdev                                                                             1,494.649 ns
+    mean min-p99                                                                       89.060 ns
+    stdev min-p99                                                                       8.736 ns
+
+  tprobe: mpsc main recv spin (wait only) [count=60,978,494]
+                    first                last               range            count       mean
+    min-p1         19.774 ns           59.849 ns           40.339 ns        33,513     53.658 ns
+    p1-p10         60.113 ns           69.868 ns           10.019 ns     7,634,752     65.819 ns
+    p50-p60        70.132 ns           70.132 ns            0.264 ns    48,182,348     70.132 ns
+    p90-p99        79.887 ns          100.188 ns           20.565 ns     4,594,565     87.472 ns
+    p99-max       109.944 ns    2,619,897.504 ns    2,619,787.825 ns       533,316    861.758 ns
+    mean                                                                               77.811 ns
+    stdev                                                                             1,494.578 ns
+    mean min-p99                                                                       70.896 ns
+    stdev min-p99                                                                       5.721 ns
+
+  tprobe: mpsc main recv attempts [count=60,978,494]
+                  first              last             range            count       mean
+    min-p1        1.000 ct          3.000 ct          3.000 ct     1,120,963      2.974 ct
+    p40-p50       4.000 ct          4.000 ct          1.000 ct    57,824,685      4.000 ct
+    p90-p99       5.000 ct          5.000 ct          1.000 ct     1,809,443      5.000 ct
+    p99-max       6.000 ct    159,231.000 ct    159,226.000 ct       223,403    102.398 ct
+    mean                                                                          4.371 ct
+    stdev                                                                        90.073 ct
+    mean min-p99                                                                  4.011 ct
+    stdev min-p99                                                                 0.223 ct
+
+
+ Performance counter stats for 'target/release/examples/tp_roundtrip mpsc -d 10 --decimals 3 --pin 0,1':
+
+       405,204,157      ls_refills_from_sys.ls_mabresp_lcl_cache:u                                      
+           405,991      ls_refills_from_sys.ls_mabresp_lcl_l2:u                                      
+            74,565      ls_refills_from_sys.ls_mabresp_lcl_dram:u                                      
+
+      10.014531370 seconds time elapsed
+
+      19.570928000 seconds user
+       0.020885000 seconds sys
+
+

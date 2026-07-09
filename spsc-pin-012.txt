@@ -1,0 +1,108 @@
+spsc round trip [duration=10.0s pin=main=0,worker=12]:
+  tprobe: spsc main send (reserve+commit) [count=86,085,632]
+                   first              last             range            count       mean
+    p1-p10         0.264 ns          0.264 ns          0.264 ns    12,413,659      0.264 ns
+    p50-p60       10.019 ns         10.019 ns          0.264 ns    73,611,256     10.019 ns
+    p99-max       20.038 ns    258,911.987 ns    258,892.213 ns        60,717    137.100 ns
+    mean                                                                           8.702 ns
+    stdev                                                                         46.347 ns
+    mean min-p99                                                                   8.611 ns
+    stdev min-p99                                                                  3.428 ns
+
+  tprobe: spsc worker recv (reserve+release) [count=86,085,632]
+                   first              last             range            count         mean
+    min-p1         0.264 ns         40.339 ns         40.339 ns         1,943       15.202 ns
+    p1-p10        50.094 ns         50.094 ns          0.264 ns    14,766,938       50.094 ns
+    p20-p30       50.358 ns         50.358 ns          0.264 ns    10,172,192       50.358 ns
+    p60-p70       60.113 ns         60.113 ns          0.264 ns    55,716,429       60.113 ns
+    p90-p99       60.377 ns         80.151 ns         20.038 ns     5,327,545       73.390 ns
+    p99-max       80.414 ns    751,088.247 ns    751,008.096 ns       100,585    1,572.000 ns
+    mean                                                                            59.828 ns
+    stdev                                                                          355.710 ns
+    mean min-p99                                                                    58.060 ns
+    stdev min-p99                                                                    6.131 ns
+
+  tprobe: spsc worker recv spin (wait only) [count=86,082,698]
+                   first              last             range            count       mean
+    min-p1        19.774 ns         29.793 ns         10.282 ns           915     28.417 ns
+    p1-p10        30.057 ns         30.057 ns          0.264 ns    10,313,331     30.057 ns
+    p10-p20       39.812 ns         39.812 ns          0.264 ns     6,948,127     39.812 ns
+    p50-p60       40.075 ns         40.075 ns          0.264 ns    62,277,324     40.075 ns
+    p90-p99       49.831 ns         60.113 ns         10.546 ns     6,394,086     54.816 ns
+    p99-max       69.868 ns    751,088.247 ns    751,018.642 ns       148,915    881.909 ns
+    mean                                                                          41.404 ns
+    stdev                                                                        312.556 ns
+    mean min-p99                                                                  39.948 ns
+    stdev min-p99                                                                  5.486 ns
+
+  tprobe: spsc worker recv attempts [count=86,082,698]
+                  first             last            range            count      mean
+    min-p1        1.000 ct         1.000 ct         1.000 ct       999,717     1.000 ct
+    p40-p50       2.000 ct         2.000 ct         1.000 ct    81,452,581     2.000 ct
+    p90-p99       3.000 ct         3.000 ct         1.000 ct     3,577,666     3.000 ct
+    p99-max       4.000 ct    27,535.000 ct    27,532.000 ct        52,734    45.433 ct
+    mean                                                                       2.057 ct
+    stdev                                                                      9.398 ct
+    mean min-p99                                                               2.030 ct
+    stdev min-p99                                                              0.229 ct
+
+  tprobe: spsc worker send (reserve+commit) [count=86,085,632]
+                   first              last             range            count       mean
+    p1-p10         0.264 ns          0.264 ns          0.264 ns    12,473,343      0.264 ns
+    p50-p60       10.019 ns         10.019 ns          0.264 ns    73,553,339     10.019 ns
+    p99-max       20.038 ns    263,771.654 ns    263,751.880 ns        58,950    344.591 ns
+    mean                                                                           8.834 ns
+    stdev                                                                        139.405 ns
+    mean min-p99                                                                   8.604 ns
+    stdev min-p99                                                                  3.435 ns
+
+  tprobe: spsc main recv (reserve+release) [count=86,085,632]
+                   first              last             range            count         mean
+    min-p1         0.264 ns         40.339 ns         40.339 ns         1,620       12.757 ns
+    p1-p10        50.094 ns         50.094 ns          0.264 ns     8,480,800       50.094 ns
+    p10-p20       50.358 ns         50.358 ns          0.264 ns     3,651,394       50.358 ns
+    p50-p60       60.113 ns         60.113 ns          0.264 ns    66,060,506       60.113 ns
+    p90-p99       60.377 ns         80.151 ns         20.038 ns     7,776,826       73.599 ns
+    p99-max       80.414 ns    751,628.210 ns    751,548.059 ns       114,486    1,797.481 ns
+    mean                                                                            62.239 ns
+    stdev                                                                          456.342 ns
+    mean min-p99                                                                    59.929 ns
+    stdev min-p99                                                                    5.783 ns
+
+  tprobe: spsc main recv spin (wait only) [count=86,083,144]
+                   first              last             range            count       mean
+    min-p1        19.774 ns         29.793 ns         10.282 ns            98     23.019 ns
+    p1-p10        30.057 ns         30.057 ns          0.264 ns    13,354,317     30.057 ns
+    p20-p30       39.812 ns         39.812 ns          0.264 ns     9,231,829     39.812 ns
+    p50-p60       40.075 ns         40.075 ns          0.264 ns    56,571,124     40.075 ns
+    p90-p99       49.831 ns         60.113 ns         10.546 ns     6,635,707     55.674 ns
+    p99-max       69.868 ns    751,628.210 ns    751,558.605 ns       290,069    708.939 ns
+    mean                                                                          41.948 ns
+    stdev                                                                        448.726 ns
+    mean min-p99                                                                  39.694 ns
+    stdev min-p99                                                                  6.021 ns
+
+  tprobe: spsc main recv attempts [count=86,083,144]
+                  first             last            range            count       mean
+    min-p1        1.000 ct         1.000 ct         1.000 ct       169,291      1.000 ct
+    p40-p50       2.000 ct         2.000 ct         1.000 ct    81,475,609      2.000 ct
+    p90-p99       3.000 ct         3.000 ct         1.000 ct     4,399,303      3.000 ct
+    p99-max       4.000 ct    46,399.000 ct    46,396.000 ct        38,941    234.999 ct
+    mean                                                                        2.155 ct
+    stdev                                                                      27.811 ct
+    mean min-p99                                                                2.049 ct
+    stdev min-p99                                                               0.225 ct
+
+
+ Performance counter stats for 'target/release/examples/tp_roundtrip spsc -d 10 --decimals 3 --pin 0,12':
+
+            90,987      ls_refills_from_sys.ls_mabresp_lcl_cache:u                                      
+           766,232      ls_refills_from_sys.ls_mabresp_lcl_l2:u                                      
+            67,831      ls_refills_from_sys.ls_mabresp_lcl_dram:u                                      
+
+      10.015061672 seconds time elapsed
+
+      19.743396000 seconds user
+       0.011505000 seconds sys
+
+
