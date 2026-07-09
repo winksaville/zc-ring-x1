@@ -6,28 +6,7 @@ uses links or reference links for more details.
 
 ## In Progress
 
-**feat: tp-matrix perf counters + tables**
-
-Reproducing the 0.13.0 measurement tables takes perf(1), a
-bash loop, and hand-scraping (see
-[Reproducing the measurement matrix](../tprobe/README.md#reproducing-the-measurement-matrix)).
-Make it one command: a `tp-matrix` binary runs every
-flavor × placement cell in-process, collects the cache-fill
-counters itself via `perf_event_open`, and emits the
-markdown tables. Also removes the stray `*-pin-*.txt` raw
-files accidentally committed at the 0.13.0 close-out.
-
-- 0.14.0-0 docs: tp-matrix plan + txt cleanup (done)
-- 0.14.0-1 feat: tp-matrix perf counter module (done)
-- 0.14.0-2 feat: tp-matrix cells bin + tables (done) —
-  also replaces the tp_roundtrip example with the
-  installable tp-cell bin (single cell, better name)
-- 0.14.0-3 docs: tp-matrix README + verification (done)
-- 0.14.0-4 feat: tp-matrix clap help + banner + README
-  (done) — informative --help / concise -h (vc-x1
-  style), name+version+tagline banner first on every run,
-  README fleshed out for the what-do-these-do reader
-- 0.14.0 feat: tp-matrix perf counters + tables (close-out)
+_No cycle currently in progress._
 
 ## Todo
 
@@ -177,9 +156,11 @@ Completed tasks are moved from `## Todo` to here, `## Done`, as they are complet
 and older `## Done` sections are moved to [done.md](done.md) to keep this file small.
 
 - perf: explore spsc vs mpsc 2t gap [[12]]
+- feat: tp-matrix perf counters + tables [[13]]
 
 # References
 
 [11]: chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [12]: chores/chores-02.md#perf-explore-spsc-vs-mpsc-2t-gap
+[13]: chores/chores-02.md#feat-tp-matrix-perf-counters--tables
 [21]: chores/chores-02.md#findings-the-gap-is-line-transfer-economics

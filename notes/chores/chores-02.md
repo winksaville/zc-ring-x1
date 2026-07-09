@@ -374,7 +374,7 @@ the ~26% latency gap. The 2t gap itself also reproduces at
 
 ## feat: tp-matrix perf counters + tables
 
-Commits:
+Commits: [[14]],[[15]],[[16]],[[17]],[[18]]
 
 Reproducing the 0.13.0 measurement tables takes perf(1), a
 bash loop, and hand-scraping of the mean/stdev lines and
@@ -453,6 +453,16 @@ Two A/B checks pin the in-process counters to perf(1):
   ~6.6 mpsc across smoke runs) matches the 0.13.0
   perf-stat-based tables.
 
+### As-built ladder
+
+- `0.14.0-0` docs: tp-matrix plan + txt cleanup
+- `0.14.0-1` feat: tp-matrix perf counter module
+- `0.14.0-2` feat: tp-matrix cells bin + tables
+- `0.14.0-3` docs: tp-matrix README + verification
+- `0.14.0-4` feat: tp-matrix clap help + banner + README
+- `0.14.0` feat: tp-matrix perf counters + tables
+  (close-out)
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/2ea448654c9a "2ea448654c9a4b7f758e017d56161d9d731ab425"
@@ -468,3 +478,8 @@ Two A/B checks pin the in-process counters to perf(1):
 [11]: https://github.com/winksaville/zc-ring-x1/commit/10c085ab8be5 "10c085ab8be5f1c9a0357fb608adbac592c154ba"
 [12]: https://github.com/winksaville/zc-ring-x1/commit/7c9d7bcd5278 "7c9d7bcd5278c2bdb7b2d5d4a83e335b7a5c9582"
 [13]: https://github.com/winksaville/zc-ring-x1/commit/fd1d6d0ace18 "fd1d6d0ace18c4400d7939565d5f3d4432a3fde1"
+[14]: https://github.com/winksaville/zc-ring-x1/commit/65b8f6ce332d "65b8f6ce332de30f008c9416309479d7de7a6493"
+[15]: https://github.com/winksaville/zc-ring-x1/commit/f0a51c3effc9 "f0a51c3effc9b28a3c0a51523945227b168be57f"
+[16]: https://github.com/winksaville/zc-ring-x1/commit/200ac8f65a1d "200ac8f65a1de951842277d62700f26b41c94bc6"
+[17]: https://github.com/winksaville/zc-ring-x1/commit/36049b2cdf62 "36049b2cdf628e70cafabca68cf5a5db6ffd8e5c"
+[18]: https://github.com/winksaville/zc-ring-x1/commit/5f12544667fc "5f12544667fccab5cd6ef535cb0235558fb92ac4"
