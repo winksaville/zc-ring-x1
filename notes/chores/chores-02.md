@@ -176,7 +176,79 @@ Plan:
   going-forward record; this cycle's story stays here, the
   seed points back).
 
+### Measurements (0.13.0-4)
+
+Machine: AMD Ryzen 9 3900X (Zen 2, 12c/24t; cpus 0–2 share
+CCX0's L3, cpu 3 is in CCX1, cpu 12 is cpu 0's SMT sibling
+sharing L1/L2). Command, per flavor × placement:
+
+```
+perf stat -e ls_refills_from_sys.ls_mabresp_lcl_cache,\
+ls_refills_from_sys.ls_mabresp_lcl_l2,\
+ls_refills_from_sys.ls_mabresp_lcl_dram -- \
+  target/release/examples/tp_roundtrip <flavor> -d 10 [--pin m,w]
+```
+
+Phase values are the report's trimmed `mean min-p99` in ns;
+`fills/RT` is `ls_mabresp_lcl_cache` (demand fills served
+from another core's cache) divided by round trips.
+
+| placement  | flavor | m.send | w.recv | w.send | m.recv | RTs/10s | fills/RT |
+|------------|--------|-------:|-------:|-------:|-------:|--------:|---------:|
+| 0,1 CCX    | spsc   |   21.8 |   98.2 |   37.9 |   94.4 |   52.6M |     10.0 |
+| 0,1 CCX    | mpsc   |   11.9 |   65.8 |   12.8 |   71.4 |   72.9M |      6.7 |
+| 0,3 x-CCX  | spsc   |  108.8 |  504.0 |  135.1 |  476.9 |   14.5M |      9.8 |
+| 0,3 x-CCX  | mpsc   |   58.2 |  348.8 |   52.7 |  425.1 |   17.4M |      6.8 |
+| 0,12 SMT   | spsc   |    8.6 |   32.5 |    8.6 |   31.7 |  131.2M |       ~0 |
+| 0,12 SMT   | mpsc   |    8.8 |   47.5 |   13.3 |   50.8 |  104.0M |       ~0 |
+| unpinned   | spsc   |   22.9 |  102.6 |   40.2 |  100.0 |   53.9M |     10.0 |
+| unpinned   | mpsc   |   11.3 |   68.3 |   13.7 |   77.5 |   66.3M |      6.7 |
+
+### Findings: the gap is line-transfer economics
+
+- **The gap lives in the send path.** Cross-core, SPSC's
+  producer phases cost 2–3× MPSC's (0,1: 21.8/37.9 vs
+  11.9/12.8 ns) — the SPSC send both *reads* the
+  peer-written index line (`consumer_idx`, the non-full
+  check) and *writes* a line the peer is actively polling
+  (`producer_idx`). The MPSC send touches one shared line
+  (the slot seq); its claim index is core-private. Recv
+  waits mirror the same story (they absorb the opposite
+  send plus the in-flight half trip).
+- **Transfer counts match the hypothesis and are placement-
+  invariant**: ~10.0 (SPSC) vs ~6.7 (MPSC) cross-core line
+  fills per round trip at same-CCX, cross-CCX, and unpinned
+  — ~1.6 fewer transferred lines per handoff. Counts exceed
+  the naive 2-vs-1 accounting because every spin poll after
+  an invalidation refetches.
+- **The SMT control clinches the mechanism**: pinned to
+  siblings sharing L1/L2 (0,12), fills drop to ~0 for both
+  flavors and the sign flips — SPSC wins (32 vs 48–51 ns
+  recv phases; 131M vs 104M round trips). MPSC's 2t
+  advantage is entirely cache-line-transfer economics;
+  absent transfer cost, SPSC's load/store-only protocol is
+  cheaper, consistent with its 1t numbers.
+- **Unpinned behaves like same-CCX** — the scheduler mostly
+  keeps the pair co-resident on one CCX.
+- We think the SPSC main-send vs worker-send asymmetry
+  (21.8 vs 37.9 ns at 0,1) comes from what the peer is
+  doing concurrently: when the worker sends, main is
+  already spin-polling that ring's `producer_idx` line
+  hard, stealing it mid-send; when main sends, the worker
+  is still finishing its recv on the other ring.
+- Cross-CCX (0,3) multiplies everything ~4–5× (L3-to-L3
+  through the IO die) but preserves the ratio — the
+  mechanism is the same, the lines are just more expensive.
+- Conclusion: the mechanism is confirmed; a **seam-word
+  SPSC variant** (per-slot publish word, indices
+  endpoint-private, still load/store-only — no CAS needed
+  at 1p) is worth building. Filed as a Todo.
+
 ### Preliminary evidence: cross-core fill counters
+
+Superseded by [Measurements (0.13.0-4)](#measurements-0130-4)
+above — kept as the exploratory record that motivated the
+cycle's shape.
 
 Exploratory 10 s runs of the existing iiac-perf 0.20.0
 benches under `perf stat` (before this cycle's in-repo

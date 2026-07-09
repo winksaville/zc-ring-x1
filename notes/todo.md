@@ -22,7 +22,7 @@ trip — so the measurement is reproducible here. Details:
 - 0.13.0-2 feat: 2t gap probed roundtrip example (done)
 - 0.13.0-3 refactor: 2t gap tp_runner crate + READMEs
   (done)
-- 0.13.0-4 docs: 2t gap measurements + findings
+- 0.13.0-4 docs: 2t gap measurements + findings (done)
 - 0.13.0 perf: explore spsc vs mpsc 2t gap (close-out;
   also seeds tprobe/notes/design.md and
   tprobe/notes/chores/chores-01.md)
@@ -59,7 +59,18 @@ trip — so the measurement is reproducible here. Details:
    - naturally bounded by pool capacity;
    - composes per-sender with MPSC — see
      [Overflow readiness](ring-buffer-design.md#overflow-readiness).
-3. Batch alloc/free demo: alongside the one-message
+3. Seam-word SPSC variant: publish per-slot seq words so
+   neither side ever reads the other's index line —
+   Vyukov-style publish but load/store only (no CAS: the
+   single producer's index stays endpoint-private) [[21]]:
+   - motivation: cross-core, SPSC moves ~10.0 cache lines
+     per round trip vs MPSC's ~6.7 and loses ~26–40%; the
+     whole gap is line-transfer economics;
+   - must keep the SMT/1t win (SPSC beats MPSC at 0,12
+     where transfers ≈ 0 — the protocol itself is cheaper);
+   - costs a seq array in the layout (layout_version bump)
+     — measure A/B with tp_roundtrip before adopting.
+4. Batch alloc/free demo: alongside the one-message
    alloc_free_1t loops, a variant that allocs X messages
    (5, 10, …) then frees them all, pool vs global
    allocator. We think the pool's rate stays constant
@@ -67,12 +78,12 @@ trip — so the measurement is reproducible here. Details:
    the working set hot) while Box::new/drop slows as the
    batch outgrows malloc's thread-cache fast path — the
    demo should show it.
-4. Endpoint claims word: CAS-claimed producer/consumer roles
+5. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
    [details](ring-buffer-design.md#resolved-questions).
-5. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+6. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot_with [details](ring-buffer-design.md#api).
 
@@ -172,3 +183,4 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 [12]: chores/chores-02.md#refactor-versioned-primitive-module-dirs
 [19]: chores/chores-01.md#feat-mpsc-ring-sibling-primitive
 [20]: chores/chores-01.md#outcome-the-2t-surprise
+[21]: chores/chores-02.md#findings-the-gap-is-line-transfer-economics
