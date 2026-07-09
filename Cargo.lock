@@ -163,6 +163,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tp_runner"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tprobe",
+]
+
+[[package]]
 name = "tprobe"
 version = "0.1.0"
 dependencies = [
@@ -177,9 +185,10 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "zc-ring-x1"
-version = "0.13.0-2"
+version = "0.13.0-3"
 dependencies = [
  "libc",
+ "tp_runner",
  "tprobe",
  "zerocopy",
 ]

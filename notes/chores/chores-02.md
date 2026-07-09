@@ -148,7 +148,18 @@ Plan:
   adaptive harness: the comparison is A/B under identical
   framing, so calibrated overhead subtraction isn't needed.
   `--duration` / `--pin` / flavor args.
-- **Measurements + findings** (`0.13.0-3`): run unpinned,
+- **Generic `tp_runner/` crate + READMEs** (`0.13.0-3`,
+  added during `-2` review): the example's generic runner
+  machinery — CLI config (`-d`/`--pin`/`-t` + positionals),
+  `pin_to_cpu`, the fixed-duration round-trip drive loop,
+  probe report ordering — moves to a third workspace crate,
+  `tp_runner/`, leaving only the two ring flavors in the
+  example. Deliberately *not* a full harness (no `Bench`
+  trait, adaptive sizing, or calibration — that is
+  iiac-perf's territory; needing it is the cue to unify).
+  `tprobe/README.md` + `tp_runner/README.md` cover build /
+  test / run.
+- **Measurements + findings** (`0.13.0-4`): run unpinned,
   same-CCX (pin 0,1), cross-CCX (pin 0,3); plus `perf stat`
   with Zen 2's `ls_refills_from_sys.ls_mabresp_lcl_cache`
   (demand fills served from another core's cache — the
@@ -157,6 +168,13 @@ Plan:
   file a seam-word SPSC variant Todo (give SPSC a seq-like
   publish word so neither side reads the other's index
   line).
+- **Close-out** additionally seeds the crate's own notes —
+  `tprobe/notes/design.md` (design rationale that outlived
+  the doc comments: probe-type trade-offs, ticks
+  abstraction, runner split) and
+  `tprobe/notes/chores/chores-01.md` (the crate's
+  going-forward record; this cycle's story stays here, the
+  seed points back).
 
 ### Preliminary evidence: cross-core fill counters
 

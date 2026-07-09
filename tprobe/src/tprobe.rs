@@ -57,8 +57,9 @@ impl TProbe {
     /// Render a band-table report for this probe. `as_ticks`
     /// controls the display unit: `false` converts stored tick
     /// deltas to nanoseconds (default for the CLI); `true` shows
-    /// raw ticks (`-t`/`--ticks`).
-    pub fn report(&self, as_ticks: bool) {
-        band_table::render("tprobe", &self.name, &self.hist, as_ticks);
+    /// raw ticks (`-t`/`--ticks`). `decimals` is the fractional
+    /// digits on every value column.
+    pub fn report(&self, as_ticks: bool, decimals: usize) {
+        band_table::render("tprobe", &self.name, &self.hist, as_ticks, decimals);
     }
 }

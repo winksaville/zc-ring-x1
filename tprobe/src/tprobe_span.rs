@@ -111,17 +111,18 @@ impl TProbeSpan {
     /// Render a band-table report for this probe. `as_ticks`
     /// controls the display unit: `false` converts stored tick
     /// deltas to nanoseconds (default for the CLI); `true` shows
-    /// raw ticks (`-t`/`--ticks`).
+    /// raw ticks (`-t`/`--ticks`). `decimals` is the fractional
+    /// digits on every value column.
     ///
     /// Drains any pending `start`/`end` records into the histogram
     /// before rendering: `delta = end_tsc − start_tsc`, clamped to
     /// `1` since the histogram lower bound is 1.
-    pub fn report(&mut self, as_ticks: bool) {
+    pub fn report(&mut self, as_ticks: bool, decimals: usize) {
         for r in self.records.drain(..) {
             let delta = r.end_tsc.saturating_sub(r.start_tsc);
             self.hist.record(delta.max(1)).unwrap(); // OK: clamped ≥1, and any real delta is under the 1e12 bound
         }
-        band_table::render("tprobe-span", &self.name, &self.hist, as_ticks);
+        band_table::render("tprobe-span", &self.name, &self.hist, as_ticks, decimals);
     }
 }
 
@@ -173,12 +174,12 @@ mod tests {
         assert_eq!(p.hist.len(), 0);
         assert_eq!(p.records.len(), 2);
 
-        p.report(false);
+        p.report(false, 1);
         assert_eq!(p.records.len(), 0);
         assert_eq!(p.hist.len(), 2);
 
         // Idempotent: a second report drains nothing, hist unchanged.
-        p.report(false);
+        p.report(false, 1);
         assert_eq!(p.hist.len(), 2);
     }
 }

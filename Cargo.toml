@@ -3,7 +3,7 @@ name = "zc-ring-x1"
 # Version-of-record (see notes/versioning.md): advanced through
 # the cycle's X.Y.Z-N phases; the -N rides in the semver
 # prerelease slot.
-version = "0.13.0-2"
+version = "0.13.0-3"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"
@@ -16,10 +16,12 @@ zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
-# The local tick-probe crate (see tprobe/), used by the
-# phase-probed examples only — not part of the library.
+# The local probe + runner crates (see tprobe/ and
+# tp_runner/), used by the phase-probed examples only — not
+# part of the library.
 [dev-dependencies]
 tprobe = { path = "tprobe" }
+tp_runner = { path = "tp_runner" }
 
 [workspace]
-members = ["tprobe"]
+members = ["tprobe", "tp_runner"]

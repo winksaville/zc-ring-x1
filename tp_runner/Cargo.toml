@@ -1,0 +1,18 @@
+# Local dev crate: the generic runner for phase-probed
+# measurement examples — CLI config, thread pinning, and the
+# fixed-duration round-trip drive loop. The probes themselves
+# live in the sibling tprobe crate.
+[package]
+name = "tp_runner"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+description = "Runner for phase-probed measurement examples (config, pinning, drive loop)"
+publish = false
+
+[dependencies]
+tprobe = { path = "../tprobe" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
