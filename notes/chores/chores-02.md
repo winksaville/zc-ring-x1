@@ -100,23 +100,45 @@ in the sibling iiac-perf checkout.
 Plan:
 
 - **Local `tprobe/` dev crate** (`0.13.0-1`): iiac-perf is
-  binary-only, so its probes can't be imported. Copy, as
-  close to verbatim as possible, iiac-perf 0.20.0's
-  `tprobe.rs`, `tprobe2.rs`, `ticks.rs` + `ticks/`,
-  `band_table.rs`, `bands.rs`, and the two `fmt_commas`
-  helpers into a local crate (only external dep:
-  `hdrhistogram`), provenance noted in module docs.
+  binary-only, so its probes can't be imported. `tprobe/`
+  is a **new crate** — trivial/simple but adequate —
+  leveraging iiac-perf where appropriate; it derives from
+  iiac-perf 0.20.0's `tprobe.rs`, `tprobe2.rs`, `ticks.rs`
+  + `ticks/`, `band_table.rs`, and the two `fmt_commas`
+  `harness.rs` helpers (which became `fmt.rs`). Provenance
+  and deltas are recorded here, not in doc comments. Sole
+  external dep: `hdrhistogram`. Deltas from the iiac-perf
+  sources:
+  - `TProbe2` renamed `TProbeSpan` (`TProbe2RecId` →
+    `TProbeSpanId`, `tprobe2.rs` → `tprobe_span.rs`, report
+    kind label `tprobe-span`): the `2` named invention
+    order, not semantics; "span" is the start/end interval
+    vocabulary (non-stack interleaving is span-like, not
+    scope-like). Intended as the go-forward name if
+    iiac-perf unifies onto an extracted crate.
+  - `minstant` dependency dropped: the x86_64 calibration
+    anchors on `std::time::Instant` (vDSO `clock_gettime`
+    overhead is negligible over the 10 ms window), and the
+    kernel-clocksource check reads
+    `/sys/.../clocksource0/current_clocksource` directly —
+    matching what `minstant::is_tsc_available` did.
+  - `bands.rs` not taken: it isn't in the probes' closure
+    (`band_table.rs` carries its own percentile ladder) and
+    would have dragged in `clap`.
+  - iiac-perf-specific doc text (its `Probe`, bench names,
+    ideas.md pointers) dropped or reworded; `// OK: …`
+    annotations on `unwrap*` and missing `///` docs added
+    per this repo's conventions.
+  - `TProbeSpan` is included for API completeness but not
+    used by this cycle's example: its record buffer grows
+    unbounded (tens of millions of round trips × 24 B per
+    record), and its report drains all sites into one
+    histogram, so it can't separate phases anyway. `TProbe`
+    is the fit.
   - Root `Cargo.toml` gains `[workspace]` membership and a
-    path dev-dependency.
-  - A crate boundary from day one keeps future extraction
-    (or unification with iiac-perf) a file-level move, not
-    a rewrite. Verbatim-copy discipline limits drift while
-    two copies exist.
-  - `TProbe2` is copied for completeness but not used here:
-    its record buffer grows unbounded (tens of millions of
-    round trips × 24 B per record), and its report drains
-    all sites into one histogram, so it can't separate
-    phases anyway. `TProbe` is the fit.
+    path dev-dependency. A crate boundary from day one
+    keeps future extraction a file-level move, not a
+    rewrite.
 - **Phase-probed round trip** (`0.13.0-2`):
   `examples/tp_roundtrip.rs`, the same 1p/1c main → worker
   → main round trip as iiac-perf's `zcr-with-2t` /

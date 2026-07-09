@@ -1,0 +1,14 @@
+# Local dev crate: hardware tick-counter probes for the
+# phase-probed examples. A crate boundary from day one so a
+# future extraction is a file-level move.
+[package]
+name = "tprobe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+description = "Hardware tick-counter probes (TProbe/TProbeSpan)"
+publish = false
+
+[dependencies]
+hdrhistogram = "7"

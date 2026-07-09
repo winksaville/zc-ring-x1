@@ -17,8 +17,8 @@ only shared hot word is the slot seq. Verify from this repo
 trip — so the measurement is reproducible here. Details:
 [chores section](chores/chores-02.md#perf-explore-spsc-vs-mpsc-2t-gap).
 
-- 0.13.0-0 docs: 2t gap exploration plan (current)
-- 0.13.0-1 feat: 2t gap tprobe dev crate
+- 0.13.0-0 docs: 2t gap exploration plan (done)
+- 0.13.0-1 feat: 2t gap tprobe dev crate (done)
 - 0.13.0-2 feat: 2t gap probed roundtrip example
 - 0.13.0-3 docs: 2t gap measurements + findings
 - 0.13.0 perf: explore spsc vs mpsc 2t gap (close-out)
