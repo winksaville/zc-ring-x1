@@ -84,7 +84,7 @@ Decisions (the versioning discussion, folded in):
 
 ## perf: explore spsc vs mpsc 2t gap
 
-Commits: [[7]],[[8]],[[9]],[[10]],[[11]],[[12]]
+Commits: [[7]],[[8]],[[9]],[[10]],[[11]],[[12]],[[13]]
 
 Picks up the Todo left by the mpsc cycle's
 [Outcome: the 2t surprise](chores-01.md#outcome-the-2t-surprise)
@@ -372,6 +372,50 @@ the ~26% latency gap. The 2t gap itself also reproduces at
   seeded `tprobe/notes/design.md` and
   `tprobe/notes/chores/chores-01.md`)
 
+## feat: tp-matrix perf counters + tables
+
+Commits:
+
+Reproducing the 0.13.0 measurement tables takes perf(1), a
+bash loop, and hand-scraping of the mean/stdev lines and
+counter values — reproducible in principle, unreasonable in
+practice. This cycle makes it one command, all Rust: a
+`tp-matrix` binary runs every flavor × placement cell
+in-process, collects the cache-fill counters itself, and
+prints the finished markdown tables. Plan:
+
+- **Perf counter module** (`0.14.0-1`): `tp_runner` grows a
+  Linux-only `perf` module wrapping `perf_event_open` —
+  counters opened per-process with `inherit` so spawned
+  worker threads count, user-mode only, enabled around the
+  measured cell and read after.
+  - The Zen 2 events are raw PMU encodings (event `0x43`
+    `ls_refills_from_sys`, one umask bit per source),
+    hardcoded with a comment; `0.14.0-3` verifies them A/B
+    against `perf stat`.
+  - Dependency choice (`perf-event2` wrapper vs hand-rolled
+    `libc` syscall) decided at implementation — the wrapper
+    wins if it supports `inherit` cleanly.
+- **Cells bin + tables** (`0.14.0-2`): a new workspace
+  member `tp_matrix/` (bin; deps: zc-ring-x1, tprobe,
+  tp_runner — no dependency cycles, installable via
+  `cargo install --path tp_matrix`) that runs the 8 cells
+  (spsc/mpsc × same-CCX / cross-CCX / SMT / unpinned,
+  placements discovered from `/sys` topology as the demo
+  does) and emits the chores-style phase + spin tables with
+  `fills/RT` computed from its own counters.
+  - The flavor cell runners move to (or are shared with)
+    `tp_matrix`; `examples/tp_roundtrip.rs` stays the
+    single-cell tool.
+- **README + verification** (`0.14.0-3`): replace the
+  scrape-by-hand steps of tprobe/README.md's
+  "Reproducing the measurement matrix" with "run
+  `tp-matrix`"; record the A/B counter verification (raw
+  encodings vs `perf stat`) here.
+- Preparation also removed the stray `*-pin-*.txt` raw
+  files accidentally committed at the 0.13.0 close-out and
+  added a `.gitignore` guard for the pattern.
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/2ea448654c9a "2ea448654c9a4b7f758e017d56161d9d731ab425"
@@ -386,3 +430,4 @@ the ~26% latency gap. The 2t gap itself also reproduces at
 [10]: https://github.com/winksaville/zc-ring-x1/commit/21f1d1d21c93 "21f1d1d21c93186f2fd010431e8bfb75be5d67f8"
 [11]: https://github.com/winksaville/zc-ring-x1/commit/10c085ab8be5 "10c085ab8be5f1c9a0357fb608adbac592c154ba"
 [12]: https://github.com/winksaville/zc-ring-x1/commit/7c9d7bcd5278 "7c9d7bcd5278c2bdb7b2d5d4a83e335b7a5c9582"
+[13]: https://github.com/winksaville/zc-ring-x1/commit/fd1d6d0ace18 "fd1d6d0ace18c4400d7939565d5f3d4432a3fde1"

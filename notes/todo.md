@@ -6,7 +6,22 @@ uses links or reference links for more details.
 
 ## In Progress
 
-_No cycle currently in progress._
+**feat: tp-matrix perf counters + tables**
+
+Reproducing the 0.13.0 measurement tables takes perf(1), a
+bash loop, and hand-scraping (see
+[Reproducing the measurement matrix](../tprobe/README.md#reproducing-the-measurement-matrix)).
+Make it one command: a `tp-matrix` binary runs every
+flavor × placement cell in-process, collects the cache-fill
+counters itself via `perf_event_open`, and emits the
+markdown tables. Also removes the stray `*-pin-*.txt` raw
+files accidentally committed at the 0.13.0 close-out.
+
+- 0.14.0-0 docs: tp-matrix plan + txt cleanup (current)
+- 0.14.0-1 feat: tp-matrix perf counter module
+- 0.14.0-2 feat: tp-matrix cells bin + tables
+- 0.14.0-3 docs: tp-matrix README + verification
+- 0.14.0 feat: tp-matrix perf counters + tables (close-out)
 
 ## Todo
 
@@ -51,22 +66,7 @@ _No cycle currently in progress._
      where transfers ≈ 0 — the protocol itself is cheaper);
    - costs a seq array in the layout (layout_version bump)
      — measure A/B with tp_roundtrip before adopting.
-4. tp-matrix: in-process perf counters + table emitter, so
-   reproducing the measurement tables is one command with
-   no perf(1)/bash/scraping:
-   - tp_runner grows a Linux `perf` module wrapping
-     `perf_event_open` (inherit on, so worker threads
-     count; raw Zen 2 `ls_refills_from_sys` encodings,
-     verified A/B against `perf stat`) and a `tp-matrix`
-     bin that runs every flavor × placement cell
-     in-process and emits the chores-style markdown
-     tables;
-   - installable: `cargo install --path tp_runner`;
-   - replaces the scrape-by-hand steps of
-     [Reproducing the measurement matrix](../tprobe/README.md#reproducing-the-measurement-matrix);
-   - also the measurement tool for the seam-word SPSC
-     variant's A/B (Todo #3).
-5. Batch alloc/free demo: alongside the one-message
+4. Batch alloc/free demo: alongside the one-message
    alloc_free_1t loops, a variant that allocs X messages
    (5, 10, …) then frees them all, pool vs global
    allocator. We think the pool's rate stays constant
@@ -74,12 +74,12 @@ _No cycle currently in progress._
    the working set hot) while Box::new/drop slows as the
    batch outgrows malloc's thread-cache fast path — the
    demo should show it.
-6. Endpoint claims word: CAS-claimed producer/consumer roles
+5. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
    [details](ring-buffer-design.md#resolved-questions).
-7. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
+6. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot_with [details](ring-buffer-design.md#api).
 

@@ -3,3 +3,6 @@
 /.git
 /.jj
 /.vc-x1
+# Raw per-cell outputs from the measurement-matrix recipe
+# (tprobe/README.md); never committed.
+/*-pin-*.txt
