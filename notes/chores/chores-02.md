@@ -415,6 +415,27 @@ prints the finished markdown tables. Plan:
 - Preparation also removed the stray `*-pin-*.txt` raw
   files accidentally committed at the 0.13.0 close-out and
   added a `.gitignore` guard for the pattern.
+- During `-2` the `tp_roundtrip` example was replaced by the
+  installable `tp-cell` bin (requested at `-1`: a proper
+  name and `cargo install`-ability; examples can't install).
+
+### Counter verification (0.14.0-3)
+
+Two A/B checks pin the in-process counters to perf(1):
+
+- **Raw encodings**: `perf stat -e
+  ls_refills_from_sys.ls_mabresp_lcl_cache,r0243` over one
+  run counted **94,173,065 on both** — the raw `0x0243`
+  (umask `0x02` << 8 | event `0x43`) is bit-identical to the
+  named event; the l2 (`0x01`) and dram (`0x08`) umasks
+  land in the right magnitudes across runs.
+- **In-process vs perf(1)**: `perf stat -e …lcl_cache --
+  tp-cell spsc -d 5 --pin 0,1` — tp-cell's own counter read
+  209,239,903 while perf counted 209,241,246 (+0.0006%,
+  perf's window covers process setup outside the cell's
+  enable window). fills/RT from tp-cell (9.93–10.07 spsc,
+  ~6.6 mpsc across smoke runs) matches the 0.13.0
+  perf-stat-based tables.
 
 # References
 

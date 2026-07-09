@@ -17,6 +17,11 @@ their workload closures.
   checked every 4096 iterations; the counter skips `STOP` so
   callers can use it as a shutdown sentinel.
 - `report` — flavor header + phase reports in trip order.
+- `perf` (Linux) — per-process hardware event counters via
+  `perf_event_open` (`inherit`, user-mode only), with the
+  AMD Zen 2 demand-fill raw encodings.
+- `topo` — placement discovery from `/sys`: same-L3,
+  cross-L3, SMT-sibling pin pairs plus unpinned.
 
 Deliberately not a benchmark harness — no adaptive loop
 sizing, overhead calibration, or bench registry. Needing
@@ -30,9 +35,10 @@ cargo build -p tp_runner
 
 ## Run
 
-Nothing to install — it's a library; run it through an
-example, e.g.:
+Nothing to install — it's a library; the workspace's
+`tp_matrix` crate (the `tp-cell` / `tp-matrix` binaries)
+exercises it end to end:
 
 ```sh
-cargo run --release --example tp_roundtrip -- both -d 5 --pin 0,1
+cargo run --release -p tp_matrix --bin tp-cell -- both -d 5 --pin 0,1
 ```

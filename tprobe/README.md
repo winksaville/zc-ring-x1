@@ -43,61 +43,29 @@ cargo test -p tprobe
 ## Run
 
 tprobe is a library — nothing to install. The workspace's
-phase-probed example exercises it end to end (see the sibling
+`tp_matrix` crate exercises it end to end (see the sibling
 `tp_runner` crate for the runner half):
 
 ```sh
-cargo run --release --example tp_roundtrip -- both -d 5 --pin 0,1
+cargo run --release -p tp_matrix --bin tp-cell -- both -d 5 --pin 0,1
 ```
 
 ## Reproducing the measurement matrix
 
 The workspace's SPSC-vs-MPSC measurement tables (see
-`notes/chores/chores-02.md`) come from running the example
-per flavor × placement under `perf stat`, so one run yields
-both the phase histograms and the cross-core cache-fill
-counters:
+`notes/chores/chores-02.md`) are one command — every
+flavor × placement cell, in-process cache-fill counters,
+markdown tables out:
 
 ```sh
-cargo build --release --examples
-BIN=target/release/examples/tp_roundtrip
-EV=ls_refills_from_sys.ls_mabresp_lcl_cache,\
-ls_refills_from_sys.ls_mabresp_lcl_l2,\
-ls_refills_from_sys.ls_mabresp_lcl_dram
-for flavor in spsc mpsc; do
-  for pin in 0,1 0,3 0,12 none; do
-    if [ "$pin" = none ]; then
-      perf stat -e "$EV" -- "$BIN" "$flavor" -d 10 --decimals 3 \
-        > "$flavor-pin-${pin/,/}.txt" 2>&1
-    else
-      perf stat -e "$EV" -- "$BIN" "$flavor" -d 10 --decimals 3 \
-        --pin "$pin" > "$flavor-pin-${pin/,/}.txt" 2>&1
-    fi
-  done
-done
+cargo install --path tp_matrix   # installs tp-cell + tp-matrix
+tp-matrix -d 10
 ```
 
-Notes on the pieces:
-
-- `ls_refills_from_sys.*` are AMD Zen 2 events;
-  `ls_mabresp_lcl_cache` counts demand fills served from
-  another core's cache — the cross-core line-transfer
-  signal. On another microarchitecture substitute its
-  equivalent (check `perf list`).
-- Pick placements from your topology:
-  `cat /sys/devices/system/cpu/cpu0/cache/index3/shared_cpu_list`
-  shows cpu0's L3 (CCX) group, and
-  `.../cpu0/topology/thread_siblings_list` its SMT sibling —
-  choose a same-L3 pair, a cross-L3 pair, and the sibling
-  pair.
-- Table cells: each probe's `mean min-p99` / `stdev min-p99`
-  report lines are the `mean/stdev` cells; the probe header's
-  `count=` is the round trips (`RTs`); `fills/RT` =
-  `ls_mabresp_lcl_cache` ÷ round trips.
-- The spin/attempts probes cost ~20% throughput and
-  slightly inflate the phase means (the waits absorb the
-  peer's instrumentation). The chores Measurements table
-  was produced by the example *before* the spin probes
-  landed (its commit is on the section's `Commits:` line);
-  reproducing it exactly means checking out that commit —
-  at HEAD every run includes the spin decomposition.
+See [tp_matrix/README.md](../tp_matrix/README.md) for the
+flags, the single-cell `tp-cell` tool, and the counter
+requirements. Historical note: the 0.13.0 tables in
+`notes/chores/chores-02.md` predate `tp-matrix` and were made
+with `perf stat` + hand-scraping; the recipe lives in that
+file's cycle record, and the commits on its `Commits:` line
+reproduce it exactly.

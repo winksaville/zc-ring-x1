@@ -22,7 +22,7 @@ files accidentally committed at the 0.13.0 close-out.
 - 0.14.0-2 feat: tp-matrix cells bin + tables (done) —
   also replaces the tp_roundtrip example with the
   installable tp-cell bin (single cell, better name)
-- 0.14.0-3 docs: tp-matrix README + verification
+- 0.14.0-3 docs: tp-matrix README + verification (done)
 - 0.14.0 feat: tp-matrix perf counters + tables (close-out)
 
 ## Todo

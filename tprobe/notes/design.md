@@ -48,17 +48,20 @@ display `Unit` is chosen at report time:
   values (e.g. spin attempts) that must never go through
   tick→ns conversion.
 
-## The tprobe / tp_runner split
+## The tprobe / tp_runner / tp_matrix split
 
 Probes (this crate) are the measurement primitives; the
 runner (CLI config, thread pinning, the fixed-duration
-round-trip drive loop, report ordering) is generic example
-machinery, not measurement — so it lives in the sibling
-`tp_runner` crate. `tp_runner::drive` deliberately measures
-nothing itself: probing lives in the caller's closures, so
-each experiment controls exactly what a probe brackets and
-records after its phase-end tick read, off the measured
-path.
+round-trip drive loop, report ordering, perf counters,
+topology discovery) is generic machinery, not measurement —
+so it lives in the sibling `tp_runner` crate; and the
+concrete experiment (the zc-ring round-trip cells and the
+`tp-cell` / `tp-matrix` binaries) is the third sibling,
+`tp_matrix`, the only one that knows about rings.
+`tp_runner::drive` deliberately measures nothing itself:
+probing lives in the caller's closures, so each experiment
+controls exactly what a probe brackets and records after its
+phase-end tick read, off the measured path.
 
 Neither crate is a benchmark harness: no adaptive loop
 sizing, overhead calibration, or bench registry. Needing
