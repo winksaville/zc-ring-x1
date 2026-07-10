@@ -463,6 +463,19 @@ Two A/B checks pin the in-process counters to perf(1):
 - `0.14.0` feat: tp-matrix perf counters + tables
   (close-out)
 
+## docs: move development to zc-msg-x1
+
+Commits:
+
+Development moves to
+[zc-msg-x1](https://github.com/winksaville/zc-msg-x1) to
+focus on the MPSC messaging layer; zc-ring-x1 freezes as the
+ring-protocol lab notebook (SPSC + MPSC, tp-matrix, measured
+findings — nothing deleted). The full plan — MPSC-only
+rationale, portable-atomic for no-CAS targets, endpoint
+decisions, benches/examples library shape, seeding — lives
+in [notes/zc-msg-x1.md](../zc-msg-x1.md).
+
 # References
 
 [1]: https://github.com/winksaville/zc-ring-x1/commit/2ea448654c9a "2ea448654c9a4b7f758e017d56161d9d731ab425"

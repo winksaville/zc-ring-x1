@@ -157,10 +157,12 @@ and older `## Done` sections are moved to [done.md](done.md) to keep this file s
 
 - perf: explore spsc vs mpsc 2t gap [[12]]
 - feat: tp-matrix perf counters + tables [[13]]
+- docs: move development to zc-msg-x1 [[14]]
 
 # References
 
 [11]: chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [12]: chores/chores-02.md#perf-explore-spsc-vs-mpsc-2t-gap
 [13]: chores/chores-02.md#feat-tp-matrix-perf-counters--tables
+[14]: chores/chores-02.md#docs-move-development-to-zc-msg-x1
 [21]: chores/chores-02.md#findings-the-gap-is-line-transfer-economics

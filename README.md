@@ -2,6 +2,13 @@
 
 Zero copy ring buffer experiment 1
 
+> **Development has moved to
+> [zc-msg-x1](https://github.com/winksaville/zc-msg-x1)**,
+> the follow-on focused on the MPSC messaging layer (ring +
+> pools + endpoints). This repo remains the ring-protocol
+> record — SPSC and MPSC, compared and measured. Why and
+> what moves: [notes/zc-msg-x1.md](notes/zc-msg-x1.md).
+
 This is the main repo of a dual-repo convention for using
 a bot to help develop the code.
 
