@@ -80,7 +80,7 @@ msg.release(); // slot is free for reuse
 Status: an experiment. SPSC only; attaching to an existing
 shared-memory region is `unsafe` (see `Ring::attach`); planned
 hardening and follow-ons are tracked in
-[notes/todo.md](notes/todo.md).
+[TODO.md](TODO.md).
 
 ## Message pool
 
@@ -226,7 +226,7 @@ validation rejects unknown ids / bad indices / wrong types,
 but ownership uniqueness is the caller's promise. Paired
 sender/receiver endpoints that encapsulate it — and shrink
 this to loan / send / recv — are the next cycle; see
-notes/todo.md.)
+TODO.md.)
 
 **Trust.** Unchanged from the ring: every word in shared
 memory is untrusted input. The pool validates the head and
@@ -464,7 +464,7 @@ and [notes/cycle-protocol.md](notes/cycle-protocol.md):
   ask-on-ambiguity, stuck detection.
 
 Task tracking and release details live under [notes/](notes/):
-near-term tasks in [notes/todo.md](notes/todo.md), per-release
+near-term tasks in [TODO.md](TODO.md), per-release
 details in `notes/chores/chores-*.md`, and notes-specific
 formatting rules in [notes/README.md](notes/README.md).
 

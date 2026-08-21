@@ -353,7 +353,7 @@ Producer — reserve_slot_with/commit, in place:
   `|_| false` for a single non-blocking probe. `T` geometry is
   asserted against the slot size on each call (a mismatch is a
   programming error, so it panics; typed endpoints that check
-  once are a follow-on — see [todo.md](todo.md)).
+  once are a follow-on — see [TODO.md](../TODO.md)).
 - `WriteSlot::commit(self)` — publishes the slot
   (`producer_idx + 1`, `Release`). Dropping without commit
   abandons the reservation (nothing published).
@@ -1053,5 +1053,5 @@ must be laid out together when that header lands.
   producer / consumer role, second claimant gets an error),
   which also catches in-process double-attach; costs a
   layout_version bump (or spends `_pad0`). Promoted to a
-  `## Todo` entry in [todo.md](todo.md); the documented
+  `## Todo` entry in [TODO.md](../TODO.md); the documented
   contract stands until then.

@@ -10,7 +10,7 @@ yet); the See-also links below are the current content.
   per-subcommand usage.
 - [`AGENTS.md`](AGENTS.md) — bot workflow, versioning,
   commit/push conventions, code conventions.
-- [`notes/todo.md`](notes/todo.md) — live task list
+- [`TODO.md`](TODO.md) — live task list
 - [`notes/chores/`](notes/chores) — chores-*.md files contain
   discussion and notes on various chores in github compatible
   markdown.

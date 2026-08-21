@@ -3,8 +3,8 @@
 This directory contains various notes and documentation related to the project.
 Each file is organized by topic for easy reference.
 
-By default there are chores/chores-*.md and todo.md. Chores are general notes
-about tasks and todo.md contains short term tasks and their status.
+By default there are chores/chores-*.md, and the task list is `../TODO.md`. Chores are general notes
+about tasks and TODO.md contains short term tasks and their status.
 The chores-NN files are numbered in sequence; as a chores file grows
 large the next one is opened ([chores/chores-02.md](chores/chores-02.md)
 is the active one), and earlier ones are closed and

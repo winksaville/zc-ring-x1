@@ -1,6 +1,6 @@
 # Todo
 
-This file uses [Prose form](../AGENTS.md#prose-form). It
+This file uses [Prose form](agent-data/prose.md#prose-form). It
 contains near term tasks with a short description and
 uses links or reference links for more details.
 
@@ -12,13 +12,13 @@ _No cycle currently in progress._
 
  Entries are in **strict priority rank** — #1 highest,
  descending. Reprioritize by moving an entry, then
- `vc-x1 fix-todo --no-dry-run notes/todo.md` to renumber.
+ `vc-x1 fix-todo --no-dry-run TODO.md` to renumber.
  The numbers are positional rank, not stable IDs — to refer
  to a Todo, name it by its **title** (a greppable mention;
  a numbered list item has no anchor to link to), not its
  number. Long-tail entries
- live in [todo-backlog.md](todo-backlog.md). Use the
- [Prose Form in AGENTS.md](../AGENTS.md#prose-form); deeper
+ live in [todo-backlog.md](notes/todo-backlog.md). Use the
+ [Prose Form in AGENTS.md](agent-data/prose.md#prose-form); deeper
  detail goes in `notes/chores/chores-NN.md` design
  subsections (link via `[N]` ref).
 
@@ -34,12 +34,12 @@ _No cycle currently in progress._
      overflow pending list will live.
 2. Overflow FIFO: on ring Full, append the message to a
    sender-private pending list instead of failing
-   [details](ring-buffer-design.md#overflow-fifo-future):
+   [details](notes/ring-buffer-design.md#overflow-fifo-future):
    - intrusive — the same embedded next-link the
      free-stack uses, so zero allocation;
    - naturally bounded by pool capacity;
    - composes per-sender with MPSC — see
-     [Overflow readiness](ring-buffer-design.md#overflow-readiness).
+     [Overflow readiness](notes/ring-buffer-design.md#overflow-readiness).
 3. Seam-word SPSC variant: publish per-slot seq words so
    neither side ever reads the other's index line —
    Vyukov-style publish but load/store only (no CAS: the
@@ -63,10 +63,17 @@ _No cycle currently in progress._
    in the ring header so a second attach/split claimant gets
    an error instead of silently violating SPSC; costs a
    layout_version bump (or spends `_pad0`)
-   [details](ring-buffer-design.md#resolved-questions).
+   [details](notes/ring-buffer-design.md#resolved-questions).
 6. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
-   reserve_slot_with [details](ring-buffer-design.md#api).
+   reserve_slot_with [details](notes/ring-buffer-design.md#api).
+7. Simplify the cycle record: keep `## In Progress` and delete the block at close-out.
+   Retire the chores move (heading shift, ref renumbering, link rebasing), the commits
+   backfill, and the `## Done` / `done.md` migration; jj holds the commit record and the
+   trapezoid merge on `main` is the cycle's landmark. Family-wide convention change, its own
+   cycle across notes.md, cycle-protocol.md, cycle-checklists.md, cycle-model.md,
+   rationale.md, and AGENTS.md's Opening and Close-out. Decide whether existing
+   `notes/chores/` files freeze as history.
 
 ## Ideas
 
@@ -81,7 +88,7 @@ _No cycle currently in progress._
 - Fan-in helper: consumer-side composition polling N SPSC
   rings under a pluggable service policy (priority,
   round-robin, weighted)
-  [details](ring-buffer-design.md#fan-in-composition-not-a-mode):
+  [details](notes/ring-buffer-design.md#fan-in-composition-not-a-mode):
   - buildable today from shipped parts;
   - likely offered alongside the MPSC ring eventually — no
     commitment yet.
@@ -89,7 +96,7 @@ _No cycle currently in progress._
   before implementing message pools — battle-tested loan/send
   decoupling and pool-offset machinery; how it differs from
   this project in
-  [Prior art: iceoryx2](ring-buffer-design.md#prior-art-iceoryx2).
+  [Prior art: iceoryx2](notes/ring-buffer-design.md#prior-art-iceoryx2).
 - `#[global_allocator]` experiment over size-class pools:
   GlobalAlloc is `&self` + any-thread, so it needs
   shared-allocation pools (phase 2 gen-tagged head) or
@@ -113,7 +120,7 @@ _No cycle currently in progress._
   (read tag, match, cast) without per-call-site ceremony,
   and maybe a transport seam so an embedded
   pointer-descriptor profile slots in behind the same API
-  [details](ring-buffer-design.md#descriptor-and-registry-design-070).
+  [details](notes/ring-buffer-design.md#descriptor-and-registry-design-070).
 - BufSlot auto-free on Drop (RAII, iceoryx2-style): kills the
   silent leak-on-drop footgun at the cost of guard-type
   asymmetry (ring guards' drop = do-nothing) and a
@@ -123,7 +130,7 @@ _No cycle currently in progress._
 - Blocking layer above the crate (futex, eventfd, async
   wakers) built on the header's user line — mechanism and
   contracts in
-  [Blocking and user words](ring-buffer-design.md#blocking-and-user-words);
+  [Blocking and user words](notes/ring-buffer-design.md#blocking-and-user-words);
   possibly a companion wrapper crate so independent peers
   share one protocol.
 - loom-based exhaustive ordering exploration of the SPSC
@@ -150,19 +157,7 @@ _No cycle currently in progress._
   compile-fail harness lands there too (pins the
   "second reservation does not compile" guarantee).
 
-## Done
-
-Completed tasks are moved from `## Todo` to here, `## Done`, as they are completed
-and older `## Done` sections are moved to [done.md](done.md) to keep this file small.
-
-- perf: explore spsc vs mpsc 2t gap [[12]]
-- feat: tp-matrix perf counters + tables [[13]]
-- docs: move development to zc-msg-x1 [[14]]
-
 # References
 
-[11]: chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[12]: chores/chores-02.md#perf-explore-spsc-vs-mpsc-2t-gap
-[13]: chores/chores-02.md#feat-tp-matrix-perf-counters--tables
-[14]: chores/chores-02.md#docs-move-development-to-zc-msg-x1
-[21]: chores/chores-02.md#findings-the-gap-is-line-transfer-economics
+[11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
+[21]: notes/chores/chores-02.md#findings-the-gap-is-line-transfer-economics

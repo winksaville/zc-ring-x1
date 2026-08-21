@@ -1,8 +1,8 @@
 # Done
 
-As todo.md `## Done` sections fills move them to here.
+As `TODO.md`'s `## Done` section fills, move entries here.
 
-See [Todo format](../AGENTS.md#todo-format)
+See [Todo format](../agent-data/notes.md#todo-format)
 
 - docs: zero-copy ring buffer design [[1]]
 - refactor: ring buffer symmetric reserve_slot API [[2]]
@@ -23,6 +23,9 @@ See [Todo format](../AGENTS.md#todo-format)
 - docs: refresh iiac-perf numbers, seam closed [[18]]
 - feat: mpsc ring sibling primitive [[19]]
 - refactor: versioned primitive module dirs [[20]]
+- perf: explore spsc vs mpsc 2t gap [[21]]
+- feat: tp-matrix perf counters + tables [[22]]
+- docs: move development to zc-msg-x1 [[23]]
 
 # References
 
@@ -45,3 +48,6 @@ See [Todo format](../AGENTS.md#todo-format)
 [18]: chores/chores-01.md#docs-refresh-iiac-perf-numbers-seam-closed
 [19]: chores/chores-01.md#feat-mpsc-ring-sibling-primitive
 [20]: chores/chores-02.md#refactor-versioned-primitive-module-dirs
+[21]: chores/chores-02.md#perf-explore-spsc-vs-mpsc-2t-gap
+[22]: chores/chores-02.md#feat-tp-matrix-perf-counters--tables
+[23]: chores/chores-02.md#docs-move-development-to-zc-msg-x1
