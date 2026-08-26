@@ -6,7 +6,135 @@ uses links or reference links for more details.
 
 ## In Progress
 
-_No cycle currently in progress._
+### docs: fix close-out and sweep punctuation
+
+#### Problem
+
+The last cycle was single-step and its close-out went wrong: the work-repo commit carried the
+bare title while the agent-repo carried the title plus " closing", the `ochid:` trailers did
+not match, and the agent-repo held two commits for the one rung. The repair was by hand
+(`jj desc -R .claude`, a squash, `vc-x1 validate-desc`). The cycle's record also never
+reached `notes/chores/` or a `## Done` entry: the In Progress block was deleted at close-out
+instead of moved. The agent-files describe the close-out for the multi-step shape and leave the
+single-step case to two asides (cycle-model.md, prose.md), so the agent improvised. Beneath
+that, the record the close-out was meant to write (the chores move, the `## Done` entry, the
+`done.md` migration, the SHA backfill) was a second copy of what jj holds, and each copy was a
+place to slip.
+
+#### Solution
+
+The agent-files gained a `Cycle shape` section: single-step or multi-step is decided at the
+opening and fixed by the first push, a single-step cycle does all of it in its one commit
+under the bare title in both repos, a pushed single-step commit can be promoted to an opening
+only by a coordinated re-describe, and a ladder lands as trapezoid or keep separate, `squash`
+retired because rung `ochid:` trailers are change ids. They gained `Cycle-record`: the In
+Progress block is the cycle's only record, finalized and moved to `## Closed` by the closing
+commit and deleted by the next opening, nothing backfilled, `notes/chores/` and `notes/done.md`
+frozen as history. Every Opening and Close-out surface (AGENTS.md, cycle-checklists.md,
+cycle-protocol.md, cycle-model.md, notes.md, prose.md, jj.md, versioning.md, rationale.md)
+was rewritten to those two rules, the superseded `notes/cycle-protocol.md` and
+`notes/versioning.md` removed, and README, ARCHITECTURE, notes/README, and done.md repointed.
+
+#### Acceptance check
+
+Reading AGENTS.md's Close-out and its linked files answers, for a single-step cycle, each of:
+the commit title (bare, identical in both repos), the number of pushes (one), the record's
+destination, and the Land sequence, without consulting the multi-step case by analogy. No
+agent-file offers `squash` as a close-out shape, and the shape is named as decided at the
+opening. The next single-step cycle lands with `vc-x1 validate-desc -n 3` clean in both repos
+and identical titles.
+
+#### Ladder
+
+- [docs: fix close-out and sweep punctuation opening][1] (done)
+- [docs: cycle shape and cycle-record rules][2]
+- [docs: retire the notes copies and sweep their semicolons][3]
+- [docs: sweep typeable punctuation][4]
+- [docs: fix close-out and sweep punctuation closing][5]
+
+#### Deliberation
+
+- Shape: multi-step, decided before the first push, after two reshapes.
+  - Drafted multi-step, reshaped to single-step when the shape rule made the first push the
+    deciding moment, reshaped back when the work grew to four subjects (the shape rules, the
+    cycle-record, the notes cleanup, the punctuation sweeps) that no one commit body could
+    carry honestly.
+  - Nothing had been pushed on either bookmark, so the shape was still open.
+  - The single-step working copy is a local stash commit on the first bookmark,
+    `docs-fix-single-step-close-out`, which stays until Land. The rungs pull their files
+    from it.
+- Title: `docs: fix close-out and sweep punctuation`, changed with the reshape from
+  `docs: fix single-step close-out`.
+  - The sweeps and the cycle-record are half the work, and the bookmark carries the slug.
+- Squash retired as a close-out shape, and the shape fixed at the first push.
+  - The `ochid:` trailers are change ids. Squashing a work-repo ladder keeps one chid and
+    drops the rest, so every agent-repo commit that pointed at a dropped rung dangles
+    (`validate-desc` reports `not found`).
+  - Repairing that means re-describing N agent-repo commits, which the rules forbid, and
+    squashing the agent-repo to match discards the per-rung session narrative it exists to
+    keep.
+  - Trapezoid and keep separate keep every chid alive, and `git log --first-parent` already
+    reads the trapezoid as one commit per cycle, which is what squash was buying.
+  - Folded into this cycle rather than its own because it is the same subject, close-out
+    shape, in the same files.
+- Record retirement: Todo "Simplify the cycle record" folded in, at the user's call.
+  - First held out as its own cycle. Writing the single-step close-out out as explicit steps
+    showed the chores move, the `## Done` entry, and the backfill were copies of what jj
+    holds.
+  - The existing `notes/chores/` and `notes/done.md` freeze as history rather than being
+    removed, since Todo entries link into them.
+- `## Closed` instead of deletion, one deviation from that Todo's wording.
+  - A commit that finalizes and deletes the block in one diff leaves the final form in no
+    tree, so the closing commit moves it to `## Closed` and the next opening deletes it,
+    which keeps the file from growing.
+  - A finished cycle left under `## In Progress` reads as a lie, and `tmp/` is gitignored,
+    which is the no-tree loss again.
+- Acceptance check: a reading test rather than a run.
+  - The only run is the next single-step cycle, recorded as the check's second half. This
+    cycle, being multi-step, exercises the multi-step path instead, the trapezoid included.
+
+#### Ladder details
+
+##### docs: fix close-out and sweep punctuation opening
+
+The cycle's setup commit: create and publish the bookmark, move the Todo entry into this block,
+bump the version-of-record, and rename the package to its dev name.
+
+* Eleven zero-byte read-only dotfiles (`.bashrc`, `.gitconfig`, `.idea`, `.vscode`, ...) appear
+  at the repo root and show as added in every `jj st`. They are bind mounts the agent sandbox
+  places there, so jj cannot delete them, and a checkout of a tree that tracks them to one that
+  does not leaves the working copy stale.
+  - `.gitignore` names them and they are untracked, so no tree tracks them and no checkout has
+    to remove them.
+
+##### docs: cycle shape and cycle-record rules
+
+The agent-files say what a single-step cycle is and that it keeps the bare title, but nowhere
+say what its one commit does at close-out, offer a `squash` close-out shape that breaks the
+`ochid:` links, and keep a cycle's record in three copies (the block, the chores move, the
+`## Done` entry). Write `Cycle shape` and `Cycle-record` into AGENTS.md and the files it links,
+and rewrite every Opening and Close-out surface to them.
+
+##### docs: retire the notes copies and sweep their semicolons
+
+`notes/cycle-protocol.md` and `notes/versioning.md` are pre-agent-data copies of files now
+under `agent-data/`, and README, ARCHITECTURE, notes/README, and done.md describe chores as
+the live record and link into the copies. Remove the copies, repoint the four, and convert the
+prose semicolons the touch rule makes due in the files this rung edits.
+
+##### docs: sweep typeable punctuation
+
+The files this cycle touches carry about seventy em dashes, en dashes, ellipses, and arrows,
+which the typeable-punctuation rule makes due on touch. Convert each with the structural
+decision the rule asks for, re-pointing any anchor a heading conversion moves.
+
+##### docs: fix close-out and sweep punctuation closing
+
+Closing out the cycle.
+
+## Closed
+
+_None._
 
 ## Todo
 
@@ -18,9 +146,8 @@ _No cycle currently in progress._
  a numbered list item has no anchor to link to), not its
  number. Long-tail entries
  live in [todo-backlog.md](notes/todo-backlog.md). Use the
- [Prose Form in AGENTS.md](agent-data/prose.md#prose-form); deeper
- detail goes in `notes/chores/chores-NN.md` design
- subsections (link via `[N]` ref).
+ [Prose Form in AGENTS.md](agent-data/prose.md#prose-form). Deeper
+ detail goes in a `notes/` design file (link via `[N]` ref).
 
 1. Descriptor queue endpoints: paired DescSender (loan +
    send) / DescReceiver (recv) [[11]]:
@@ -67,13 +194,6 @@ _No cycle currently in progress._
 6. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
    `T`'s geometry once at split instead of asserting on every
    reserve_slot_with [details](notes/ring-buffer-design.md#api).
-7. Simplify the cycle record: keep `## In Progress` and delete the block at close-out.
-   Retire the chores move (heading shift, ref renumbering, link rebasing), the commits
-   backfill, and the `## Done` / `done.md` migration; jj holds the commit record and the
-   trapezoid merge on `main` is the cycle's landmark. Family-wide convention change, its own
-   cycle across notes.md, cycle-protocol.md, cycle-checklists.md, cycle-model.md,
-   rationale.md, and AGENTS.md's Opening and Close-out. Decide whether existing
-   `notes/chores/` files freeze as history.
 
 ## Ideas
 
@@ -159,5 +279,10 @@ _No cycle currently in progress._
 
 # References
 
+[1]: #docs-fix-close-out-and-sweep-punctuation-opening
+[2]: #docs-cycle-shape-and-cycle-record-rules
+[3]: #docs-retire-the-notes-copies-and-sweep-their-semicolons
+[4]: #docs-sweep-typeable-punctuation
+[5]: #docs-fix-close-out-and-sweep-punctuation-closing
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [21]: notes/chores/chores-02.md#findings-the-gap-is-line-transfer-economics
