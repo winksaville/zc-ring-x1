@@ -19,8 +19,8 @@ Project-local content goes in [custom.md](../custom.md).
   file's, reached by the same pattern (`[why](rationale.md#<same-slug>)` from inside
   `agent-data/`). The other agent-files' remaining inline **Why:** paragraphs migrate as they
   are touched, the full sweep filed as its own cycle.
-- **An entry is the why, then the evidence**: back references to the chores section where the
-  rule was paid for, the messages-repo record, the commit. Mostly pointers,
+- **An entry is the why, then the evidence**: back references to the cycle where the rule was
+  paid for, the messages-repo record, the commit. Mostly pointers,
   not a re-telling. The "measured YYYY-MM-DD" lines live here, with the story.
 - **A boundary sentence is not rationale.** A sentence saying what a rule does not cover is the
   rule, and stays in AGENTS.md. What moves here is argument: why the rule exists, what it cost
@@ -92,6 +92,10 @@ _None recorded._
 
 _None recorded._
 
+### Shape at the first push
+
+Under [Cycle shape](#cycle-shape).
+
 
 ## Terminology
 
@@ -105,11 +109,10 @@ _None recorded._
 
 ## Cycle protocol
 
-The record has one home at a time so it is never written twice. The alternative keeps a
-working ladder in `TODO.md` and an as-built ladder in chores, so every rung is written twice
-and every backfill applied twice, and detail written twice drifts (the same argument that
-keeps the edit list out of the commit body, notes.md's
-[Chores section content](notes.md#chores-section-content-no-edit-list-git-is-the-record)).
+The record has one home and is written once. Earlier forms kept a working ladder in `TODO.md`
+and an as-built ladder in chores, so every rung was written twice and every backfill applied
+twice, and detail written twice drifts (the same argument that keeps the edit list out of the
+commit body).
 
 ### Cycles run on a bookmark
 
@@ -127,15 +130,40 @@ before landing so the branch reads as one coherent ladder. Amending content rath
 re-describing keeps hard rule 4 intact and lets the `ochid:` trailers ride along: they carry
 change ids, which survive a rewrite.
 
-### Opening
+### Cycle shape
 
-**Backfill first.** The 0.80.0 and 0.80.1 as-built rungs were both found unfilled at the
-0.80.2 opening (measured 2026-08-21): backfill was named only at close-out, as "the edits ride
-the next push", which names no owner, and the Opening's steps never mentioned it, so the only
-place the rule lived was the one moment hard rule 3 forbids acting on it. The previous cycle's
-rungs are the usual hits of the check. Not folded into the Done sweep, which is already a
-compound step, and a step with two halves is where the second half hides. Recorded in the
-"docs: halve AGENTS.md into rationale.md" chores section.
+The `ochid:` trailers are change ids. Squashing a work-repo ladder keeps one chid and drops
+the rest, so every agent-repo commit that pointed at a dropped rung is left with a dangling
+link (`vc-x1 validate-desc` reports `not found`). Repairing that means re-describing N
+agent-repo commits, which hard rule 4 forbids, and squashing the agent-repo to match discards
+the per-rung session narrative the agent-repo exists to keep. So squash is not a close-out
+shape, and since the only remaining shapes keep every rung, the one-commit-or-ladder choice has
+to be made before the first push writes the first trailer. The one exception, promoting a
+pushed single-step commit to an opening, is a coordinated re-describe: the change id and the
+trailer survive it, which is what a squash cannot offer. Trapezoid already gives `main` a
+one-commit-per-cycle read under `git log --first-parent`, which is what squash was buying.
+
+### Cycle-record
+
+The chores move, the `## Done` entry, the `done.md` migration, and the SHA backfill were
+retired together (2026-08-26) because each was a second copy of what jj already holds: the
+move rewrote the block through four transforms, two of which fail silently, the Done entry
+restated the title and version the commit carries, and the backfill wrote SHAs one push late
+and was found unfilled at the next opening twice (measured 2026-08-21). `git log --grep` on
+the cycle title finds the commits, the landmark on `main` holds the finished block in its
+tree, and the trailer names the session. What the block cannot keep, a design finding, was
+already going to `notes/` design files, and now goes there by rule. The finished block moves
+to `## Closed` rather than being deleted by the closing commit, because a commit that
+finalizes and deletes in one diff leaves the final form in no tree, and it moves out of
+`## In Progress` because a finished cycle under that heading reads as a lie. The next
+opening deletes it because keeping every finished block is unbounded growth, one block per
+cycle forever, which is what made the chores files need splitting at ~1000 lines. Nothing is
+lost by the deletion: the landmark commit holds the block, and the entire conversation that
+produced it is in the agent-repo, reached from the commit by its `ochid:` trailer, which we
+hope to have easy access to soon. `tmp/` was considered and rejected because it is
+gitignored, which is the no-tree loss again.
+
+### Opening
 
 **The bookmark create is a push** because `vc-x1 push` requires the bookmark's remote refs to
 be tracked, so the create has to publish, and a publish takes push approval.
@@ -179,8 +207,8 @@ vc-x1 assumes nothing about a repo beyond `.jj` and its config.
 
 No version in title or body because a version is stable only once it lands, and a history
 rewrite can renumber it. No file list because the diff is the mechanical record. No
-deliberation because chores, todo, and the session the `ochid:` trailer names hold that, each
-reachable from the commit by construction.
+deliberation because the cycle-record, todo, and the session the `ochid:` trailer names hold
+that, each reachable from the commit by construction.
 
 No top-level `-` and a pointer body for bookends because the earlier form was read wrong by
 its own author twice in one day (2026-08-22): an opening's body restated the cycle's problem
@@ -216,21 +244,13 @@ continues to resolve.
 
 ### Close-out
 
-_None recorded._
-
-### Chores sections
-
-Anchors survive the heading-level shift because GitHub slugs derive from the heading's text,
-not its level. The renumbered refs and the rebased links are checked by hand because both fail
-silently: a mis-renumbered ref and an un-rebased link render as plain text or a 404 rather than
-erroring.
-
-#### Commits backfill
-
-An as-built rung cites its commit by SHA and records the version that commit carried, and
-neither is stable until the commit lands on a permanent branch: a rebase or squash rewrites
-the SHA on the way, and a history rewrite can renumber the version. A commit cannot record its
-own SHA, which is why the fill is always one push later.
+The finished block moves to `## Closed` so the finalized record exists in a tree
+([Cycle-record](#cycle-record)). The single-step case is spelled out because a single-step close-out went wrong when it was
+left to analogy (2026-08-26): the agent treated the one commit as a closing rung, so the
+agent-repo commit took the title plus " closing" while the work-repo commit kept the bare
+title, the agent-repo held two commits for the one rung, the `ochid:` trailers did not match,
+and the In Progress block was deleted rather than moved, so the cycle reached neither
+`notes/chores/` nor `## Done`. The repair was a hand re-describe and squash.
 
 ### Local ladders
 

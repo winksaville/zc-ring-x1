@@ -16,8 +16,7 @@ Three names, used as defined here across
 [AGENTS.md](../AGENTS.md) and the notes files:
 
 - **version**: the per-commit version (e.g. `0.3.0-5.3.0`). It lives in the manifest. No
-  ladder, todo entry, commit title, or commit body writes one, the one exception being the
-  chores as-built rung recording a landed commit (see
+  ladder, todo entry, commit title, or commit body writes one (see
   [Versions live in the version-of-record only](prose.md#versions-live-in-the-version-of-record-only)),
   and its suffix encodes the cycle phase for whoever inspects the manifest (see
   [Suffix scheme](#suffix-scheme)).
@@ -151,8 +150,7 @@ running artifact identifies the exact commit it came from.
   bump less often: once per cycle, only at release, and so on. Record the choice in
   [Recording the version-of-record](#recording-the-version-of-record) if it differs.
 - It is achievable because the cycle's versions (below) are **pre-assignable**, unlike the git
-  SHA, which a commit cannot contain (see the cycle protocol's
-  [Commits backfill](cycle-protocol.md#commits-backfill)).
+  SHA, which a commit cannot contain.
 
 ## Suffix scheme
 
@@ -163,17 +161,16 @@ suffix, the **final identifier `0` marking a Preparation**.
 This is the manifest's own spelling, read by whoever inspects `Cargo.toml` or `-V` output. It is
 not a name for a step: a step is identified by its title, and an in-flight ladder rung carries
 neither a number nor a version (see
-[Steps are named, not numbered](prose.md#steps-are-named-not-numbered)). The one
-prose surface that records a version is a chores as-built rung, where it is a property of a landed
-commit sitting beside that commit's SHA. The identifiers below count commits within a phase, and
-nothing dereferences one.
+[Steps are named, not numbered](prose.md#steps-are-named-not-numbered)). The identifiers
+below count commits within a phase, and nothing dereferences one.
 
 - `X.Y.Z-0`: Preparation
 - `X.Y.Z-1`, `X.Y.Z-2`, ...: the commits between
 - `X.Y.Z`: Close-out (bare version, no suffix)
 
 **Preparation is optional.** A lightweight cycle, with no ladder and no setup commit, skips `-0`
-and starts at `-1` (its first commit). The same holds at every level: a sub-cycle needing no
+and starts at `-1` (its first commit). A single-step cycle is one commit, the Close-out, and
+carries the bare `X.Y.Z` ([Cycle shape](../AGENTS.md#cycle-shape)). The same holds at every level: a sub-cycle needing no
 Preparation omits its `.0` (see Nesting). One that grows a Preparation later adds the `0` step
 without renumbering siblings.
 

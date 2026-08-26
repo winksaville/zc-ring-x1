@@ -47,9 +47,10 @@ and identical titles.
 #### Ladder
 
 - [docs: fix close-out and sweep punctuation opening][1] (done)
-- [docs: cycle shape and cycle-record rules][2]
+- [docs: cycle shape and cycle-record rules][2] (done)
 - [docs: retire the notes copies and sweep their semicolons][3]
 - [docs: sweep typeable punctuation][4]
+- [docs: rewrap the agent-files to the prose width][6]
 - [docs: fix close-out and sweep punctuation closing][5]
 
 #### Deliberation
@@ -89,6 +90,15 @@ and identical titles.
     which keeps the file from growing.
   - A finished cycle left under `## In Progress` reads as a lie, and `tmp/` is gitignored,
     which is the no-tree loss again.
+- Re-wrap rung: added at the second rung, last before the closing, its own rung.
+  - Eight agent-files carry lines over the 100-column prose width and cycle-protocol.md is
+    wrapped at the old 60 to 75 width nearly throughout. The width rule re-wraps text when
+    touched, and this cycle touches every agent-file, so the re-flow is due.
+  - Its own rung because a re-flow touches nearly every line and would bury the substantive
+    diffs. Last because the punctuation sweep changes line lengths and any earlier re-flow
+    would be redone.
+  - Scope is the agent-files and TODO.md. Other touched files are considered once the diff
+    shows what the sweep actually reaches.
 - Acceptance check: a reading test rather than a run.
   - The only run is the next single-step cycle, recorded as the check's second half. This
     cycle, being multi-step, exercises the multi-step path instead, the trapezoid included.
@@ -115,6 +125,30 @@ say what its one commit does at close-out, offer a `squash` close-out shape that
 `## Done` entry). Write `Cycle shape` and `Cycle-record` into AGENTS.md and the files it links,
 and rewrite every Opening and Close-out surface to them.
 
+* The single-step close-out was left to analogy with the multi-step one.
+  - `Cycle shape`: single-step or multi-step is decided at the opening and fixed by the first
+    push, a single-step cycle does all of it in its one commit under the bare title in both
+    repos, and a pushed single-step commit becomes an opening only by a coordinated
+    re-describe. Opening and Close-out each open with the single-step case.
+* `squash` was offered as a close-out shape, and its rung `ochid:` links are change ids that a
+  squash discards.
+  - Retired from every shape list, Land, the preview paragraph, and the recipe. Trapezoid and
+    keep separate remain.
+* The record was kept in three copies, each a place to slip: the block, the chores move with
+  its four transforms, and the `## Done` entry with its `done.md` migration and SHA backfill.
+  - `Cycle-record`: the block is the only record, moved whole to `## Closed` by the closing
+    commit and deleted by the next opening. Rungs carry no `[[N]]` placeholder, SHA, or
+    version. Design findings go to `notes/` files by the rung that made them. `notes/chores/`
+    and `notes/done.md` freeze as history. notes.md loses Done entry form, Retiring Done
+    entries, and Chores conventions, and gains Frozen history.
+* Rules were named by counts and descriptions: "the six items", "The cycle record", a
+  deliberation with no stated shape.
+  - `cycle-record` is the term and the heading, "six" is gone from every rule sentence, and
+    the deliberation is one bullet per decision with the reasons as sub-bullets.
+* The typeable-punctuation rule contradicted itself on history: "no convert-on-touch" and
+  "converts when touched" in one section.
+  - Convert-on-touch, the same as the semicolon rule.
+
 ##### docs: retire the notes copies and sweep their semicolons
 
 `notes/cycle-protocol.md` and `notes/versioning.md` are pre-agent-data copies of files now
@@ -127,6 +161,14 @@ prose semicolons the touch rule makes due in the files this rung edits.
 The files this cycle touches carry about seventy em dashes, en dashes, ellipses, and arrows,
 which the typeable-punctuation rule makes due on touch. Convert each with the structural
 decision the rule asks for, re-pointing any anchor a heading conversion moves.
+
+##### docs: rewrap the agent-files to the prose width
+
+Eight agent-files carry lines over the 100-column prose width, and cycle-protocol.md is
+wrapped at the old 60 to 75 width nearly throughout. Re-flow the agent-files and TODO.md to
+the width in prose.md's Line widths with a markdown-aware pass that leaves headings, fenced
+code, tables, reference definitions, and long URLs alone, checked by comparing the word
+sequence before and after.
 
 ##### docs: fix close-out and sweep punctuation closing
 
@@ -284,5 +326,6 @@ _None._
 [3]: #docs-retire-the-notes-copies-and-sweep-their-semicolons
 [4]: #docs-sweep-typeable-punctuation
 [5]: #docs-fix-close-out-and-sweep-punctuation-closing
+[6]: #docs-rewrap-the-agent-files-to-the-prose-width
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [21]: notes/chores/chores-02.md#findings-the-gap-is-line-transfer-economics

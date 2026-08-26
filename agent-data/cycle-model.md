@@ -3,16 +3,13 @@
 A cycle's `## In Progress` block, shown as a specimen rather than a skeleton: the `config
 loader` cycle, mid-run, with its opening landed and its first work rung current. Copy the
 shape, not the words. The rules are in
-[The In Progress block](notes.md#the-in-progress-block), and the same cycle's
-shape after the close-out move is in
-[Chores commit references](notes.md#chores-commit-references).
+[The In Progress block](notes.md#the-in-progress-block).
 
-Two things the specimen cannot show:
+One thing the specimen cannot show:
 
-- `[[N]]` is literal. It is the as-built placeholder every rung carries until its commit is
-  permanent, and backfill replaces it one push after landing. It is not a slot to fill now.
-- a single-step cycle drops both bookends. Its one rung carries the bare cycle title, and no
-  close-out shape is chosen, since one commit has nothing to reshape.
+- a single-step cycle drops both bookends and all the steps are in the one commit: the ladder
+  is one unlinked rung with the bare title, and there is no `Ladder details` area
+  ([Cycle shape](../AGENTS.md#cycle-shape)).
 
 ## In Progress
 
@@ -35,9 +32,9 @@ tests call alike.
 
 #### Ladder
 
-- [[N]] [refactor: extract config loader opening][1] (done)
-- [[N]] [refactor: split loader from parser][2] (current)
-- [[N]] [refactor: extract config loader closing][3]
+- [refactor: extract config loader opening][1] (done)
+- [refactor: split loader from parser][2] (current)
+- [refactor: extract config loader closing][3]
 
 #### Deliberation
 
@@ -50,8 +47,8 @@ tests call alike.
 
 ##### refactor: extract config loader opening
 
-The cycle's setup commit: backfill the previous cycle's rungs, create and publish the
-bookmark, move the Todo entry into this block, and bump the version-of-record.
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents,
+move the Todo entry into this block, and bump the version-of-record.
 
 ##### refactor: split loader from parser
 

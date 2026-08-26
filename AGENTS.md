@@ -18,12 +18,12 @@ Project layer: the project's own agent-files, `custom.md` and what it points at.
 Cycle: one change, run from opening to closing as one commit or a ladder of them, each made by
 `vc-x1 push` ([Cycle protocol](#cycle-protocol)). Single-step when the problem statement has one
 straightforward solution step, its documentation in the same commit, otherwise multi-step. Both
-run on a bookmark under the dev name.
+run on a bookmark under the dev name, and the shape is fixed at the cycle's first push
+([Cycle shape](#cycle-shape)).
 
 Land: the sequence that makes a cycle permanent, on the user's go at the close-out
 ([Land](agent-data/jj.md#cycle-bookmarks-create-and-land)). Before it the cycle is a draft on
-its bookmark, after it the commits are permanent and the records that wait on permanence come
-due.
+its bookmark, after it the commits are permanent.
 
 Trapezoid: the default close-out shape, a merge commit whose first parent is the trunk line and
 whose second is the cycle's ladder ([Close-out shapes](agent-data/jj.md#close-out-shapes)).
@@ -94,7 +94,7 @@ No em/en dash, ellipsis, or arrow characters in durable text, see
 ### One title per step
 
 The ladder rungs, headers and commit title are verbatim identical, see
-[the shape](agent-data/prose.md#conventional-commit-shape-ladder--chores--commit).
+[the shape](agent-data/prose.md#conventional-commit-shape-ladder--commit).
 
 ### Stop and ask
 
@@ -116,10 +116,15 @@ meant for the family goes in `custom.md`, see
 
 A cycle runs on one bookmark in the work-repo, see [Cycles run on a bookmark](#cycles-run-on-a-bookmark).
 
+### Shape at the first push
+
+A cycle is single-step or multi-step from its first push on, and no reshape changes it, see
+[Cycle shape](#cycle-shape).
+
 ## Cycle protocol
 
 How a [cycle](#terminology) runs ([why](agent-data/rationale.md#cycle-protocol)). Its record is
-`TODO.md > ## In Progress` while it runs and moves whole to `notes/chores/` when it closes. The
+`TODO.md > ## In Progress` and nothing else ([Cycle-record](#cycle-record)). The
 `.vc-config.md` `[validate]` table defines the commands that validate the work-repo.
 
 ### Cycles run on a bookmark
@@ -131,19 +136,59 @@ single-step cycle included. The agent repo needs no bookmark. Commands in
 [Cycle bookmarks](agent-data/jj.md#cycle-bookmarks-create-and-land), the long-lived case in
 [Long-lived bookmarks][llb].
 
+### Cycle shape
+
+Single-step or multi-step is decided at the opening and fixed by the cycle's first push,
+with the one coordinated exception below ([why](agent-data/rationale.md#cycle-shape)). Before
+that push the In Progress block may be rewritten to either shape. After it:
+
+- A single-step cycle is one commit, made by one push, carrying the opening's duties, the
+  work, and the close-out's duties, titled with the bare cycle title in both repos. When the
+  work turns out to need more steps, two choices, since the bookmark is still a draft:
+  - land the commit as it is and run the additional work as one or more further cycles
+  - turn the commit into the opening: amend its version-of-record to the `-0` form, re-title
+    it with " opening" as a coordinated re-describe that keeps the `ochid:` trailer
+    ([No re-describe without coordinating](#no-re-describe-without-coordinating)), and
+    complete the cycle as multi-step.
+- A multi-step cycle is a ladder and lands as a trapezoid or kept separate, never squashed:
+  every rung's `ochid:` trailer is a change id, and a squash discards all but one. A ladder
+  that shrinks to one rung still closes as a ladder, since its opening already pushed.
+
+### Cycle-record
+
+A cycle's record is its `TODO.md > ## In Progress` block and nothing else, the cycle-record
+([why](agent-data/rationale.md#cycle-record)).
+
+- Items: title, problem, solution, acceptance check, ladder, deliberation, and
+  `Ladder details`, all provisional until close-out
+  ([The In Progress block](agent-data/notes.md#the-in-progress-block)).
+- Life: written at the opening, revised as rungs land, finalized by the closing commit,
+  which moves it whole to `## Closed` (a single-step cycle's one commit writes it there
+  directly), deleted by the next opening.
+  - `## In Progress` reads `_No cycle currently in progress._` between cycles.
+  - The closing commit's tree carries the final form, and the file never grows.
+- After that jj holds it: `git log --grep "<cycle title>"` finds the commits, and the
+  landmark on `main` (the trapezoid merge, or the single-step commit) holds the finished
+  block in its `TODO.md > ## Closed`.
+- No backfill: a rung carries no `[[N]]` placeholder, no SHA, and no version.
+- Design findings that must outlive the cycle go into a `notes/` file by the rung that made
+  them, never left in the block.
+- Frozen history: `notes/chores/` and `notes/done.md` are never appended, still linked.
+
 ### Opening
 
 The cycle's first commit, when it needs setup (a lightweight cycle starts at its first commit,
-which then carries step 1). Before that commit ([why](agent-data/rationale.md#opening)):
+which then carries step 1). A single-step cycle does all of it in its one commit, after step 1
+([Cycle shape](#cycle-shape)). Before that commit ([why](agent-data/rationale.md#opening)):
 
 1. Bookmark: create and publish the cycle's bookmark, a push that needs approval.
-2. In Progress block: move the chosen `## Todo` entry into the block, shaped as
+2. In Progress block: delete whatever `## Closed` holds, then move the chosen `## Todo` entry
+   into `## In Progress`, shaped as
    [The In Progress block](agent-data/notes.md#the-in-progress-block) says, the specimen in
    [cycle-model.md](agent-data/cycle-model.md).
-3. Sweep: sweep `## Done` ([Retiring Done entries][rde]).
-4. Bump: bump the version-of-record to the opening's version
+3. Bump: bump the version-of-record to the opening's version
    ([Suffix scheme](agent-data/versioning.md#suffix-scheme)).
-5. Rename: when the built artifact has consumers, rename `<name>` to `<name>-dev`
+4. Rename: when the built artifact has consumers, rename `<name>` to `<name>-dev`
    ([Dev artifact name](agent-data/versioning.md#dev-artifact-name)). Land restores it.
 
 Rungs are named, not numbered ([Steps are named, not numbered][snn]), and a multi-step cycle's
@@ -216,20 +261,25 @@ and takes approval like any push ([vc-x1 push][vpush]).
 
 ### Close-out
 
-The cycle's last commit is bookkeeping and its body describes that bookkeeping:
+The cycle's last commit is bookkeeping and its body describes that bookkeeping. A single-step
+cycle does all of it in its one commit, step 4 aside ([Cycle shape](#cycle-shape)):
 
 1. Acceptance check: run the check the opening stated and record pass or fail. A failure is a
    finding, and why it failed is determined.
-2. Finalize: sync the title if the scope shifted (and every anchor back-reference), replace the
-   provisional solution statement with what was done, drop the `(current)` / `(done)` markers,
-   add the design subsections the deliberation grew, complete the closing rung's subsection.
-3. Move and record: move the block into `notes/chores/chores-NN.md`, add the `## Table of
-   Contents` entry, write the `## Done` entry ([The close-out move][tcm]).
-4. Validate: full validation, and update `notes/README.md` if functionality changed.
-5. Close-out shape: choose with the user, record the choice in the closing rung's subsection,
-   reshape nothing yet ([Close-out shapes](agent-data/jj.md#close-out-shapes)): trapezoid (the
-   default), keep separate, or squash.
-6. Land: on the user's go, restore the plain name, reshape per the choice, fast-forward `main`,
+2. Finalize the cycle-record in place ([Cycle-record](#cycle-record)):
+   - sync the title if the scope shifted, and every anchor back-reference with it
+   - replace the provisional solution statement with what was done
+   - drop the `(current)` / `(done)` markers
+   - add the design subsections the deliberation grew
+   - complete the closing rung's subsection
+   - move the block whole to `## Closed`, leaving `## In Progress` reading
+     `_No cycle currently in progress._`.
+3. Validate: full validation, and update `notes/README.md` if functionality changed.
+4. Close-out shape ([Close-out shapes](agent-data/jj.md#close-out-shapes)):
+   - choose with the user: trapezoid (the default) or keep separate
+   - record the choice in the closing rung's subsection
+   - reshape nothing yet, Land does.
+5. Land: on the user's go, restore the plain name, reshape per the choice, fast-forward `main`,
    install the artifact, delete the bookmark locally and remotely
    ([Bookmark per cycle](#bookmark-per-cycle), [Land](agent-data/jj.md#cycle-bookmarks-create-and-land)).
 
@@ -240,12 +290,10 @@ leaves the machine and collapses into the rung before the cycle continues, each 
 `vc-x1 validate --fast` ([Local ladders](agent-data/jj.md#local-ladders),
 [why](agent-data/rationale.md#local-ladders)).
 
-[cbt]: agent-data/prose.md#conventional-commit-shape-ladder--chores--commit
-[cdd]: agent-data/prose.md#conventional-commit-shape-ladder--chores--commit
+[cbt]: agent-data/prose.md#conventional-commit-shape-ladder--commit
+[cdd]: agent-data/prose.md#conventional-commit-shape-ladder--commit
 [llb]: agent-data/jj.md#long-lived-bookmarks-merge-only-by-default-deletable-once-merged
-[rde]: agent-data/notes.md#retiring-done-entries
 [snn]: agent-data/prose.md#steps-are-named-not-numbered
-[tcm]: agent-data/notes.md#the-close-out-move
 [vpush]: agent-data/jj.md#vc-x1-push-what-it-does-and-does-not-do
 
 ## Working practices
@@ -287,8 +335,8 @@ own copy ([why](agent-data/rationale.md#changing-the-agent-files)).
   payload when that matters.
 - Convergence: the family reviews the members' diffs, folds what it accepts into the payload,
   and every member re-syncs.
-- Retirement: a resolved experiment retires like a finished Todo, adopted and rejected alike
-  ([Retiring Done entries][rde]).
+- Retirement: a resolved experiment retires like a finished Todo, adopted and rejected alike:
+  the cycle that resolved it is its record.
 - Adopted ahead: a rule adopted ahead of its convention cycle lives in the pinned file it
   belongs to, never in a holding section of the project layer.
 

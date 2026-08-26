@@ -18,7 +18,9 @@ individually, as a ladder of steps (the Preparation commit is optional). A
 that one commit is the close-out and carries its duties. So a
 single-step cycle is one commit, and a multi-step is minimum two (a Work commit plus the
 close-out), typically three or more (the definition is
-[AGENTS.md's Terminology](../AGENTS.md#terminology)). The
+[AGENTS.md's Terminology](../AGENTS.md#terminology)). The style is fixed by the cycle's
+first push and never changed by reshaping
+([Cycle shape](../AGENTS.md#cycle-shape)). The
 ladder lists a cycle's steps in order and identifies each by its title, with no number and no
 version. Where the version-of-record lives and how often it is bumped are in
 [versioning.md](versioning.md). Read [cycle-protocol.md](cycle-protocol.md) before any commit
@@ -50,31 +52,31 @@ published history. Landing costs one command and buys free rewrites for the whol
 
 ## Opening checklist
 
-At the cycle's opening, before the first Work commit:
+At the cycle's opening, before the first Work commit. A single-step cycle does all of it in
+its one commit, after item 1 ([Cycle shape](../AGENTS.md#cycle-shape)):
 
 1. Create the cycle's bookmark ([Cycle bookmarks](jj.md#cycle-bookmarks-create-and-land)).
-2. Move the picked-up item into `TODO.md > ## In Progress` and write the **six provisional
-   items** there, all six required. The title is a heading one level below `## In Progress`'s
+2. Move the picked-up item into `TODO.md > ## In Progress` and write the cycle-record's
+   **provisional items** there, all required. The title is a heading one level below `## In Progress`'s
    own level, and the other five are headings one level below the title (a plain cycle: `###`
    title, `####` items, and under a program heading, each one deeper):
-   - **title**, which becomes the chores section header at close-out
+   - **title**, the cycle's name
    - **problem statement**: what is wrong, a sentence or two
    - **solution statement**: what will be done about it, broad
    - **acceptance check**: the measure of "are you finished?"
-   - **ladder**: one rung per step, `- [[N]] [<title>][M]` plus `(current)` / `(done)`, with
+   - **ladder**: one rung per step, `- [<title>][M]` plus `(current)` / `(done)`, with
      `[M]: #<slug>` in the file's `# References`. The closing rung, `<cycle title> closing`,
      is linked like the rest
    - **deliberation**: how the five above were decided (`_None._` when there was nothing to
      deliberate)
-   A `Ladder details` area follows the six: one subsection per rung, closing included, headed
+   A `Ladder details` area follows them: one subsection per rung, closing included, headed
    by the rung's exact title, opened at laddering with the rung's intent and completed as rungs
    land, the closing rung's at close-out (see the protocol's
    [Preparation](cycle-protocol.md#preparation)).
-3. Sweep `## Done` per [Retiring Done entries](notes.md#retiring-done-entries), then bump the
-   version-of-record.
+3. Bump the version-of-record.
 
-Nothing is opened in the chores file here. The block is the cycle's only home until close-out
-moves it. See [Chores sections](cycle-protocol.md#chores-sections).
+Item 2 first deletes whatever `## Closed` holds. The block is the cycle's only record
+([Cycle-record](../AGENTS.md#cycle-record)).
 
 **Why the acceptance check:** a cycle's own checklists are per-commit instruments and every one
 of them can pass while the banner claim is false. Measured in a seven-cycle program opened
@@ -138,8 +140,8 @@ Every commit (Preparation, each Work commit, Close-out), per the protocol's
    prose.md's [Commit-body form](prose.md#commit-body-form) (an intro paragraph stating the
    general problem, `*` bullets for its facets, `-` bullets for solutions, a `-` solving the
    nearest enclosing problem), sized per [Line widths](prose.md#line-widths). No version in
-   either, no file list (the diff is the mechanical record), and no deliberation (chores, todo,
-   and the session hold that). See [Commit description](cycle-protocol.md#commit-description).
+   either, no file list (the diff is the mechanical record), and no deliberation (the cycle
+   record, todo, and the session hold that). See [Commit description](cycle-protocol.md#commit-description).
 8. Show title + body and stop for review. This review covers the push only when the user's go
    explicitly includes it.
 9. On the user's go: `vc-x1 push <bookmark> --title "..." --body "..."`. Never pre-commit with
@@ -185,36 +187,29 @@ push. See
 ## Close-out checklist
 
 The cycle's last step, per the protocol's
-[Close-out](cycle-protocol.md#close-out):
+[Close-out](cycle-protocol.md#close-out). A single-step cycle does all of it in its one
+commit, item 5 aside:
 
 1. **Run the acceptance check** the opening stated, and record what it showed in the
    `## In Progress` block, whether or not it passed. A check that was never run is a failed
    close-out, and a check that failed is a finding, not a reason to quietly restate the banner.
-2. **Finalize the six items in place**: sync the title if the scope shifted, replace the
+2. **Finalize the cycle-record in place** ([Cycle-record](../AGENTS.md#cycle-record)):
+   sync the title if the scope shifted, replace the
    provisional solution statement with what was done, drop the ladder's `(current)` / `(done)`
    markers, add any design subsections, and complete the closing rung's subsection: gotchas in
-   problem/solution form, `_None._` when closing surfaced none.
-3. **Move the block** into `notes/chores/chores-NN.md`, which is what creates the section.
-   Four transforms, two of which fail silently: headings one level deeper, rung refs renumbered
-   into the destination's namespace, repo-root-relative links gain `../`, forward-looking notes
-   rewritten. See [Chores sections](cycle-protocol.md#chores-sections). Add the title-only
-   `## Table of Contents` entry.
-4. Write the `## Done` entry: the version, then a bold title line with its chores `[N]` ref,
-   detail as sub-bullets (see [Done entry form](notes.md#done-entry-form)). Replace the
-   `## In Progress` block with `_No cycle currently in progress._`.
-5. Full validation, mandatory.
-6. Update `notes/README.md` if functionality changed.
-7. At push time, surface the shape options (squash / trapezoid / keep separate) and wait for
-   the user's choice. The trapezoid recipe is
+   problem/solution form, `_None._` when closing surfaced none. Then move the block whole to
+   `## Closed`, leaving `## In Progress` reading `_No cycle currently in progress._`
+   ([Cycle-record](../AGENTS.md#cycle-record)).
+3. Full validation, mandatory.
+4. Update `notes/README.md` if functionality changed.
+5. At push time, surface the shape options (trapezoid / keep separate) and wait for the
+   user's choice. Squash is not an option, since it breaks the rungs' `ochid:` links
+   ([Cycle shape](../AGENTS.md#cycle-shape)). The trapezoid recipe is
    [in the protocol](cycle-protocol.md#trapezoid-close-out-recipe). Its step 4 is
    `jj git push`, not `vc-x1 push`.
-8. **Land the bookmark** on the user's go. Until this, nothing the cycle pushed is permanent.
+6. **Land the bookmark** on the user's go. Until this, nothing the cycle pushed is permanent.
    Once `main` contains the bookmark, delete it, locally and remotely. See
    [Cycle bookmarks](jj.md#cycle-bookmarks-create-and-land).
-9. Backfill the chores as-built ladder refs (and any remaining legacy `Commits:` lines) for the
-   commits landing just made permanent, which is the whole cycle rather than the previous push's
-   share. Never record a SHA that is not on a permanent branch. The backfill edits ride the next
-   push (a commit cannot record its own SHA).
 
 ## vc-x1 push behaviors to keep in mind
 

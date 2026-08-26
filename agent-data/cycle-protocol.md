@@ -27,30 +27,35 @@ A cycle has three phases:
     [versioning.md](versioning.md)).
   - Pick up a `## Todo` item (typically the top-ranked, #1)
     into `## In Progress` as the cycle's
-    [six provisional items](#preparation): title, problem
+    [provisional items](#preparation): title, problem
     statement, solution statement, acceptance check, ladder,
     deliberation.
   - Create the cycle's topic bookmark.
-  - Nothing is opened in the chores file. The block is the
-    cycle's only home until close-out moves it.
+  - Delete whatever `## Closed` holds first. The block is
+    the cycle's only record
+    ([Cycle-record](#cycle-record)).
 - **[Work-N](#work-n)**: the commits that implement the
   change. As many as the change needs. Each runs through the
   [per-commit flow](#per-commit-flow).
 - **[Close-out](#close-out)**: the cycle's last commit.
   Bookkeeping only:
   - Run the acceptance check and record what it showed.
-  - Finalize the six items, then move the block into
-    `notes/chores/`, which creates the
-    [chores section](#chores-sections).
-  - Write the `## Done` entry and clear `## In Progress`.
+  - Finalize the cycle-record and move the block to
+    `## Closed`.
   - Land the cycle's bookmark.
   - Optionally update `notes/README.md` if functionality
     changed.
 
 A cycle's commits are published to the project remote
-either incrementally or as one batch at close-out. The
-result must always be published at close-out. See
-[Pushing](#pushing).
+rung by rung, and the result must always be published at
+close-out. See [Pushing](#pushing).
+
+**Shape.** Single-step or multi-step is decided at the
+opening and fixed by the first push. A single-step cycle's
+one commit carries all three phases under the bare cycle
+title, and a multi-step cycle's ladder is never squashed,
+since each rung's `ochid:` trailer is a change id. See
+[Cycle shape](../AGENTS.md#cycle-shape).
 
 **Sub-cycles.** When a Work commit's scope grows enough to
 warrant its own ladder, it subdivides into its own
@@ -61,75 +66,37 @@ are titles like any other. See
 [Sub-cycle ladders](#sub-cycle-ladders) for the local-ladder
 mechanics.
 
-## Chores sections
+## Cycle-record
 
-A **chores section** is a `##` section in `notes/chores/chores-NN.md` recording landed work.
-In general, every commit that lands on the permanent branch should have a rung in some
-section's as-built ladder in a chores file.
+A cycle's record is its `TODO.md > ## In Progress` block
+and nothing else. It is written at Preparation as the
+[provisional items](#preparation), revised as steps
+land, and finalized at [Close-out](#close-out), whose
+commit moves it whole to `TODO.md > ## Closed` (a
+single-step cycle's one commit writes it there directly),
+so the closing commit's tree carries the finished record
+and `## In Progress` is empty between cycles. The next
+cycle's Preparation deletes `## Closed`'s contents, so the
+file never grows. After that jj holds the record:
+`git log --grep "<cycle title>"` finds the cycle's
+commits, and the landmark on `main` (the trapezoid merge,
+or the single-step commit) holds the finished block in its
+`TODO.md > ## Closed`.
 
-**A cycle's record has one home at a time.** While the cycle runs it lives entirely in
-`TODO.md > ## In Progress`, as the [six provisional items](#preparation) written at Preparation
-and revised as steps land. At close-out the whole block **moves** into the chores file, becoming
-that cycle's `##` section. It is never written in two places, so there is nothing to keep in
-sync and nothing to write twice.
+Nothing is backfilled. A rung carries no SHA, no version,
+and no placeholder for either: a commit cannot record its
+own SHA, and a record written one push late was found
+unfilled at the next opening more than once. The commit is
+the record of itself.
 
-The move is mechanical, four transforms and no rewriting:
+A design finding that must outlive the cycle is written
+into a `notes/` file by the rung that made it, never left
+in the block, since the block is replaced.
 
-- **Heading levels shift so the title becomes the section's `##`** and the items shift with it,
-  staying one level under the title. Anchors survive untouched, because GitHub slugs derive from
-  the heading's *text*, not its level. The depth shift is one level for a plain cycle, and
-  whatever the title's depth demands under a program heading.
-- **Rung refs renumber** into the destination file's `[N]` namespace (see
-  [Reference numbering](notes.md#reference-numbering)).
-- **Repo-root-relative links gain `../`**, since the block moves from the root into
-  `notes/chores/`.
-- **The block's own forward-looking notes are rewritten**, since they described a future that
-  has now happened.
-
-Two of those fail *silently*: a mis-renumbered ref and an un-rebased link render as plain text
-or a 404 rather than erroring. Check both by hand until a `validate-repo` exists.
-
-A single-commit cycle's ladder is one rung, its close-out. Rung placeholders are backfilled once
-the commit is permanent (see [Commits backfill](#commits-backfill) below).
-
-The move also appends the section's title-only `- [<title>](#<anchor>)` entry to the file's
-`## Table of Contents`.
-
-Adopted after a full-cycle trial: the dual maintenance disappeared, and the narrative did not
-thin out from being written in `TODO.md`, which was the watched-for risk.
-
-Fuller chores conventions (content rules, header sync, design subsection pattern, ladder and
-reference formatting, the Table of Contents) live in
-[Chores conventions](notes.md#chores-conventions).
-
-### Commits backfill
-
-An as-built ladder rung cites its commit by SHA and records the version that commit carried,
-and neither is stable until the commit lands on a **permanent branch** (`main`, or a long-lived
-release/patch branch that won't be rewritten). A rebase or squash rewrites the SHA and may
-renumber the version on the way. So:
-
-- A rung is **written with the literal `[[N]]` placeholder and no version**.
-- **Backfill once the commit is on a permanent branch**, where both are final. A commit
-  can't record its own SHA (that would change the hash), so the fill always lands one push
-  later: **each push backfills the rungs of the commits the previous push made permanent.** On
-  a topic branch the sections instead wait until the branch lands, so nothing is ever written
-  that a later rebase could invalidate.
-- A deliberate rewrite of already-recorded commits (a coordinated re-describe, a retroactive
-  reshape) invalidates their recorded SHAs. Re-record them once the rewrite is published, on
-  the same one-push-later timing.
-
-Backfill replaces the placeholder with a real file-local `[N]` slot, defined as the commit URL +
-40-hex SHA in the file's `# References` (format in
-[Chores commit references](notes.md#chores-commit-references)), and writes the version ahead of
-the title. A section's `##` title matches its close-out commit title, and each rung's text its
-own commit title, so a rare deliberate rewrite of a permanent-branch commit re-syncs via
-`git log --grep "<title>"`. Sections that predate the ladder form keep their grandfathered
-`Commits:` lines. Backfill those where they exist.
-
-The per-push cadence is a project choice, not dogma. A **per-close-out** model (recording a
-cycle's SHAs at its close-out) is equally valid. The one invariant: what a rung records must be
-permanent.
+`notes/chores/chores-NN.md` and `notes/done.md` are the
+records of earlier cycles and are frozen: never appended,
+never opened, still linked
+([Frozen history](notes.md#frozen-history-chores-and-done)).
 
 ## Preparation
 
@@ -144,14 +111,14 @@ lightweight cycle omits it, per
   manifest version) are project-specific. See
   [versioning.md](versioning.md).
 - **Move a `## Todo` item** (if the cycle has one) into
-  `## In Progress`, and write the cycle's **six provisional
-  items** there. All six are required, all six are revised
-  as steps land, and all six move to chores at close-out.
+  `## In Progress`, and write the cycle-record's
+  **provisional items** there. All are required, all are
+  revised as steps land, and all are finalized at close-out.
   The title is a heading one level below `## In Progress`'s
   own, and the other five are headings one level below the
   title (a plain cycle: `###` title, `####` items, and under
   a program heading, each one deeper):
-  - the **title**, which becomes the chores section header.
+  - the **title**, the cycle's name.
   - the **problem statement**: what is wrong, in a sentence
     or two.
   - the **solution statement**: what will be done about it,
@@ -163,23 +130,22 @@ lightweight cycle omits it, per
     thing the cycle promised actually happened, specifically
     enough that a reader can run it.
   - the **ladder**: one rung per step, in the form
-    `- [[N]] [<title>][M] (marker)` described below.
+    `- [<title>][M] (marker)` described below.
   - the **deliberation**: how the five above were decided,
     alternatives weighed, costs accepted. `_None._` when
     there was nothing to deliberate, which is a real answer
     and different from having forgotten to write it.
 
-The ladder is a linked table of contents. A rung is `- [[N]] [<title>][M] (marker)` and
-carries no detail beyond that:
+The ladder is a linked table of contents. A rung is `- [<title>][M] (marker)` and carries no
+detail beyond that:
 
-- The literal `[[N]]` is the as-built ladder's placeholder, carried from birth. It fills only
-  at backfill after landing (see [Commits backfill](#commits-backfill)), so the close-out move
-  just drops the `(current)` / `(done)` markers.
+- No SHA, no version, no placeholder for either: nothing is backfilled
+  ([Cycle-record](#cycle-record)). The close-out just drops the `(current)` /
+  `(done)` markers.
 - The title links to the rung's subsection below, reference-style: `[M]` is a file-local slot
   whose definition is a same-file fragment, `[M]: #<slug>` in the file's `# References` (slug
   algorithm in [Markdown anchor links](notes.md#markdown-anchor-links)). Routing through the
-  table keeps rung lines short, and the close-out move renumbers the slots like any other rung
-  ref.
+  table keeps rung lines short.
 
 The verbiage lives in the rung's subsection under a **`Ladder details`** heading following the
 deliberation, headed by the rung's exact title, so it is greppable and an anchor other records
@@ -193,16 +159,12 @@ can link. Every rung has one, the close-out included, written in two beats:
   record, and the subsection keeps only what the body does not say.
 
 The closing rung differs only in its content. Its title is the cycle title plus
-" closing" (the bookend form: [Cycle bookend titles](prose.md#conventional-commit-shape-ladder--chores--commit)), it is
+" closing" (the bookend form: [Cycle bookend titles](prose.md#conventional-commit-shape-ladder--commit)), it is
 linked like its siblings, and its subsection opens at laddering with the one-line stub
 "Closing out the cycle.", since its problem and solution are the block's own Problem and
 Solution items. At close-out the subsection completes with what closing taught (acceptance
-surprises, validation trip-ups, close-out-move wrinkles), written in problem/solution form, or
-`_None._` when closing taught nothing.
-
-Nothing is opened in the chores file at Preparation. The
-section is created at close-out by moving this block. See
-[Chores sections](#chores-sections).
+surprises, validation trip-ups), written in problem/solution form, or `_None._` when closing
+taught nothing.
 
 **Why an acceptance check, and why it is provisional.** A
 cycle's own per-commit checklists can all pass while its
@@ -240,49 +202,41 @@ post-squash:
   passed. A check that was never run is a failed close-out,
   and a check that failed is a finding, not a reason to
   quietly restate the banner.
-- **Finalize the six items in place**, before the move: sync
+- **Finalize the cycle-record in place**
+  ([Cycle-record](../AGENTS.md#cycle-record)): sync
   the title if the cycle's scope shifted (and every anchor
   back-reference), replace the provisional solution
   statement with what was actually done, drop the ladder's
   `(current)` / `(done)` markers since as-built implies
   done, and add any design subsections the deliberation
-  grew. The `Ladder details` subsections ride the move
-  unchanged.
-- **Move the block** into `notes/chores/chores-NN.md`,
-  applying the four transforms in
-  [Chores sections](#chores-sections). This *creates* the
-  section. Nothing was opened earlier.
-- **Write the `## Done` entry**: the version, then a bold
-  title line with its chores `[N]` ref and detail as
-  sub-bullets (see
-  [Done entry form](notes.md#done-entry-form)).
-- **Replace the `## In Progress` cycle block** with
-  `_No cycle currently in progress._`. Under a multi-cycle
-  program (the program heading above the cycle title) this
-  retires the cycle's block only. The program heading and
-  its ladder stay, the shipped rung flipped `(done)`, so the
-  marker sits inside the program block until the next stage
-  is picked up.
+  grew. Then move the block whole to `## Closed`, leaving
+  `## In Progress` reading
+  `_No cycle currently in progress._`
+  ([Cycle-record](#cycle-record)). Under a
+  multi-cycle program (the program heading above the cycle
+  title) the program heading and its ladder stay, the
+  shipped rung flipped `(done)`.
 - **Land the cycle's bookmark** on the user's go (commands
   in [Cycle bookmarks](jj.md#cycle-bookmarks-create-and-land)).
-  Until this, nothing the cycle pushed is permanent. Landing
-  triggers the backfill that waits on permanence.
+  Until this, nothing the cycle pushed is permanent.
 - **Update `notes/README.md`** if functionality changed
   (new flags, new subcommands, changed behavior).
 
-Whether to **squash** the cycle into one commit before the
-publishing push, or push as-is, is decided at push time. See
-[Pushing](#pushing).
+A single-step cycle does all of it in its one commit and
+has no shape to choose. A ladder's published shape,
+trapezoid or keep separate, is chosen at close-out and
+executed at Land. See
+[Shape at close-out push](#shape-at-close-out-push).
 
 ## Step naming
 
 A step has a title and no number. The ladder lists its rungs
 in order, so position is already recorded by the list, and a
 step is referred to by its title, verbatim-identical in the
-ladder rung, the chores `##` header and the commit (see
+ladder rung and the commit (see
 [Steps are named, not numbered](prose.md#steps-are-named-not-numbered)).
 A title has to be unambiguous within its cycle and within
-its chores file, where it is also an anchor. It may repeat
+its block, where it is also an anchor. It may repeat
 across the repo's history.
 
 The version-of-record still bumps for every step, and its
@@ -310,9 +264,8 @@ at:
   one coherent ladder rather than a record of how it was
   assembled.
 - **After landing**, the commits are history and are not
-  touched. A recorded SHA is only ever written for a commit
-  on a permanent branch (see
-  [Commits backfill](#commits-backfill)), which is what
+  touched. No record cites a SHA
+  ([Cycle-record](#cycle-record)), which is what
   makes rewriting a draft safe.
 
 Mechanics, and why they cost so little here:
@@ -426,13 +379,12 @@ wrong forever. See
 - **Distinct per step.** Each of a cycle's commits gets its
   own descriptive title (no shared cycle title with a step
   marker). Share a greppable stem across the cycle's titles
-  (e.g. `ring buffer`) so `git log --grep` collects them. The
-  chores section header matches the close-out title. See
-  [Conventional-commit shape](prose.md#conventional-commit-shape-ladder--chores--commit).
+  (e.g. `ring buffer`) so `git log --grep` collects them. See
+  [Conventional-commit shape](prose.md#conventional-commit-shape-ladder--commit).
 - **Unambiguous where it is resolved**: the title is the
   only identifier a record has, so it must be distinct
-  within its cycle and within its chores file (a `##` header
-  is also an anchor). It may repeat across the repo's
+  within its cycle's block (a subsection heading is also an
+  anchor). It may repeat across the repo's
   history. See
   [Steps are named, not numbered](prose.md#steps-are-named-not-numbered).
 
@@ -564,9 +516,6 @@ the options and get user approval before pushing. Once on
 the target, changing shape is a remote rewrite (force-push,
 needs approval), so choose deliberately.
 
-- **Squash to one commit**: single entry on the target.
-  Right for straightforward changes where the Work-N is
-  focused on one or two files.
 - **Trapezoid** (a `git merge --no-ff` merge commit)
   *(current default)*: the target gains a merge commit
   (`X.Y.Z`) whose first parent is the trunk line and whose
@@ -577,12 +526,14 @@ needs approval), so choose deliberately.
   for the full sequence.
 - **Keep separate**: one commit per cycle entry on
   `main`. Use when the decomposition itself is
-  informative. Each chores section keeps its own header /
-  ladder refs, no consolidation churn.
+  informative.
 
-A squash is set up before invoking `vc-x1 push`, while a
-trapezoid is reshaped between two pushes (the recipe below). For any
-other shape, drive `jj git push` directly.
+A trapezoid is reshaped between two pushes (the recipe
+below), and keep separate needs nothing. Squashing the
+ladder is not a shape: each rung's `ochid:` trailer is a
+change id and a squash discards all but one
+([Cycle shape](../AGENTS.md#cycle-shape)). A single-step
+cycle has nothing to reshape.
 
 ### Trapezoid close-out recipe
 
@@ -662,9 +613,9 @@ the latter is push's job.
   reshape is safe after the trailers are written.
 - **Step 4 moves the bookmark sideways.** Step 1's SHA
   becomes unreachable, and anyone who fetched between the two
-  pushes holds a dangling commit. Consequently a
-  [Commits backfill](#commits-backfill) must never read a
-  SHA from that window. Wait until step 4 lands.
+  pushes holds a dangling commit. Nothing records a SHA
+  from that window, or from anywhere
+  ([Cycle-record](#cycle-record)).
 - **Immutability.** No flag is needed on a long-lived topic
   bookmark. Only when `<closeout>` is already on `trunk()`
   does the rebase need `--ignore-immutable`, and then the
@@ -741,9 +692,9 @@ Use plain prose, no insider jargon ("Gate N signal",
   Don't spell out the full `vc-x1 push ... --title ...
   --body ...` invocation by default.
 - **At Post close-out review**, surface the shape
-  options (squash / merge / keep) and the push target,
-  then wait for the user's choice before any `jj squash` /
-  `jj rebase` / `jj git push` invocation.
+  options (trapezoid / keep separate) and the push target,
+  then wait for the user's choice before any `jj rebase` /
+  `jj git push` invocation.
 
 ### After push or squash-push: stop and wait
 

@@ -140,8 +140,8 @@ The mechanics behind
 the rule and when it applies, and this one holds the commands.
 
 **Create**, at the cycle's opening, with the bookmark named by the cycle title's slug (the
-anchor algorithm in [Markdown anchor links](notes.md#markdown-anchor-links), so the chores
-header, the Done entry, and the bookmark all derive from one bare title):
+anchor algorithm in [Markdown anchor links](notes.md#markdown-anchor-links), so the block's
+title heading and the bookmark derive from one bare title):
 
 - `jj git push --named <bookmark>=@- -R .` is the common case: it creates the bookmark at the
   last committed change and publishes it in one invocation.
@@ -161,8 +161,8 @@ before the final invocation, silence after
    `<name>` in the manifest, `vc-x1 validate --fast` so the lockfile follows, and `jj squash`
    folds the edit into the closing (`@` sits directly above it).
 2. Reshape per the recorded choice: trapezoid runs the
-   [recipe below](#trapezoid-close-out-recipe), keep separate needs nothing, squash collapses
-   the ladder into the closing.
+   [recipe below](#trapezoid-close-out-recipe), keep separate needs nothing. A single-step
+   cycle has no choice recorded and its one commit lands as it is.
 3. Fast-forward: `jj bookmark set main -r <closeout> -R .`, then
    `jj git push --bookmark main -R .`. This push publishes the reshaped commit, so the topic
    bookmark itself is never re-pushed.
@@ -174,10 +174,8 @@ before the final invocation, silence after
 
 - The fast-forward needs no `--allow-backwards`. Needing it means the bookmark is not a
   descendant of `main`, and the situation wants a look, not a flag.
-- Landing is the moment the cycle's commits become permanent, so it triggers the records that
-  wait on permanence: the chores as-built rungs take their SHAs and versions
-  ([Chores commit references](notes.md#chores-commit-references)). The reshape rewrites the
-  closing's SHA, so no record cites a SHA before the fast-forward.
+- Landing is the moment the cycle's commits become permanent. No record cites their SHAs
+  ([Cycle-record](../AGENTS.md#cycle-record)): the landed commits are the record.
 
 **Reshape**, while the bookmark is a draft
 ([Cycles run on a bookmark](../AGENTS.md#cycles-run-on-a-bookmark)):
@@ -213,8 +211,9 @@ wording, after a fully merged long-lived bookmark was deleted without loss.
 
 ## Close-out shapes
 
-The three shapes a cycle can land in, chosen by the user and recorded at close-out, executed
-at [Land](#cycle-bookmarks-create-and-land) ([Close-out](../AGENTS.md#close-out)):
+The two shapes a ladder can land in, chosen by the user and recorded at close-out, executed
+at [Land](#cycle-bookmarks-create-and-land) ([Close-out](../AGENTS.md#close-out)). A
+single-step cycle is one commit and lands as it is:
 
 - **trapezoid**, the current default: a merge commit whose first parent is the trunk and whose
   second is the ladder, so `git log --first-parent` reads one commit per cycle while every rung
@@ -222,15 +221,17 @@ at [Land](#cycle-bookmarks-create-and-land) ([Close-out](../AGENTS.md#close-out)
   published by the landing fast-forward itself.
 - **keep separate**, one commit per rung on `main`, when the decomposition itself is
   informative.
-- **squash** to one commit, right for a focused change: Land collapses the ladder into the
-  closing.
 
-**Preview before choosing.** What a squash would carry is the tree diff from `<base>` to the
-tip, whatever shape the commits between are in: `jj diff --from <base> --to <tip>`, or the gitk
+Squash is not a shape: each rung's `ochid:` trailer is a change id, a squash keeps one and
+drops the rest, and every agent-repo commit that pointed at a dropped rung is left dangling
+([Cycle shape](../AGENTS.md#cycle-shape)).
+
+**Preview before choosing.** The cycle's net change is the tree diff from `<base>` to the tip,
+whatever shape the commits between are in: `jj diff --from <base> --to <tip>`, or the gitk
 range described in [Read a change in gitk at full context](#read-a-change-in-gitk-at-full-context).
-If the net diff reads as one change, squash loses nothing. If it reads as several stacked, the
-trapezoid keeps each rung reachable while `git log --first-parent` still shows this same net diff
-once landed. Either way the choice is made on what `main` will carry.
+The trapezoid keeps each rung reachable while `git log --first-parent` shows this net diff
+once landed, and keep separate shows the rungs themselves. The choice is made on what `main`
+will carry.
 
 ## Read a change in gitk at full context
 
@@ -254,7 +255,7 @@ together changed the tree since a given `<base>` commit. To do that:
 
 Now New version, Old version and Diff show the net change of everything between `<base>` and
 `this`. If `<base>` is the parent of the `opening` commit and `this` is the `closing`, that is
-what a squash of the cycle would carry, and it can help you decide what shape to choose
+the cycle's net change, and it can help you decide what shape to choose
 ([Close-out shapes](#close-out-shapes)).
 
 ## Trapezoid close-out recipe
@@ -272,7 +273,8 @@ publishes, the merge goes out with Land's fast-forward.
 
 - `<base>`: the **parent of the ladder's first rung**, the trunk position when the cycle
   opened. It becomes the first parent. Not always the previous close-out: a cycle landed
-  linearly since (squash or keep-separate shape) sits on the trunk line and must stay there.
+  linearly since (keep-separate shape, or a single-step cycle) sits on the trunk line and must
+  stay there.
 - `<tip>`: the cycle's last commit before the close-out. It becomes the second parent.
 - `<closeout>`: the close-out commit, reshaped here.
 
