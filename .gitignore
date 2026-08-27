@@ -7,3 +7,16 @@
 # Raw per-cell outputs from the measurement-matrix recipe
 # (tprobe/README.md); never committed.
 /*-pin-*.txt
+# Zero-byte read-only files the agent sandbox bind-mounts into the
+# project root; never part of the project.
+/.bash_profile
+/.bashrc
+/.gitconfig
+/.gitmodules
+/.idea
+/.mcp.json
+/.profile
+/.ripgreprc
+/.vscode
+/.zprofile
+/.zshrc

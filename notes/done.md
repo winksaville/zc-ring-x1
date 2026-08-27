@@ -1,8 +1,8 @@
 # Done
 
-As `TODO.md`'s `## Done` section fills, move entries here.
-
-See [Todo format](../agent-data/notes.md#todo-format)
+Frozen history: the `## Done` entries of cycles that ran before the cycle record became
+`TODO.md > ## In Progress` alone. Nothing is added here
+([Frozen history](../agent-data/notes.md#frozen-history-chores-and-done)).
 
 - docs: zero-copy ring buffer design [[1]]
 - refactor: ring buffer symmetric reserve_slot API [[2]]
