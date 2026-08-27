@@ -3,12 +3,10 @@
 This directory contains various notes and documentation related to the project.
 Each file is organized by topic for easy reference.
 
-By default there are chores/chores-*.md, and the task list is `../TODO.md`. Chores are general notes
-about tasks and TODO.md contains short term tasks and their status.
-The chores-NN files are numbered in sequence; as a chores file grows
-large the next one is opened ([chores/chores-02.md](chores/chores-02.md)
-is the active one), and earlier ones are closed and
-kept for history.
+The task list is `../TODO.md`, and its `## In Progress` block is the running cycle's record
+([Cycle-record](../AGENTS.md#cycle-record)). `chores/chores-*.md` and `done.md` are
+the records of earlier cycles, frozen as history
+([Frozen history](../agent-data/notes.md#frozen-history-chores-and-done)).
 
 Project design docs:
 
@@ -18,63 +16,24 @@ Project design docs:
   `src/`.
 - [../tprobe/notes/design.md](../tprobe/notes/design.md) —
   the tprobe measurement crate (probe primitives, ticks,
-  report renderer, the tprobe/tp_runner split); the crate
+  report renderer, the tprobe/tp_runner split). The crate
   keeps its own notes so they travel on extraction.
 
-
-Examples chore file:
-```
-# Chores-01.md
- 
-General maintenance tasks and considerations for the project see other files for
-more specific topics. A chore in a chores file provides quick information on the
-how and why of a particular chore.
-
-## Create a binary that lists jj info 
-
-This binary should list the changeID, commitID, and description title
-and using `jj-lib`
-```
 
 ## Workflow and conventions
 
 Bot-facing workflow and conventions live in
 [`../AGENTS.md`](../AGENTS.md):
 
-- [Notes file conventions](../AGENTS.md#notes-file-conventions)
+- [Notes file conventions](../agent-data/notes.md)
   — Todo format, Reference numbering, Notes references
-  (`[[N]]` citation style), Markdown anchor links, Retiring
-  Done entries.
-- [Chores conventions](../AGENTS.md#chores-conventions) —
-  section headers / Done entries exact-title rule, content
-  rules, `Commits:` line format.
-- [Code Conventions](../AGENTS.md#code-conventions) — doc
+  (`[[N]]` citation style), Markdown anchor links, the In
+  Progress block, Frozen history.
+- [Code Conventions](../agent-data/code.md) — doc
   comments, `// OK: …` on `unwrap*` calls, ask-on-ambiguity,
   stuck detection.
 
-Per-cycle workflow lives in
-[`cycle-protocol.md`](cycle-protocol.md):
-
-- [Cycles](cycle-protocol.md#cycles) — three-phase shape
-  (Preparation → Work → Close-out), `X.Y.Z-N` numbering,
-  sub-cycles.
-- [Per-commit flow](cycle-protocol.md#per-commit-flow) —
-  cargo cycle (`fmt` / `clippy` / `test` / `install`),
-  work + commit description review gates.
-- [Commit description](cycle-protocol.md#commit-description)
-  — Conventional Commits title rules (no version suffix,
-  distinct per step); body shape per app vs `.claude` repo.
-- [Pushing](cycle-protocol.md#pushing) — push policy,
-  close-out shape, `.claude` cadence.
-
-This repo's versioning lives in
-[`versioning.md`](versioning.md) — generic and shared
-verbatim; the single source of truth that AGENTS.md and
-cycle-protocol.md refer to abstractly:
-
-- [Terms](versioning.md#terms) — version / version-of-record /
-  versioning.
-- [Recording the version-of-record](versioning.md#recording-the-version-of-record)
-  — manifest, notation, reporter, and cadence, by medium.
-- [Step numbering](versioning.md#step-numbering) — the
-  `X.Y.Z-N` scheme, nesting, optional Preparation.
+Per-cycle workflow lives in [`../AGENTS.md`](../AGENTS.md#cycle-protocol) and the files it
+links under `../agent-data/`: [cycle-checklists.md](../agent-data/cycle-checklists.md),
+[cycle-protocol.md](../agent-data/cycle-protocol.md), [jj.md](../agent-data/jj.md), and
+[versioning.md](../agent-data/versioning.md) for the `X.Y.Z-N` suffix scheme.

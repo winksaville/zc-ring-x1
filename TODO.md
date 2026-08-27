@@ -48,7 +48,7 @@ and identical titles.
 
 - [docs: fix close-out and sweep punctuation opening][1] (done)
 - [docs: cycle shape and cycle-record rules][2] (done)
-- [docs: retire the notes copies and sweep their semicolons][3]
+- [docs: retire the notes copies and sweep their semicolons][3] (done)
 - [docs: sweep typeable punctuation][4]
 - [docs: rewrap the agent-files to the prose width][6]
 - [docs: fix close-out and sweep punctuation closing][5]
@@ -156,6 +156,16 @@ under `agent-data/`, and README, ARCHITECTURE, notes/README, and done.md describ
 the live record and link into the copies. Remove the copies, repoint the four, and convert the
 prose semicolons the touch rule makes due in the files this rung edits.
 
+* Two files under `notes/` duplicated agent-data files, with anchors that went stale when the
+  agent-data copies were rewritten.
+  - Removed. README's Contributing section, ARCHITECTURE's file map, notes/README's workflow
+    section, and done.md's header point at AGENTS.md, `agent-data/`, and the frozen history
+    instead, and README's ochid and config links follow their targets.
+* README.md, TODO.md, ARCHITECTURE.md, and notes/README.md carried prose semicolons, due under
+  the touch rule once this cycle edits them.
+  - Converted with the joins the rule names: a period for two claims, a comma with a
+    conjunction for a continuation, bare sub-bullets for a list. Fenced code keeps its own.
+
 ##### docs: sweep typeable punctuation
 
 The files this cycle touches carry about seventy em dashes, en dashes, ellipses, and arrows,
@@ -184,8 +194,8 @@ _None._
  descending. Reprioritize by moving an entry, then
  `vc-x1 fix-todo --no-dry-run TODO.md` to renumber.
  The numbers are positional rank, not stable IDs — to refer
- to a Todo, name it by its **title** (a greppable mention;
- a numbered list item has no anchor to link to), not its
+ to a Todo, name it by its **title** (a greppable mention,
+ since a numbered list item has no anchor to link to), not its
  number. Long-tail entries
  live in [todo-backlog.md](notes/todo-backlog.md). Use the
  [Prose Form in AGENTS.md](agent-data/prose.md#prose-form). Deeper
@@ -193,20 +203,20 @@ _None._
 
 1. Descriptor queue endpoints: paired DescSender (loan +
    send) / DescReceiver (recv) [[11]]:
-   - own ring endpoint + registry access;
-   - the demo's ~20-line send path becomes ~3 lines;
+   - own ring endpoint + registry access
+   - the demo's ~20-line send path becomes ~3 lines
    - `resolve`'s unsafe is audited once inside the crate
-     (recv safe by construction);
-   - guard handed back on Full;
-   - design against both ring flavors (SPSC + MPSC);
+     (recv safe by construction)
+   - guard handed back on Full
+   - design against both ring flavors (SPSC + MPSC)
    - the sender is also where each sender's private
      overflow pending list will live.
 2. Overflow FIFO: on ring Full, append the message to a
    sender-private pending list instead of failing
    [details](notes/ring-buffer-design.md#overflow-fifo-future):
    - intrusive — the same embedded next-link the
-     free-stack uses, so zero allocation;
-   - naturally bounded by pool capacity;
+     free-stack uses, so zero allocation
+   - naturally bounded by pool capacity
    - composes per-sender with MPSC — see
      [Overflow readiness](notes/ring-buffer-design.md#overflow-readiness).
 3. Seam-word SPSC variant: publish per-slot seq words so
@@ -214,10 +224,10 @@ _None._
    Vyukov-style publish but load/store only (no CAS: the
    single producer's index stays endpoint-private) [[21]]:
    - motivation: cross-core, SPSC moves ~10.0 cache lines
-     per round trip vs MPSC's ~6.7 and loses ~26–40%; the
-     whole gap is line-transfer economics;
+     per round trip vs MPSC's ~6.7 and loses ~26–40%, and the
+     whole gap is line-transfer economics
    - must keep the SMT/1t win (SPSC beats MPSC at 0,12
-     where transfers ≈ 0 — the protocol itself is cheaper);
+     where transfers ≈ 0 — the protocol itself is cheaper)
    - costs a seq array in the layout (layout_version bump)
      — measure A/B with tp_roundtrip before adopting.
 4. Batch alloc/free demo: alongside the one-message
@@ -230,7 +240,7 @@ _None._
    demo should show it.
 5. Endpoint claims word: CAS-claimed producer/consumer roles
    in the ring header so a second attach/split claimant gets
-   an error instead of silently violating SPSC; costs a
+   an error instead of silently violating SPSC, at the cost of a
    layout_version bump (or spends `_pad0`)
    [details](notes/ring-buffer-design.md#resolved-questions).
 6. Typed endpoints: `Producer<T>` / `Consumer<T>` validating
@@ -251,34 +261,34 @@ _None._
   rings under a pluggable service policy (priority,
   round-robin, weighted)
   [details](notes/ring-buffer-design.md#fan-in-composition-not-a-mode):
-  - buildable today from shipped parts;
+  - buildable today from shipped parts
   - likely offered alongside the MPSC ring eventually — no
     commitment yet.
 - Study [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2)
   before implementing message pools — battle-tested loan/send
-  decoupling and pool-offset machinery; how it differs from
-  this project in
+  decoupling and pool-offset machinery. How it differs from
+  this project is in
   [Prior art: iceoryx2](notes/ring-buffer-design.md#prior-art-iceoryx2).
 - `#[global_allocator]` experiment over size-class pools:
   GlobalAlloc is `&self` + any-thread, so it needs
   shared-allocation pools (phase 2 gen-tagged head) or
-  per-thread pools with a routing layer; arbitrary `Layout`
+  per-thread pools with a routing layer, and arbitrary `Layout`
   needs size-class selection + an oversize fallback. Frees
   from any thread are already natural (MPSC push). Classic
-  mempool → malloc arc; measure the object-pool form in
+  mempool → malloc arc. Measure the object-pool form in
   iiac-perf first.
 - Private per-handle cache in front of the shared free-stack
   (tcache-over-arenas): alloc/free hit a thread-private list
-  with plain load/store; refill/flush moves batches to the
+  with plain load/store, and refill/flush moves batches to the
   CAS stack, amortizing one CAS over N messages. Motivating
   datum: 2 uncontended CAS = 8.7 ns of the pool's 9.9 ns
   single-thread round trip (vs malloc tcache's zero
   atomics). Hold until iiac-perf shows per-op CAS matters in
-  a composed workload; we think the pool's tail latency
+  a composed workload. We think the pool's tail latency
   (p99, stddev) already beats malloc — no arena locks, no
   brk/mmap — and that matters more than the mean.
 - `Message` trait over the payload cast boilerplate: const
-  `MSG_ID` + the zerocopy bounds; receiver-side dispatch
+  `MSG_ID` + the zerocopy bounds, receiver-side dispatch
   (read tag, match, cast) without per-call-site ceremony,
   and maybe a transport seam so an embedded
   pointer-descriptor profile slots in behind the same API
@@ -292,21 +302,21 @@ _None._
 - Blocking layer above the crate (futex, eventfd, async
   wakers) built on the header's user line — mechanism and
   contracts in
-  [Blocking and user words](notes/ring-buffer-design.md#blocking-and-user-words);
-  possibly a companion wrapper crate so independent peers
+  [Blocking and user words](notes/ring-buffer-design.md#blocking-and-user-words).
+  Possibly a companion wrapper crate so independent peers
   share one protocol.
 - loom-based exhaustive ordering exploration of the SPSC
   protocol.
-- Polish: `Error` implements `Display` + `core::error::Error`;
-  `occupancy()` / `is_empty()` accessors.
+- Polish: `Error` implements `Display` + `core::error::Error`,
+  and `occupancy()` / `is_empty()` accessors.
 - Packed-slot variant (drop the cache-line-multiple slot
   constraint) for small-message space efficiency.
 - Per-target / configurable `CACHE_LINE` (128 for Apple
   M-series false sharing, tiny for cache-less MCUs) — safe
-  since attach validates the header's `cache_line`; decide
+  since attach validates the header's `cache_line`. Decide
   values from iiac-perf measurements.
 - Embedded floor: protocol is atomic load/store only (no
-  CAS), so thumbv6m works today; keep it that way where
+  CAS), so thumbv6m works today. Keep it that way where
   possible (endpoint claims wants CAS — gate it), and 8/16-bit
   targets would need index-width genericization.
 - Shared `Geometry` struct (`slot_size`, `capacity`, `mask`)
@@ -314,7 +324,7 @@ _None._
   constructors, slimming their signatures and Ring's fields.
 - Black-box test split: move the public-API protocol tests
   (roundtrip, abandoned guards, threaded stress) to
-  `tests/protocol.rs`; white-box tests (u32 wrap, attach
+  `tests/protocol.rs`, while white-box tests (u32 wrap, attach
   header internals) stay in lib.rs. Do it when a trybuild
   compile-fail harness lands there too (pins the
   "second reservation does not compile" guarantee).
