@@ -6,7 +6,7 @@ Zero copy ring buffer experiment 1
 > [zc-msg-x1](https://github.com/winksaville/zc-msg-x1)**,
 > the follow-on focused on the MPSC messaging layer (ring +
 > pools + endpoints). This repo remains the ring-protocol
-> record — SPSC and MPSC, compared and measured. Why and
+> record, SPSC and MPSC, compared and measured. Why and
 > what moves: [notes/zc-msg-x1.md](notes/zc-msg-x1.md).
 
 This is the main repo of a dual-repo convention for using
@@ -18,13 +18,13 @@ The beginnings of a tool to help is [vc-x1](https://github.com/winksaville/vc-x1
 
 A `no_std` SPSC (single-producer / single-consumer) ring buffer
 over a caller-provided memory region, moving typed messages with
-zero copying at the boundary — the producer writes through a
+zero copying at the boundary: the producer writes through a
 `&mut T` directly into buffer memory, the consumer reads through
 a `&T` in place. Typed views are validated casts via
 [zerocopy](https://docs.rs/zerocopy), and the same `#[repr(C)]`
 layout works between threads and, via shared memory, between
-processes. The full design — requirements, memory layout, index
-scheme, API, validation — lives in
+processes. The full design (requirements, memory layout, index
+scheme, API, validation) lives in
 [notes/ring-buffer-design.md](notes/ring-buffer-design.md), kept
 in sync with `src/`.
 
@@ -33,8 +33,8 @@ in sync with `src/`.
 - Free-running `AtomicU32` indices, masked only at slot access,
   no sacrificial slot, lock-free with Acquire/Release pairing.
 - Guard API: `reserve_slot_with::<T>(policy)` on either
-  endpoint — write → `commit()` on the producer side, read →
-  `release()` on the consumer side. Dropping a guard abandons
+  endpoint: write, then `commit()` on the producer side, read,
+  then `release()` on the consumer side. Dropping a guard abandons
   cleanly.
 - IPC-ready: one contiguous region, no internal pointers, an
   init/attach handshake (magic published last, Release), and an
@@ -42,7 +42,7 @@ in sync with `src/`.
   never cause UB.
 - An app-owned scratch line in the header (`user()` on both
   endpoints, 16 `AtomicU32`s): the crate zeroes it at init and
-  never touches it again — a shared-memory home for app wakeup
+  never touches it again, a shared-memory home for app wakeup
   protocols. The crate itself never blocks or spins.
 - Validated by tests (including a threaded stress and a
   u32-index-wrap proof) and [Miri](https://github.com/rust-lang/miri)
@@ -86,7 +86,7 @@ hardening and follow-ons are tracked in
 
 The companion allocation primitive: fixed-size
 cache-line-aligned buffers over a caller-provided region,
-decoupling "get a message" from "send it" — allocate a
+decoupling "get a message" from "send it": allocate a
 buffer, hold it as long as you like, free (or eventually
 send) it whenever. Design and roadmap:
 [Messaging layer: pools and descriptor queues](notes/ring-buffer-design.md#messaging-layer-pools-and-descriptor-queues).
@@ -94,23 +94,23 @@ send) it whenever. Design and roadmap:
 - Intrusive LIFO free-stack with zero per-buffer overhead: a
   *free* buffer's first word is its next-link, and an allocated
   buffer carries no header at all.
-- `alloc::<T>()` returns a `BufSlot<T>` — the ownership
+- `alloc::<T>()` returns a `BufSlot<T>`, the ownership
   token for one buffer, `Deref`/`DerefMut` to `T` in place.
   The pop is single-popper Treiber (`&mut self`, no ABA):
   one allocator per pool.
 - `BufSlot::free` is an MPSC push: whichever thread or
   process ends up holding the guard may free it.
 - `Pool::init` creates and validates a fresh region, and
-  `Pool::attach` joins one initialized elsewhere — `unsafe`
+  `Pool::attach` joins one initialized elsewhere, `unsafe`
   like `Ring::attach` (the caller vouches for the mapping),
   and its contract carries the single-allocator rule: at
   most one attached handle allocates, any handle frees.
 - Messaging aside, a pool is a fast fixed-size object
   allocator in its own right: O(1) alloc/free, no locks, no
   syscalls, cache-aligned `T`s with LIFO reuse keeping the
-  working set hot — usable today for app-owned objects that
+  working set hot, usable today for app-owned objects that
   never travel.
-- `BufSlot` does not borrow the pool — any number of
+- `BufSlot` does not borrow the pool, so any number of
   allocated buffers live at once. Dropping without `free`
   leaks the buffer (documented, like the ring's abandon but
   with the opposite consequence).
@@ -157,12 +157,12 @@ it.
 several roles across objects (a typical sender is one pool's
 allocator and one ring's producer):
 
-- **Ring** — exactly one producer and one consumer, ever
+- **Ring**: exactly one producer and one consumer, ever
   (SPSC): in-process, `split()` hands out each endpoint
   once, and cross-process, one producing and one consuming
   process by contract. An endpoint reserves at most one
   slot at a time (guard holds the endpoint borrow).
-- **Pool** — exactly one *allocator* at a time (the
+- **Pool**: exactly one *allocator* at a time (the
   single-popper contract on `Pool::attach`, and in-process
   `alloc` takes `&mut self`), and **any number of freers**:
   whoever holds a `BufSlot` may free it, from any thread or
@@ -171,20 +171,20 @@ allocator and one ring's producer):
 **Buffer lifecycle.** A pool buffer is always in exactly one
 state, with one party allowed to touch it:
 
-- **free** — on the free-stack, and the pool protocol owns it.
+- **free**: on the free-stack, and the pool protocol owns it.
   Nobody reads or writes it except through alloc/free
   machinery (its first word is the next-link).
-- **allocated** — popped by `alloc`, owned by the `BufSlot`
+- **allocated**: popped by `alloc`, owned by the `BufSlot`
   holder: exclusive read/write through the guard, held as
   long as desired, moved between threads freely (`Send`).
-  No other party — including the pool — may touch the
+  No other party, the pool included, may touch the
   bytes.
-- **in-flight** — the descriptor form: `into_desc` consumes
+- **in-flight**: the descriptor form, where `into_desc` consumes
   the guard and ownership travels in the returned `Desc`
   (typically through a ring). The sender must no longer
   touch the buffer. Whoever `resolve`s the descriptor owns
   it, exactly once.
-- **freed** — `BufSlot::free` pushes it back, and ownership
+- **freed**: `BufSlot::free` pushes it back, and ownership
   returns to the pool protocol the instant the CAS lands.
   Use-after-free of the guard is unrepresentable (`free`
   consumes it), and dropping without `free` leaks the buffer.
@@ -220,12 +220,12 @@ let msg = unsafe { registry.resolve::<Msg>(desc) }?;
 msg.free();                           // buffer back to its pool
 ```
 
-One allocation's bytes are written once and never copied —
+One allocation's bytes are written once and never copied,
 not by send, not by receive. (`resolve` is the one `unsafe`:
 validation rejects unknown ids / bad indices / wrong types,
 but ownership uniqueness is the caller's promise. Paired
-sender/receiver endpoints that encapsulate it — and shrink
-this to loan / send / recv — are the next cycle, see
+sender/receiver endpoints that encapsulate it, and shrink
+this to loan / send / recv, are the next cycle, see
 TODO.md.)
 
 **Trust.** Unchanged from the ring: every word in shared
@@ -337,27 +337,27 @@ zcr-mpsc-2t: zc-ring-x1 mpsc send_with round-trip (2 threads, spin) [duration=30
 
 ## Testing
 
-- `cargo test` — the full suite, including a threaded stress
+- `cargo test`: the full suite, including a threaded stress
   test and a u32-index-wrap test.
-- `cargo run --example readme` — the Overview example above
+- `cargo run --example readme`: the Overview example above
   (committed as [examples/readme.rs](examples/readme.rs) so
   `cargo clippy --all-targets` keeps it compiling against the
   real API).
-- `cargo run --example pool_readme` — the Message pool
+- `cargo run --example pool_readme`: the Message pool
   example above
   ([examples/pool_readme.rs](examples/pool_readme.rs), same
   convention).
-- `cargo run --release` — the demo binary
+- `cargo run --release`: the demo binary
   ([src/bin/zc-ring-x1-demo.rs](src/bin/zc-ring-x1-demo.rs)):
   a throughput scoreboard (msgs/sec and ns/msg) grouped so
-  like compares with like — alloc/free baselines (pool vs
+  like compares with like: alloc/free baselines (pool vs
   global allocator), then three message flows (raw ring,
   composed ring + pool descriptors, std channel + pool) at
   each thread placement: single thread on core 0, two
   threads unpinned, two SMT siblings sharing one physical
   core, and two different physical cores (pairs discovered
   from /sys at runtime, and each line names the cpus it ran
-  on). Eyeball numbers — single runs, no mean/stdev — not a
+  on). Eyeball numbers (single runs, no mean/stdev), not a
   benchmark (calibrated measurement lives in iiac-perf).
   Installable: `cargo install --path . --locked`, then
   `zc-ring-x1-demo`, and `-V` prints the version-of-record so
@@ -386,11 +386,11 @@ zcr-mpsc-2t: zc-ring-x1 mpsc send_with round-trip (2 threads, spin) [duration=30
   spsc_ring_one_pool_msg_2t (diff cores 0+3):    3,222,906 msgs/sec    310.3 ns/msg
   std_mpsc_one_pool_msg_2t (diff cores 0+3):     3,258,778 msgs/sec    306.9 ns/msg
   ```
-- `cargo +nightly miri test` — the full suite under
+- `cargo +nightly miri test`: the full suite under
   [Miri](https://github.com/rust-lang/miri), which checks the
   `unsafe` code against the memory model. It has caught two
   real Stacked Borrows bugs here (an init retag in 0.3.0-4, a
-  guard aliasing race in 0.3.0-6 — the latter only visible
+  guard aliasing race in 0.3.0-6, the latter only visible
   with the threaded test included). One-time setup:
   `rustup component add --toolchain nightly miri`. The
   threaded stress test runs a reduced message count under
@@ -402,7 +402,7 @@ zcr-mpsc-2t: zc-ring-x1 mpsc send_with round-trip (2 threads, spin) [duration=30
 binary with `cargo install --path .`, also pass `--locked`. By
 default `cargo install` ignores `Cargo.lock` and re-resolves
 dependencies from scratch, so it can silently build the binary from
-a different — possibly broken — dependency graph than `cargo build`
+a different, possibly broken, dependency graph than `cargo build`
 / `cargo test` ran against.
 
 | command | reads `Cargo.lock`? | re-resolves? |
@@ -417,7 +417,7 @@ for `cargo install`, so the discipline lives in the per-commit cargo
 cycle and shell aliases (e.g. `alias ci='cargo install --locked'`).
 
 The trade-off is predictable-as-tested (`--locked`) vs picking up
-upstream fixes via fresh resolves (default). Either is defensible —
+upstream fixes via fresh resolves (default). Either is defensible:
 pick what fits your project, then edit this section and the
 per-commit cargo cycle to match. Background:
 [cargo#7169](https://github.com/rust-lang/cargo/issues/7169),
@@ -430,17 +430,17 @@ alongside git. New to jj? See
 [Steve Klabnik](https://github.com/steveklabnik)'s
 [Jujutsu tutorial](https://steveklabnik.github.io/jujutsu-tutorial).
 
-Repo-specific how-tos — initial commit, pushing, modifying and
-force-pushing a commit, revsets, and a useful-commands reference —
+Repo-specific how-tos (initial commit, pushing, modifying and
+force-pushing a commit, revsets, and a useful-commands reference)
 live in [notes/jj-tips.md](notes/jj-tips.md).
 
 ## Cross-repo Linking with Git Trailers
 
 Commits in each repo use [git trailers](https://git-scm.com/docs/git-interpret-trailers)
 to cross-reference their counterpart in the other repo via an
-`ochid` (Other Change ID) trailer — the defining mechanism of the
-dual-repo convention. For the full definition — trailer syntax,
-the example shape, per-commit mechanics, and `.vc-config.md` —
+`ochid` (Other Change ID) trailer, the defining mechanism of the
+dual-repo convention. For the full definition (trailer syntax,
+the example shape, per-commit mechanics, and `.vc-config.md`)
 see
 [Cross-repo linking (ochid trailers)](agent-data/jj.md#cross-repo-linking-ochid-trailers).
 
@@ -450,14 +450,14 @@ Agent workflow, commit conventions, and code style are
 canonical in [AGENTS.md](AGENTS.md) (which `CLAUDE.md` imports)
 and the files it links under [agent-data/](agent-data/):
 
-- [Cycle protocol](AGENTS.md#cycle-protocol) — the opening,
+- [Cycle protocol](AGENTS.md#cycle-protocol): the opening,
   the per-rung flow, and the close-out. The `X.Y.Z-N`
   suffix scheme is in
   [versioning.md](agent-data/versioning.md#suffix-scheme).
-- [Commit description](AGENTS.md#commit-description) —
+- [Commit description](AGENTS.md#commit-description):
   Conventional Commits title rules and the commit-body form.
-- [Code conventions](agent-data/code.md) — doc comments on
-  every file / fn / method, `// OK: …` on `unwrap*` calls.
+- [Code conventions](agent-data/code.md): doc comments on
+  every file / fn / method, `// OK: ...` on `unwrap*` calls.
 
 Task tracking lives in [TODO.md](TODO.md): the ranked list,
 and the running cycle's record in its `## In Progress` block.

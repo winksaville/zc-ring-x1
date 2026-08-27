@@ -10,11 +10,11 @@ the records of earlier cycles, frozen as history
 
 Project design docs:
 
-- [ring-buffer-design.md](ring-buffer-design.md) — the
+- [ring-buffer-design.md](ring-buffer-design.md): the
   zero-copy ring buffer and its MPSC sibling (terminology,
   requirements, layout, API, validation), kept in sync with
   `src/`.
-- [../tprobe/notes/design.md](../tprobe/notes/design.md) —
+- [../tprobe/notes/design.md](../tprobe/notes/design.md):
   the tprobe measurement crate (probe primitives, ticks,
   report renderer, the tprobe/tp_runner split). The crate
   keeps its own notes so they travel on extraction.
@@ -25,12 +25,12 @@ Project design docs:
 Bot-facing workflow and conventions live in
 [`../AGENTS.md`](../AGENTS.md):
 
-- [Notes file conventions](../agent-data/notes.md)
-  — Todo format, Reference numbering, Notes references
+- [Notes file conventions](../agent-data/notes.md):
+  Todo format, Reference numbering, Notes references
   (`[[N]]` citation style), Markdown anchor links, the In
   Progress block, Frozen history.
-- [Code Conventions](../agent-data/code.md) — doc
-  comments, `// OK: …` on `unwrap*` calls, ask-on-ambiguity,
+- [Code Conventions](../agent-data/code.md): doc
+  comments, `// OK: ...` on `unwrap*` calls, ask-on-ambiguity,
   stuck detection.
 
 Per-cycle workflow lives in [`../AGENTS.md`](../AGENTS.md#cycle-protocol) and the files it
