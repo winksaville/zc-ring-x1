@@ -35,7 +35,7 @@ acquaint check opens `../vc-x1-messages/zc-ring-x1.md`.
 
 - [docs: adopt the family agent-files set opening][1] (done)
 - [fix(config): name this repo's family member][4] (done)
-- [build: upgrade the dependencies to the latest compatible versions][6]
+- [build: upgrade the dependencies to the latest compatible versions][6] (done)
 - [docs: copy the set over the agent-files][2]
 - [docs: reshape TODO.md to the set's Todo format][3]
 - [docs: adopt the family agent-files set closing][5]
@@ -74,8 +74,17 @@ repo, so the messaging acquaint check would have opened vc-x1's record file rath
 
 ##### build: upgrade the dependencies to the latest compatible versions
 
-`cargo upgrade` moves the manifest reqs (`clap` in `tp_runner` and `tp_matrix`), then
-`cargo update` moves the lock's transitive entries to the newest their reqs allow.
+The manifests asked for `clap 4.6.1` and the lock held transitive entries behind what their reqs
+allowed, so a fresh build used older code than the reqs permitted.
+
+* The manifest reqs were behind the latest compatible releases.
+  - `cargo upgrade` moved `clap` to `4.6.6` in `tp_runner` and `tp_matrix`, the only req with a
+    newer compatible version. No other req had one, and nothing was held behind an incompatible
+    (major) release.
+* The lock's transitive entries were behind their reqs.
+  - `cargo update` moved eleven entries, `zerocopy` `0.8.52` to `0.8.56` and `hdrhistogram`
+    `7.5.4` to `7.6.0` among them, with `nom` `7` to `8` and `zlib-rs` arriving as `hdrhistogram`'s
+    new transitive choices and `minimal-lexical` leaving with the old `nom`.
 
 ##### docs: copy the set over the agent-files
 
