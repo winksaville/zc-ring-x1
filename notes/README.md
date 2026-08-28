@@ -34,6 +34,6 @@ Bot-facing workflow and conventions live in
   stuck detection.
 
 Per-cycle workflow lives in [`../AGENTS.md`](../AGENTS.md#cycle-protocol) and the files it
-links under `../agent-data/`: [cycle-checklists.md](../agent-data/cycle-checklists.md),
-[cycle-protocol.md](../agent-data/cycle-protocol.md), [jj.md](../agent-data/jj.md), and
-[versioning.md](../agent-data/versioning.md) for the `X.Y.Z-N` suffix scheme.
+links under `../agent-data/`: [jj.md](../agent-data/jj.md) for the commands,
+[versioning.md](../agent-data/versioning.md) for the `X.Y.Z-N` suffix scheme, and
+[cycle-model.md](../agent-data/cycle-model.md) for the In Progress block's specimen.

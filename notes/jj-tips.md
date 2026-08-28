@@ -346,5 +346,5 @@ Each commit cross-references its counterpart in the other repo
 via an `ochid:` git trailer. That is a cross-repo convention
 rather than a jj mechanic — for the full definition (trailer
 syntax, per-commit mechanics, `.vc-config.toml`) see
-[Cross-repo linking (ochid trailers)](../AGENTS.md#cross-repo-linking-ochid-trailers)
+[Cross-repo linking (ochid trailers)](../agent-data/jj.md#cross-repo-linking-ochid-trailers)
 in AGENTS.md.

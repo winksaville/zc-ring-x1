@@ -10,6 +10,8 @@ content goes in [custom.md](../custom.md).
 
 ## Prose form
 
+([why](rationale.md#prose-form))
+
 Long-lived prose on this project follows one basic shape: a short intro that explains the *why* or
 the high-level *what*, sharpened to a *problem statement* where a surface calls for one (see
 [Problem-first shape](#problem-first-shape)), then a `-` bullet list for the details. The width
@@ -75,6 +77,20 @@ the sentence after it is complete without it:
   (wink, 2026-08-21).
 - The price: one word of redundancy, paid on purpose: the label is skippable, the sentence is not.
 
+### One spelling per term
+
+A defined term has one spelling, everywhere: `work-repo` and `agent-repo` are always hyphenated,
+`agent-files`, `version-of-record`, `dual-repo`, and `as-built` likewise, and no rule varies the
+spelling by how the term is used. Terminology in AGENTS.md defines the terms, and this section is
+where the spelling rule lives, since a glossary is read for meaning rather than for spelling.
+
+### Bullet form
+
+A bullet is a full sentence, capitalized and ending in a period or question mark, unless the list
+is a plain list of things (files, names, options), which takes neither. A list is all one or all
+the other. A sentence never opens with a lower-case name (`squash-push`, `rationale.md`), it is
+recast so the name is not the first word.
+
 ### Line widths
 
 Every width number lives here and nowhere else: the other files and sections link here rather than
@@ -119,7 +135,8 @@ opening what it intended to do.
 
 ### Commit-body form
 
-A commit body is the [Problem-first shape](#problem-first-shape) with one addition: a body whose
+The specimen is [commit-model.md](commit-model.md). A commit body is the [Problem-first
+shape](#problem-first-shape) with one addition: a body whose
 problem has several sub-problems arranges them by a fixed recursion, so a reader knows what any
 bullet is from its marker and its depth. The earlier statement, "a problem statement then a solution
 statement, both broad", left that arrangement to taste, and taste converged slowly and separately.
@@ -215,6 +232,8 @@ rung.
 
 ### Conventional-commit shape (ladder / commit)
 
+([why](rationale.md#conventional-commit-shape-ladder--commit))
+
 A ladder step and its commit description share a *title* shape, a [Conventional
 Commits](https://www.conventionalcommits.org/en/v1.0.0/) title (`<type>: <desc>`, an optional
 `(scope)` after the type: `feat(push): ...`) over [Prose form](#prose-form) detail. They differ in
@@ -266,10 +285,12 @@ them scannable. Rungs between keep their own titles on the stem.
 **Commit description details**, beyond the shape: the title is a [Conventional
 Commit](https://www.conventionalcommits.org/), `<type>: <short description>` with an optional
 `(scope)`, at the width in [Line widths](#line-widths), common types `feat`, `fix`, `refactor`,
-`test`, `docs`, `chore`. The body is the [Commit-body form](#commit-body-form) above, wrapped per
-Line widths, with no version in title or body, no file list, and no deliberation. `vc-x1 push` gives
-both repos' commits the same title and body. `ochid:` is the body's last line, stamped by push, and
-a breaking change uses the hyphenated `BREAKING-CHANGE:` trailer key.
+`test`, `docs`, `chore`. A scope names a component as its user would name it (a subcommand, a
+repo), never a file or directory, and is omitted when there is none. The body is the [Commit-body
+form](#commit-body-form) above, wrapped per Line widths, with no version in title or body, no file
+list, and no deliberation. `vc-x1 push` gives both repos' commits the same title and body. `ochid:`
+is the body's last line, stamped by push, and a breaking change uses the hyphenated
+`BREAKING-CHANGE:` trailer key.
 
 ### Steps are named, not numbered
 
@@ -286,40 +307,32 @@ the position and then have to be maintained.
 - **Nothing renumbers.** Inserting, reordering or dropping a step edits the ladder list and nothing
   else. On an unlanded topic bookmark the rungs that already committed an older ladder come along.
   See [Cycles run on a bookmark](../AGENTS.md#cycles-run-on-a-bookmark).
-- **`## Todo` ranks are the exception that stays numbered**, because a priority list has an order
-  worth reading off (see [Todo format](notes.md#todo-format)). Those numbers are positional too, and
-  are equally never used as references.
+- **`## Todo` is ordered, not numbered**: priority is file order ([Todo
+  format](notes.md#todo-format)), so no rank number exists to be cited (the numbered form retired
+  2026-08-27).
 
 ### Versions live in the version-of-record only
 
 No version appears in durable prose: not in a ladder rung, a commit title, or a commit body. The
 manifest is the version's only written home (see [versioning.md](versioning.md)), and a commit's
-version is read from that file at that commit.
-
-**Why:** the version is a build stamp answering "which commit produced this artifact", not a name
-for a step. Written into prose it becomes a second identifier that history is free to invalidate:
-one renumber of published versions turns every prose mention, transcript and pasted report into
-residue that needs a decoder to read. A renumber cannot touch a title.
+version is read from that file at that commit
+([why](rationale.md#versions-live-in-the-version-of-record-only)).
 
 **No surface records a version.** Which commit a version names is read from the manifest at that
 commit, and "what shipped in 0.42.0" is answered by `git log` on the manifest, not by a list kept in
 prose. The earlier chores as-built rungs and `## Done` entries carried versions beside commit SHAs,
 and retired with the records they lived in ([Cycle-record](../AGENTS.md#cycle-record)).
 
-## Pinned files name no project
+## Agent-files name no project
 
-A pinned agent-file states rules and mechanisms. It never names a member project, a member's
-history, or a member's versions. The vc-x1 *CLI* and its versions are tool facts every member shares
-and stay. What is barred is a member repo appearing in universal text.
+An agent-file states rules and mechanisms. It never names an adopter, an adopter's history, or an
+adopter's versions. The vc-x1 *CLI* and its versions are tool facts every adopter shares and stay.
+What is barred is an adopter's repo appearing in universal text
+([why](rationale.md#agent-files-name-no-project)).
 
-**Why:** pinned text is copied to every member, so a project narration reads as the reader's own
-history ("This project adopted the convention on <date>" arrives in repos that adopted it on a
-different date or never). And the citation goes stale the moment the named project retires its
-records, while the rule outlives it.
-
-**How to apply:** state the rule and its mechanism in the pinned file, and leave the evidence trail
+**How to apply:** state the rule and its mechanism in the agent-file, and leave the evidence trail
 in the records of the project that earned it (the cycle-record, Todo entries), reachable from the
-commit that changed the pinned file. Dates are fine, since a date names a moment, not a member. A
+commit that changed the agent-file. Dates are fine, since a date names a moment, not an adopter. A
 specimen in the scheme's own notation (an example version, an example bookmark name) is a use, not a
 reference, per the same distinction [Versions live in the version-of-record
 only](#versions-live-in-the-version-of-record-only) draws.
@@ -329,11 +342,7 @@ only](#versions-live-in-the-version-of-record-only) draws.
 Durable text the agent writes (agent-files, `notes/`, commit bodies, the cycle-record) should stick
 to observations and direct descriptions of the code or data. If a mechanism, hypothesis, or causal
 claim enters the text, prefix it with "We think ..." (a royal "we") so a reader can tell the
-measured from the inferred.
-
-**Why:** unmarked speculation reads like evidence, and a future reader (or the agent on a later
-session) can pick it up as a known fact when it's not. Measured / inferred is a distinction worth
-keeping visible in the written record.
+measured from the inferred ([why](rationale.md#speculation-marker)).
 
 **How to apply:** observations and factual descriptions need no marker. Prefix with "We think ..."
 (or a close variant like "Our guess is ...") when the claim is a mechanism ("X wins because Y caches
@@ -344,10 +353,8 @@ linearly"), or any reasoning not directly supported by the data on hand.
 
 When a conversational reply centers on a technical explanation (measurement theory, statistics,
 hardware behavior), end it with a short plain-language synopsis, no jargon and no symbols, so the
-reader can check their understanding against the technical version.
-
-**Why:** the technical form is precise but easy to misread, and the plain form catches
-misunderstandings early, when they are cheap.
+reader can check their understanding against the technical version
+([why](rationale.md#plain-synopsis-after-technical-explanations)).
 
 **How to apply:** conversation only, not notes files (a notes entry should already lead with the
 why). Mark it clearly (e.g. "The plain version:"). A reply that is already plain needs no synopsis.

@@ -12,22 +12,18 @@ content goes in [custom.md](../custom.md).
 ## File reads: read the slice you need
 
 Long notes files are appended to over time. Read only the slice your task needs. Grep or read
-further on demand.
+further on demand ([why](rationale.md#file-reads-read-the-slice-you-need)).
 
 - **`TODO.md`** (the routine acquaint read): the first ~60 lines covers intro + `## In Progress` +
-  the top of the ranked `## Todo` (priorities, #1 highest). `Read` with `offset=0, limit=60`.
-  `## Ideas` sits below `## Todo`. Read further only when chasing a lower-ranked entry, an Idea, a
+  the top of `## Todo`, its entries in priority order. `Read` with `offset=0, limit=60`.
+  `## Ideas` sits below `## Todo`. Read further only when chasing a lower entry, an Idea, a
   `[N]` ref, or auditing the whole list.
-- **`notes/todo-backlog.md`**: the long-tail backlog (lower-priority entries below the ranked
-  `## Todo`). Read only when picking up a backlog item, and grep to locate it first.
+- **`notes/todo-backlog.md`**: the long-tail backlog (lower-priority entries below `## Todo`). Read
+  only when picking up a backlog item, and grep to locate it first.
 - **`notes/bugs.md`**: the bug list. Small, so read it whole when triaging a bug or chasing the
   `## Bugs` pointer in TODO.md.
 - **`notes/done.md`** + **`notes/chores/chores-NN.md`**: frozen history. Scan headings first
   (`grep '^## ' notes/chores/chores-NN.md`), then read only the section you need.
-
-**Why:** the routine read should stay small. `TODO.md` grows every cycle, so the backlog and bugs
-live in files under `notes/` rather than inline. The same "slice you need" rule applies to
-historical files.
 
 ## Notes references
 
@@ -60,9 +56,8 @@ order: walk the file's prose in document order (`TODO.md` is `## In Progress`, `
 `## Todo`) and number refs as their first `[[N]]` citation appears. This is a file-local rewrite, so
 only that file's `[[N]]` citations and `[N]:` definitions move. Every target and sibling file is
 untouched. A `[[N]]` inside a `` ` `` code span is a literal token, not a citation, and is left
-alone. Do it opportunistically (when the namespace has drifted enough to annoy), not on a schedule.
-`TODO.md` fragments fastest (entries land and get pruned every cycle) and is the usual candidate.
-The frozen files are never re-packed.
+alone. A new ref takes the next free number, out of order is fine. When you think a re-pack is
+needed, ask. The frozen files are never re-packed.
 
 ## Markdown anchor links
 
@@ -75,34 +70,45 @@ auto-generated anchors. The de-facto reference implementation is
 
 ## Todo format
 
-`TODO.md` is organized into `## In Progress`, `## Closed` (the last cycle's finished record,
-[Cycle-record](../AGENTS.md#cycle-record)), `## Todo` (strict priority rank, #1 highest, with the
-long-tail backlog in [todo-backlog.md](../notes/todo-backlog.md)), `## Ideas`, and `## Bugs`
-(pointer to [bugs.md](../notes/bugs.md)) sections. Each item is a short description with reference
-links to more detail.
+`TODO.md` has these sections, in this order. Each item in them is a short description with
+reference links to more detail.
 
-`## Todo` and `## Bugs` entries carry explicit `1.` `2.` ... numbers in the source. For `## Todo`
-the number is its **priority rank** (#1 highest, descending), and for `## Bugs` it's just an index.
-They're for grepping and at-a-glance "let's do #1", **not stable IDs**: reorder (to reprioritize),
-insert, or delete freely, then `vc-x1 fix-todo --no-dry-run` renumbers and normalizes
-continuation-line indent, so any given number is positional. **To refer to a Todo durably, name it
-by its title, a plain, greppable text mention.** Not its number (positional, renumbered) and not a
-markdown link: a numbered list item has no anchor to link to.
+- `## Continuation notes`: where the agent was, for the agent that comes next. Ephemeral, never a
+  record, `_None._` by default, written before a restart or a loss of context, and reset by the
+  agent that reads it.
+- `## In Progress`: the running cycle's record ([Cycle-record](../AGENTS.md#cycle-record)).
+- `## Closed`: the last cycle's finished record.
+- `## Waiting`: important work that cannot start yet. Each entry names what it waits on and its
+  rank once unblocked, and every opening checks the conditions.
+- `## Todo`: entries in priority order, the first highest. The long-tail backlog is in
+  [todo-backlog.md](../notes/todo-backlog.md).
+- `## Ideas`: unranked.
+- `## Bugs`: a pointer to [bugs.md](../notes/bugs.md).
 
-Numbering helps a human orient in a long list but makes links difficult and fragile, especially an
-external reference pointing in, which can't be auto-fixed when the list renumbers. A robust fix (a
-number-free anchor, or a number-tolerant dereference that matches the title slug and wildcards the
-numeric prefix, since a GitHub slug like `5-foo` is encoded, not opaque, so the title is
-recoverable) is a `validate-numbering` design question, out of scope here.
+Every adopter has one `TODO.md` of this shape. It is not an agent-file, since its content is the
+project's record, and the payload ships it as a skeleton: `## In Progress` reading
+`_No cycle currently in progress._`, the other sections empty.
 
-`vc-x1 fix-todo` alone only previews, and `vc-x1 validate-todo` is the read-only check.
+An entry is a `###` heading, its title, followed by its text. Priority is file order, the first
+entry the highest, and reprioritizing is moving the entry. The title is unique within its file and
+is the entry's anchor, so a citation is a link, `[title](TODO.md#<slug>)`, that the anchor check
+verifies ([Prose form](prose.md#prose-form) for the text). Entries carry no number: a rank number
+renumbers on every move and every citation that holds one goes stale, which is why the numbered
+form was retired (2026-08-27). An entry's sub-entries, when it groups several, are bullets with a
+bold title, cited by the bold text.
 
 Example shape:
 
 ```
-# Todo
-1. Add new feature X [details](features.md#feature-x)
-2. Fix bug Y [[1]]
+## Todo
+
+### Add new feature X
+
+The feature, in a sentence or two ([details](features.md#feature-x)).
+
+### Fix bug Y
+
+What is wrong and where [[1]].
 
 [1]: bugs.md#bug-y
 ```
@@ -125,7 +131,9 @@ under a program heading, each one deeper):
   it. Not the per-commit validation, which asks whether the artifact still works. A changed check is
   one of the things the deliberation exists to justify
 - **ladder**: one rung per step, `- [<title>][M]` plus `(current)` / `(done)`, with `[M]: #<slug>`
-  in the file's `# References`. The closing rung, `<cycle title> closing`, is linked like the rest
+  in the file's `# References`. `<title>` is the rung's commit title, `<type>: <desc>` per
+  [Conventional-commit shape](prose.md#conventional-commit-shape-ladder--commit), so a moved
+  `## Todo` entry is retitled. The closing rung, `<cycle title> closing`, is linked like the rest
 - **deliberation**: how the five above were decided, one bullet per decision. The bullet's lead
   names the decision and its sentence states it, and the sub-bullets carry the reasons, the
   alternatives weighed, and the costs accepted, so a reader can skim the decisions and read the

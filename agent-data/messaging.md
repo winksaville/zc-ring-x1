@@ -1,6 +1,6 @@
-# Messaging between family members
+# Messaging between projects that share a messages repo
 
-The session behavior around the family's notification repo: what a session checks at acquaint, and
+The session behavior around a shared notification repo: what a session checks at acquaint, and
 what it does with a request. The protocol itself is not here. The messages repo's `README.md` is the
 authority on record shape, modes, and ownership, and this file defers to it on every point it
 covers.
@@ -16,7 +16,7 @@ Both come from the work side's `[family]` table, never from prose:
 - `family.messages`: the messages repo's path, relative to the config file's directory.
 - `family.member`: this repo's member name, which is also its record file there, `<member>.md`.
 
-A project that is not a family member has no `[family]` table, and nothing in this file applies to
+A project without a `[family]` table shares no messages repo, and nothing in this file applies to
 it.
 
 ## At acquaint, check the record file
@@ -39,3 +39,8 @@ this repo's records after the messages repo has moved on.
 
 The reply is a record in the sender's file, written per the protocol's modes. A reply that cites a
 landed commit wants the durable mode, since the permalink needs the push to exist first.
+
+An outcome cites the cycle that answered the request by its landmark permalink,
+`blob/<landmark sha>/TODO.md#<cycle slug>`, the `## Closed` block of the landmark commit
+([Cycle-record](../AGENTS.md#cycle-record)). A relative link cannot name it, since the block is
+deleted from the tree by the next opening, so the `outcome-local:` form is not used.

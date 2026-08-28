@@ -1,6 +1,6 @@
 # Architecture
 
-This file uses [Prose form](AGENTS.md#prose-form). It will
+This file uses [Prose form](agent-data/prose.md#prose-form). It will
 define how this code is structured, a stub for now (no code
 yet). The See-also links below are the current content.
 

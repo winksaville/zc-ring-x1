@@ -57,7 +57,7 @@ One spelling everywhere the version is written:
   `3.1.0`), with an alphanumeric id (`3.hotfix`) allowed sparingly.
 - **Exactly one `-` in the whole version**, the one that opens the suffix: never a dash inside the
   suffix, never a `+` in this spelling. This is the portability invariant that makes the version
-  storable in every medium below.
+  storable in every medium below ([why](rationale.md#grammar-and-storage)).
 - **`v` is a display prefix, not part of the version**: conversation and reports may write
   `v0.78.0-3.1` for scannability, while manifests store the bare form. (PEP 440 ignores a leading
   `v`. Cargo rejects one.)
@@ -81,12 +81,6 @@ Two reservations keep the remap sound:
 - **`+` is reserved** for the PEP 440 remap: no SemVer build-metadata use in Rust repos even though
   Cargo allows it, since spending `+` there breaks the bijection with the Python spelling. A repo
   that truly needs it declares the deviation in its `custom.md`.
-
-**Why one dash, dots only:** a Python linter/formatter in a sibling repo rejected every multi-dash
-version outright, and the PEP 440 reference parser (`packaging` 26.2, tested 2026-07-30) confirms
-the boundary: `1.2.3-3.1`, `1.2.3-x+ab+cd`, `1.2.3-34-abc`, and any second `+` are all invalid.
-`1.2.3+3.1` / `1.2.3+3.1.hotfix` parse at any depth. `1.2.3-1` parses but silently becomes the
-post-release `1.2.3.post1`. The one-dash dotted grammar is the largest form every medium accepts.
 
 ## Recording the version-of-record
 
