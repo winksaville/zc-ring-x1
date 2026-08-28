@@ -1,9 +1,21 @@
 # Todo
 
-This file uses [Prose form](agent-data/prose.md#prose-form). It contains near term tasks with a
-short description and uses links or reference links for more details.
+This file contains near term tasks with a short description and reference links to more details.
+Its shape is [Todo format](agent-data/notes.md#todo-format).
+
+## Continuation notes
+
+Where the agent was, for the agent that comes next: working copy state, the step in flight, an
+open question. Ephemeral, never a record. Written before a restart or when a session is about to
+lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
+
+_None._
 
 ## In Progress
+
+A cycle's record has one home at a time, and while the cycle runs this is it. The block's
+shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
+[The In Progress block](agent-data/notes.md#the-in-progress-block).
 
 ### docs: adopt the family agent-files set
 
@@ -38,7 +50,7 @@ acquaint check opens `../vc-x1-messages/zc-ring-x1.md`.
 - [build: upgrade the dependencies to the latest compatible versions][6] (done)
 - [docs: copy the set over the agent-files][2] (done)
 - [docs: repoint the stale links into the agent-files][7] (done)
-- [docs: reshape TODO.md to the set's Todo format][3]
+- [docs: reshape TODO.md to the set's Todo format][3] (done)
 - [docs: adopt the family agent-files set closing][5]
 
 #### Deliberation
@@ -115,66 +127,113 @@ top of the file rather than its section.
   `AGENTS.md#cross-repo-linking-ochid-trailers`.
   - They point at `agent-data/notes.md#todo-format` and
     `agent-data/jj.md#cross-repo-linking-ochid-trailers`.
-* Three frozen files (`notes/chores/chores-01.md`, `chores-02.md`, `tprobe/notes/chores/chores-01.md`)
-  carry the same stale anchors.
+* Three frozen files (`notes/chores/chores-01.md`, `chores-02.md`,
+  `tprobe/notes/chores/chores-01.md`) carry the same stale anchors.
   - Left as they are: frozen history is never appended, and the link check's list is the record of
     where they point.
 
 ##### docs: reshape TODO.md to the set's Todo format
 
-`## Todo` entries become `###` headings in priority order, `## Continuation notes` and `## Waiting`
-are added, and the `fix-todo` mentions in `TODO.md`, `notes/todo-backlog.md`, and `notes/bugs.md`
-are repointed to the heading form.
+`TODO.md` had the numbered Todo shape the set retired, and lacked three of the set's sections, so
+a citation of an entry had no anchor and the next agent had nowhere to leave continuation notes.
+
+* The section list was `In Progress`, `Todo`, `Ideas`, with `## Closed` lost by this cycle's
+  opening edit and no `## Bugs` pointer.
+  - The set's seven sections are present in order, each with the intro vc-x1's carries:
+    `## Continuation notes`, `## In Progress`, `## Closed`, `## Waiting`, `## Todo`, `## Ideas`,
+    `## Bugs`. The three that hold nothing read `_None._`.
+* The six `## Todo` entries were numbered list items, `N. Title: text`.
+  - Each is a `###` heading titled by its lead phrase, its text the paragraph below, sub-bullets
+    kept. Priority is file order, and the `fix-todo` instruction is gone from the intro. One
+    untypeable character in an entry (`transfers are about 0`) converted with it.
+* `## Ideas` entries stay bullets.
+  - Unranked and never cited, so an anchor buys nothing there, and the intro now says how they are
+    triaged, as vc-x1's does.
+* `notes/todo-backlog.md`'s header described the rank-and-renumber scheme and `fix-todo`.
+  - Rewritten to the set's wording, its dashes with it. It holds no entries. `notes/bugs.md` keeps
+    its numbered entries and `fix-todo` note, since the set only asks that `## Bugs` point at it,
+    and vc-x1's `bugs.md` is numbered too.
 
 ##### docs: adopt the family agent-files set closing
 
 Closing out the cycle.
 
+## Closed
+
+The last cycle's finished record, moved here whole by its closing commit and deleted by the next
+opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the landmark commit's copy
+of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
+[notes/done.md](notes/done.md).
+
+_None._
+
+## Waiting
+
+Important work that cannot start yet. Each entry names what it waits on, in a form that can be
+checked, and the rank it takes in `## Todo` once unblocked. Every opening checks each condition
+and promotes what is met ([Opening](AGENTS.md#opening)).
+
+_None._
+
 ## Todo
 
- Entries are in **strict priority rank**, #1 highest, descending. Reprioritize by moving an entry,
- then `vc-x1 fix-todo --no-dry-run TODO.md` to renumber. The numbers are positional rank, not stable
- IDs. To refer to a Todo, name it by its **title** (a greppable mention, since a numbered list item
- has no anchor to link to), not its number. Long-tail entries live in
- [todo-backlog.md](notes/todo-backlog.md). Use the [Prose Form in
- AGENTS.md](agent-data/prose.md#prose-form). Deeper detail goes in a `notes/` design file (link via
- `[N]` ref).
+Entries are in priority order, the first highest, and reprioritizing is moving an entry. Each is a
+`###` heading, so a citation is a link to its anchor. Long-tail entries live in
+[todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
+Deeper detail goes in a `notes/` design file (link via `[N]` ref).
 
-1. Descriptor queue endpoints: paired DescSender (loan + send) / DescReceiver (recv) [[11]]:
-   - own ring endpoint + registry access
-   - the demo's ~20-line send path becomes ~3 lines
-   - `resolve`'s unsafe is audited once inside the crate (recv safe by construction)
-   - guard handed back on Full
-   - design against both ring flavors (SPSC + MPSC)
-   - the sender is also where each sender's private overflow pending list will live.
-2. Overflow FIFO: on ring Full, append the message to a sender-private pending list instead of
-   failing [details](notes/ring-buffer-design.md#overflow-fifo-future):
-   - intrusive: the same embedded next-link the free-stack uses, so zero allocation
-   - naturally bounded by pool capacity
-   - composes per-sender with MPSC, see [Overflow
-     readiness](notes/ring-buffer-design.md#overflow-readiness).
-3. Seam-word SPSC variant: publish per-slot seq words so neither side ever reads the other's index
-   line, Vyukov-style publish but load/store only (no CAS: the single producer's index stays
-   endpoint-private) [[21]]:
-   - motivation: cross-core, SPSC moves ~10.0 cache lines per round trip vs MPSC's ~6.7 and loses
-     ~26 to 40%, and the whole gap is line-transfer economics
-   - must keep the SMT/1t win (SPSC beats MPSC at 0,12 where transfers ≈ 0, so the protocol itself
-     is cheaper)
-   - costs a seq array in the layout (layout_version bump), so measure A/B with tp_roundtrip before
-     adopting.
-4. Batch alloc/free demo: alongside the one-message alloc_free_1t loops, a variant that allocs X
-   messages (5, 10, ...) then frees them all, pool vs global allocator. We think the pool's rate
-   stays constant (pop/push is O(1) regardless of live count, LIFO keeps the working set hot) while
-   Box::new/drop slows as the batch outgrows malloc's thread-cache fast path, and the demo should
-   show it.
-5. Endpoint claims word: CAS-claimed producer/consumer roles in the ring header so a second
-   attach/split claimant gets an error instead of silently violating SPSC, at the cost of a
-   layout_version bump (or spends `_pad0`)
-   [details](notes/ring-buffer-design.md#resolved-questions).
-6. Typed endpoints: `Producer<T>` / `Consumer<T>` validating `T`'s geometry once at split instead of
-   asserting on every reserve_slot_with [details](notes/ring-buffer-design.md#api).
+### Descriptor queue endpoints
+
+Paired DescSender (loan + send) / DescReceiver (recv) [[11]]:
+- own ring endpoint + registry access
+- the demo's ~20-line send path becomes ~3 lines
+- `resolve`'s unsafe is audited once inside the crate (recv safe by construction)
+- guard handed back on Full
+- design against both ring flavors (SPSC + MPSC)
+- the sender is also where each sender's private overflow pending list will live.
+
+### Overflow FIFO
+
+On ring Full, append the message to a sender-private pending list instead of failing
+[details](notes/ring-buffer-design.md#overflow-fifo-future):
+- intrusive: the same embedded next-link the free-stack uses, so zero allocation
+- naturally bounded by pool capacity
+- composes per-sender with MPSC, see [Overflow
+  readiness](notes/ring-buffer-design.md#overflow-readiness).
+
+### Seam-word SPSC variant
+
+Publish per-slot seq words so neither side ever reads the other's index line, Vyukov-style publish
+but load/store only (no CAS: the single producer's index stays endpoint-private) [[21]]:
+- motivation: cross-core, SPSC moves ~10.0 cache lines per round trip vs MPSC's ~6.7 and loses
+  ~26 to 40%, and the whole gap is line-transfer economics
+- must keep the SMT/1t win (SPSC beats MPSC at 0,12 where transfers are about 0, so the protocol
+  itself is cheaper)
+- costs a seq array in the layout (layout_version bump), so measure A/B with tp_roundtrip before
+  adopting.
+
+### Batch alloc/free demo
+
+Alongside the one-message alloc_free_1t loops, a variant that allocs X messages (5, 10, ...) then
+frees them all, pool vs global allocator. We think the pool's rate stays constant (pop/push is O(1)
+regardless of live count, LIFO keeps the working set hot) while Box::new/drop slows as the batch
+outgrows malloc's thread-cache fast path, and the demo should show it.
+
+### Endpoint claims word
+
+CAS-claimed producer/consumer roles in the ring header so a second attach/split claimant gets an
+error instead of silently violating SPSC, at the cost of a layout_version bump (or spends `_pad0`)
+[details](notes/ring-buffer-design.md#resolved-questions).
+
+### Typed endpoints
+
+`Producer<T>` / `Consumer<T>` validating `T`'s geometry once at split instead of asserting on every
+reserve_slot_with [details](notes/ring-buffer-design.md#api).
 
 ## Ideas
+
+Unranked, not yet solid enough for `## Todo`. Triaged at an opening: promoted to `## Todo` or
+[todo-backlog.md](notes/todo-backlog.md), folded into a picked-up cycle, or dropped.
 
 - Perf benches live in [iiac-perf](https://github.com/winksaville/iiac-perf) (sibling repo
   `../iiac-perf`), not here. Its calibrated harness compares zc-ring against mpsc et al. directly
@@ -229,6 +288,10 @@ Closing out the cycle.
   stress) to `tests/protocol.rs`, while white-box tests (u32 wrap, attach header internals) stay in
   lib.rs. Do it when a trybuild compile-fail harness lands there too (pins the "second reservation
   does not compile" guarantee).
+
+## Bugs
+
+_See [bugs.md](notes/bugs.md)._
 
 # References
 
