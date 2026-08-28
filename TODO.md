@@ -34,7 +34,7 @@ acquaint check opens `../vc-x1-messages/zc-ring-x1.md`.
 #### Ladder
 
 - [docs: adopt the family agent-files set opening][1] (done)
-- [fix(config): name this repo's family member][4]
+- [fix(config): name this repo's family member][4] (done)
 - [build: upgrade the dependencies to the latest compatible versions][6]
 - [docs: copy the set over the agent-files][2]
 - [docs: reshape TODO.md to the set's Todo format][3]
@@ -65,7 +65,12 @@ block, bump the version-of-record, and rename the artifact to `-dev`.
 
 ##### fix(config): name this repo's family member
 
-`.vc-config.md`'s `[family] member` becomes `zc-ring-x1`.
+`.vc-config.md` named the family member `vc-x1`, carried over when the file was copied from that
+repo, so the messaging acquaint check would have opened vc-x1's record file rather than ours.
+
+* The `[family] member` key is the only place the member name is stated, and it was the copy's.
+  - It now reads `zc-ring-x1`, so `<family.messages>/<family.member>.md` resolves to
+    `../vc-x1-messages/zc-ring-x1.md`, the file vc-x1's proposal was written to.
 
 ##### build: upgrade the dependencies to the latest compatible versions
 
