@@ -37,7 +37,7 @@ acquaint check opens `../vc-x1-messages/zc-ring-x1.md`.
 - [fix(config): name this repo's family member][4] (done)
 - [build: upgrade the dependencies to the latest compatible versions][6] (done)
 - [docs: copy the set over the agent-files][2] (done)
-- [docs: repoint the stale links into the agent-files][7]
+- [docs: repoint the stale links into the agent-files][7] (done)
 - [docs: reshape TODO.md to the set's Todo format][3]
 - [docs: adopt the family agent-files set closing][5]
 
@@ -104,10 +104,21 @@ proposal. Taking the set whole is what makes the three-way comparison empty for 
 
 ##### docs: repoint the stale links into the agent-files
 
-A link check over the repo finds `AGENTS.md#prose-form` and kin in `ARCHITECTURE.md`,
-`notes/ring-buffer-design.md`, `notes/bugs.md`, `notes/todo-backlog.md`, and `notes/jj-tips.md`,
-anchors that moved into `prose.md`, `notes.md`, and `jj.md` before this cycle. Repoint the live
-files. The frozen chores keep theirs.
+Six links in live files still pointed at `AGENTS.md` anchors that moved into the agent-data files
+before this cycle, when the prose, todo, and jj sections left AGENTS.md, so each resolved to the
+top of the file rather than its section.
+
+* `Prose form` was cited as `AGENTS.md#prose-form` in `ARCHITECTURE.md`, `notes/bugs.md`,
+  `notes/todo-backlog.md`, and `notes/ring-buffer-design.md`.
+  - Each now points at `agent-data/prose.md#prose-form`.
+* `notes/todo-backlog.md` cited `AGENTS.md#todo-format` and `notes/jj-tips.md` cited
+  `AGENTS.md#cross-repo-linking-ochid-trailers`.
+  - They point at `agent-data/notes.md#todo-format` and
+    `agent-data/jj.md#cross-repo-linking-ochid-trailers`.
+* Three frozen files (`notes/chores/chores-01.md`, `chores-02.md`, `tprobe/notes/chores/chores-01.md`)
+  carry the same stale anchors.
+  - Left as they are: frozen history is never appended, and the link check's list is the record of
+    where they point.
 
 ##### docs: reshape TODO.md to the set's Todo format
 

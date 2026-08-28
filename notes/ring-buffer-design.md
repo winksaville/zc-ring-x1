@@ -1,7 +1,7 @@
 # Ring buffer design
 
 Design notes for the zero-copy ring buffer. This file uses
-[Prose form](../AGENTS.md#prose-form). It covers terminology,
+[Prose form](../agent-data/prose.md#prose-form). It covers terminology,
 requirements, constraints, the memory layout, the API, and
 the validation ladder, and is kept in sync with the
 implementation in `src/` (as-built): `lib.rs` holds the

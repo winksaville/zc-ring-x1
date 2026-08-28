@@ -1,6 +1,6 @@
 # Bugs
 
-This file uses [Prose form](../AGENTS.md#prose-form). It
+This file uses [Prose form](../agent-data/prose.md#prose-form). It
 lists known defects we're aware of but haven't scheduled a fix for.
 Each entry describes what goes wrong, when, and the cost of
 the failure. Entries are numbered (`1.` `2.` …) the same way
