@@ -11,8 +11,9 @@ content goes in [custom.md](../custom.md).
 ## jj Basics
 
 **Use jj, not git, for version-control operations** (status, log, diff, commit, push, history
-rewrite). jj coexists with the git backend, so the repo *can* be driven with raw `git`, but this
-project's workflow (bookmarks, the working-copy `@` model, ochid trailers) is expressed in jj terms.
+rewrite, [why](rationale.md#jj-basics)). jj coexists with the git backend, so the repo *can* be
+driven with raw `git`, but this project's workflow (bookmarks, the working-copy `@` model, ochid
+trailers) is expressed in jj terms.
 Reaching for `git` invites state that doesn't match the jj documentation here. There is no `jj mv`:
 to move/rename a tracked file, just `mv` it on disk and jj detects the rename by content.
 
@@ -28,7 +29,7 @@ to move/rename a tracked file, just `mv` it on disk and jj detects the rename by
   way a cycle's bookmark is born (see [Cycle bookmarks](#cycle-bookmarks-create-and-land))
 - In jj, the working copy (@) is always a mutable commit being edited. `jj commit` finalizes it and
   creates a new empty working copy on top.
-- The agent repo always has uncommitted changes during an active session because session data
+- The agent-repo always has uncommitted changes during an active session because session data
   updates continuously.
 - `jj rebase` uses `--onto`/`-o` to name the destination(s).
 
@@ -38,9 +39,10 @@ commit: it marks it mutable and shifts `@`.
 
 ## Revsets
 
-How commits are addressed in `-r` arguments, condensed. jj's own semantics are the one dialect. The
-full language is `jj help -k revsets`, the single authority, and the worked tutorial with terminal
-transcripts is `jj-tips.md`, hosted once in the template repository.
+How commits are addressed in `-r` arguments, condensed. jj's own semantics are the one dialect
+([why](rationale.md#revsets)). The full language is `jj help -k revsets`, the single authority, and
+the worked tutorial with terminal transcripts is `jj-tips.md`, hosted once in the template
+repository.
 
 - A revision is `@` (the working copy), a chid prefix, or a commit id. Unambiguous prefixes are
   accepted, and ambiguous ones are rejected, never guessed.
@@ -58,24 +60,21 @@ transcripts is `jj-tips.md`, hosted once in the template repository.
   `jj log -r 'all()'` (all visible commits), `jj evolog -r X` (one change's rewrite history),
   `jj op log` (operation history).
 
-History note: an earlier house convention glossed `x..` as "descendants of x excluding x", which is
-not jj's meaning. Old transcripts and notes written under that gloss decode against it. Durable text
-written since teaches only jj's semantics.
-
 ## Cross-repo linking (ochid trailers)
 
-The cross-reference between the work repo and the agent repo is what makes the dual-repo work: every
+The cross-reference between the work-repo and the agent-repo is what makes the dual-repo work: every
 commit points at its counterpart in the other repo, so the "what" (code) and the "why / how"
-(session) stay linked across time. That pointer is the **ochid** (Other Change ID) git trailer.
+(session) stay linked across time. That pointer is the **ochid** (Other Change ID) git trailer
+([why](rationale.md#cross-repo-linking-ochid-trailers)).
 
 A **chid** is jj's change ID, a permanent identifier that survives rebases and `describe`s (unlike
 the commit ID / git SHA, which changes on rewrite). An **ochid** trailer carries the counterpart
 commit's chid as a workspace-root-relative path:
 
-- Paths start with `/`, the workspace root, i.e. the work repo (the project root). `/.claude` is the
+- Paths start with `/`, the workspace root, i.e. the work-repo (the project root). `/.claude` is the
   agent sub-repo.
-- `ochid: /<chid>` references a change in the **work repo**.
-- `ochid: /.claude/<chid>` references a change in the **agent repo**.
+- `ochid: /<chid>` references a change in the **work-repo**.
+- `ochid: /.claude/<chid>` references a change in the **agent-repo**.
 
 Trailers are blank-line-separated `key: value` lines at the end of the commit body, using the chid's
 **12-character** prefix:
@@ -87,13 +86,13 @@ ochid: /wtpmottvxqzl           # points to a work-repo change
 
 How many, and which direction:
 
-- **Work-repo commits** each carry one `ochid: /.claude/<agent-chid>`, the agent repo's change ID.
+- **Work-repo commits** each carry one `ochid: /.claude/<agent-chid>`, the agent-repo's change ID.
 - **The agent-repo commit** carries one `ochid: /<work-chid>` per work-repo commit in that push. The
   count is per *push*, not per cycle. A trapezoid close-out whose rungs were pushed 1:1 as they
   landed still carries exactly one. More than one occurs when a single push publishes several
   work-repo commits.
 
-Use `vc-x1 chid -s work,agent -L` to capture the change IDs (first line work repo, second agent
+Use `vc-x1 chid -s work,agent -L` to capture the change IDs (first line work-repo, second agent
 repo).
 
 `ochid:` trailers are **stamped by `vc-x1 push`**. Never hand-write them into a commit body or
@@ -113,8 +112,18 @@ repo's `main`. Three behaviors to keep in mind:
 - **Rerunning is safe.** Push keeps no state and cannot resume: every stage no-ops when its work is
   already done, so a failed run is re-run, not resumed. If push exits after `push-work` but before
   the agent-repo publish, `vc-x1 squash-push -R .claude` by hand is the rest of it.
-- **`ochid:` trailers are stamped by push** (hard rule 5), never hand-written into `--title` or
-  `--body`.
+- **`ochid:` trailers are stamped by push** ([No hand-written
+  trailers](#cross-repo-linking-ochid-trailers)), never hand-written into `--title` or `--body`.
+- **The agent-repo is a linear journal.**
+  - One push is one agent-repo commit on its `main`, paired with the work-repo commit, whatever
+    bookmark the work-repo is on.
+  - Never create an agent-repo bookmark mirroring a work-repo one: it steers session pushes at
+    the wrong remote ref.
+- **Squash-push again if `@` is non-empty** after a pass.
+  - The agent keeps writing session data while the command runs, so its own record lands after
+    the squash.
+  - Session data is append-only, so a re-run never conflicts.
+  - A single pass is never guaranteed to leave `@` empty.
 
 A late work-repo tweak after the push (a forgotten edit) needs `jj squash --ignore-immutable` and a
 re-push, which is a remote rewrite and takes approval like any push.
@@ -122,9 +131,11 @@ re-push, which is a remote rewrite and takes approval like any push.
 ## Re-describing: coordinate first, and keep the trailer
 
 **Never `jj describe` a commit that is already published or already carries trailers without
-coordinating with everyone involved first.** It is a history rewrite, and it silently drops the
-cross-repo link. Describing a fresh local commit that has never been described and carries no
-trailers is authoring a message rather than rewriting one, and is not covered. That is a [local
+coordinating with everyone involved first**
+([why](rationale.md#re-describing-coordinate-first-and-keep-the-trailer)). It is a history rewrite,
+and it silently drops the cross-repo link. Describing a fresh local commit that has never been
+described and carries no trailers is authoring a message rather than rewriting one, and is not
+covered. That is a [local
 ladder](../AGENTS.md#local-ladders)'s scratch describe.
 
 When a re-describe is agreed, copy any `ochid:` trailers into the new body by hand (the "don't
@@ -135,7 +146,8 @@ stamped). Hit at a coordinated amend (2026-07-29), where the trailer survived on
 ## Cycle bookmarks: create and land
 
 The mechanics behind [Cycles run on a bookmark](../AGENTS.md#cycles-run-on-a-bookmark). That section
-holds the rule and when it applies, and this one holds the commands.
+holds the rule and when it applies, and this one holds the commands
+([why](rationale.md#cycle-bookmarks-create-and-land)).
 
 **Create**, at the cycle's opening, with the bookmark named by the cycle title's slug (the anchor
 algorithm in [Markdown anchor links](notes.md#markdown-anchor-links), so the block's title heading
@@ -150,8 +162,10 @@ and the bookmark derive from one bare title):
   ready to be seen.
 
 **Land**, once the close-out is approved: the sequence that makes the cycle permanent. Every
-`jj git push` in it is a push under hard rules 2 and 3, its own approval, the closing words before
-the final invocation, silence after ([At rest](../AGENTS.md#at-rest-push-stop-squash-push)):
+`jj git push` in it is a push under [Approval per push](../AGENTS.md#before-any-push) and [Hard
+stop after the final push](../AGENTS.md#at-rest-push-stop-squash-push), its own approval, the
+closing words before the final invocation, silence after ([At
+rest](../AGENTS.md#at-rest-push-stop-squash-push)):
 
 1. Restore the plain name, when the project renamed ([Dev artifact
    name](versioning.md#dev-artifact-name)): rename `<name>-dev` back to `<name>` in the manifest,
@@ -165,7 +179,8 @@ the final invocation, silence after ([At rest](../AGENTS.md#at-rest-push-stop-sq
 4. Install: promote the artifact from `main`, the cycle's last act, run when nothing can enter the
    cycle anymore.
 5. Delete the bookmark, locally and remotely: `jj bookmark delete <bookmark>`, then
-   `jj git push --bookmark <bookmark>` (hard rule 13). The long-lived case below gets the same
+   `jj git push --bookmark <bookmark>` ([Bookmark per
+   cycle](../AGENTS.md#cycles-run-on-a-bookmark)). The long-lived case below gets the same
    disposal once fully merged.
 
 - The fast-forward needs no `--allow-backwards`. Needing it means the bookmark is not a descendant
@@ -177,13 +192,11 @@ the final invocation, silence after ([At rest](../AGENTS.md#at-rest-push-stop-sq
 bookmark](../AGENTS.md#cycles-run-on-a-bookmark)):
 
 - **Amend content, never re-describe.** Editing `TODO.md` in a rung and amending is not a
-  `jj describe`, so hard rule 4 stays intact.
+  `jj describe`, so [No re-describe without
+  coordinating](#re-describing-coordinate-first-and-keep-the-trailer) stays intact.
 - **Then force-push the bookmark**, under the same approval as any other push.
 - **Exceptions**, named and moved past: the bookmark has already landed, another branch is stacked
   on it, or the ladder is long and only a trailing snapshot disagrees.
-
-We think a `vc-x1 start-change <bookmark>` will eventually own the create half. It would replace the
-create bullets and nothing else, which is why the rule and the commands are separated.
 
 ## Long-lived bookmarks: merge-only by default, deletable once merged
 
@@ -338,7 +351,7 @@ Recovery:
 ## Resolvability
 
 A change ID travels with its commit: a **pushed** commit resolves to the same chid in every clone.
-Cloning the agent repo gave the published `main` tip the same chid as an existing clone. We think jj
+Cloning the agent-repo gave the published `main` tip the same chid as an existing clone. We think jj
 carries the change ID in the git commit object, so it survives `jj git clone` / fetch.
 
 The local-only case is the **working-copy `@`**: jj mints a fresh random chid for `@` in each clone,

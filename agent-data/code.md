@@ -39,6 +39,8 @@ field whose doc comment uses bullets so each `- ...` lands on its own line in th
 
 ## `// OK: ...` comments on `unwrap*` calls (Rust)
 
+([why](rationale.md#-ok--comments-on-unwrap-calls-rust))
+
 The default in non-test code is to **not** use `.unwrap()`, `.expect(...)`, or the
 `.unwrap_or*(...)` siblings. Prefer a shape that doesn't need them (`match`, `if let`, slice
 patterns, infallible-by-construction APIs), which is usually also the clearer code. This is a lean,

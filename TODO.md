@@ -36,7 +36,8 @@ acquaint check opens `../vc-x1-messages/zc-ring-x1.md`.
 - [docs: adopt the family agent-files set opening][1] (done)
 - [fix(config): name this repo's family member][4] (done)
 - [build: upgrade the dependencies to the latest compatible versions][6] (done)
-- [docs: copy the set over the agent-files][2]
+- [docs: copy the set over the agent-files][2] (done)
+- [docs: repoint the stale links into the agent-files][7]
 - [docs: reshape TODO.md to the set's Todo format][3]
 - [docs: adopt the family agent-files set closing][5]
 
@@ -88,8 +89,25 @@ allowed, so a fresh build used older code than the reqs permitted.
 
 ##### docs: copy the set over the agent-files
 
-Our `AGENTS.md` and `agent-data/*` are replaced by vc-x1's at `a4309084fdfe`, `cycle-checklists.md`
-and `cycle-protocol.md` deleted, and `custom.md`'s one anchor updated.
+Our agent-files were the base the set was built from, and the set's diff against them is the
+proposal. Taking the set whole is what makes the three-way comparison empty for this member.
+
+* `AGENTS.md` and `agent-data/*` differed from the set in the ways the proposal lists.
+  - Replaced by vc-x1's files at `a4309084fdfe`, taken from that commit rather than vc-x1's working
+    tree, which had moved on. `commit-model.md` arrives, `cycle-checklists.md` and
+    `cycle-protocol.md` go, and `agent-data/` and `AGENTS.md` are now byte-identical to the set.
+* `custom.md` pointed at the old `## custom.md: the project layer` heading.
+  - The anchor is `#custommd` now, and `custom.md` is identical to the set's too.
+* `notes/README.md` linked the two retired files.
+  - It names `jj.md`, `versioning.md`, and `cycle-model.md` instead. The other stale inbound
+    anchors a link check found predate this rung and get the next one.
+
+##### docs: repoint the stale links into the agent-files
+
+A link check over the repo finds `AGENTS.md#prose-form` and kin in `ARCHITECTURE.md`,
+`notes/ring-buffer-design.md`, `notes/bugs.md`, `notes/todo-backlog.md`, and `notes/jj-tips.md`,
+anchors that moved into `prose.md`, `notes.md`, and `jj.md` before this cycle. Repoint the live
+files. The frozen chores keep theirs.
 
 ##### docs: reshape TODO.md to the set's Todo format
 
@@ -209,5 +227,6 @@ Closing out the cycle.
 [4]: #fixconfig-name-this-repos-family-member
 [5]: #docs-adopt-the-family-agent-files-set-closing
 [6]: #build-upgrade-the-dependencies-to-the-latest-compatible-versions
+[7]: #docs-repoint-the-stale-links-into-the-agent-files
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [21]: notes/chores/chores-02.md#findings-the-gap-is-line-transfer-economics
