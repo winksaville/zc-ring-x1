@@ -56,7 +56,7 @@ at the SMT placement, and the `M` sweep is recorded in `notes/ring-buffer-design
 #### Ladder
 
 - [feat: segmented seam-word SPSC v1 opening][1] (done)
-- [feat: add the spsc v1 seam-word ring][2]
+- [feat: add the spsc v1 seam-word ring][2] (done)
 - [perf: measure spsc v1 against v0 and mpsc][3]
 - [feat: allocate ring segments from a pool][4]
 - [feat: add the segmented queue over spsc v1][5]
@@ -98,10 +98,29 @@ Todo entry into this block, bump the version-of-record, and rename the demo bina
 
 ##### feat: add the spsc v1 seam-word ring
 
-`spsc::v1`: `Header` with geometry, two diagnostic index lines, and the user line; a seq array of
-`M` words after the header and the slots after that; `Ring::init` / `attach` / `split`, `Producer`
-and `Consumer` with the v0 `reserve_slot_with` / `WriteSlot` / `ReadSlot` surface; tests mirroring
-v0's plus `M = 1`.
+v0's producer and consumer each poll the other side's index line, and that is where the cross-core
+loss to MPSC comes from. The rung adds the seam-word protocol as a sibling.
+
+* The protocol needed a shape that keeps v0's endpoint surface and drops the shared index reads.
+  - `spsc::v1` is MPSC v0's seq protocol without the claim CAS: a seq array between the header
+    and the slots, the producer claiming on `seq == pos` and committing `pos + M + 1`, the
+    consumer reading on that and releasing `pos + M`. Equality checks, since there is no lost
+    race to tell apart, so a peer-corrupted seq reads as Full or Empty.
+  - The header keeps v0's four-line shape with its own magic and layout version, and the index
+    lines are each side's private resume state, `Relaxed` both ways, so a re-attach continues
+    mid-stream and nothing hot crosses to the other side.
+  - `Producer` / `Consumer` / `WriteSlot` / `ReadSlot` carry v0's `reserve_slot_with` surface
+    unchanged, so a caller or a bench flips between v0 and v1 by path alone.
+* `M = 1` had to be legal, so a sweep can start at the per-message seam.
+  - No sacrificial slot and no index-distance check anywhere; a test alternates a one-slot ring
+    through five laps, and the threaded stream runs at `M` of 1, 2, 4, and 16.
+  - Those tests caught the first cut: Vyukov's committed value `pos + 1` equals the released
+    value `pos + M` at `M = 1`, so the producer overwrote an unread slot and the consumer hung.
+    Committed is `pos + M + 1`, distinct from claimable and released at every `M`.
+* The design note had no v1 section for the module doc to cite.
+  - `notes/ring-buffer-design.md` gains "SPSC v1: seam-word ring" between the MPSC sections and
+    the messaging layer, with the in-slot seq and the seq-array padding left open for the
+    measurement rung.
 
 ##### perf: measure spsc v1 against v0 and mpsc
 

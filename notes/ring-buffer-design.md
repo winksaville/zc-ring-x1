@@ -652,6 +652,60 @@ iiac-perf (sibling repo) grows an mpsc set alongside `zcr`:
     consumer), or drop the line entirely;
   - the `occupancy()` polish todo argues for keeping it.
 
+## SPSC v1: seam-word ring
+
+The second SPSC protocol, `spsc::v1`, a sibling of v0 under
+the same module layout ([Findings: the gap is line-transfer
+economics](chores/chores-02.md#findings-the-gap-is-line-transfer-economics)
+is the motivation). v0 loses to the MPSC ring cross-core,
+~10.0 cache lines per round trip against ~6.7, because each
+side polls the other side's index line. v1 is the MPSC
+protocol with the claim CAS removed: a per-slot seq word
+publishes each slot, and each side reads only slot lines and
+its own index.
+
+- **Region** — the v0 four-line `Header` shape (own type,
+  own magic `ZCR2`, own layout version), then the seq array
+  (`M x AtomicU32`, padded to a cache line), then the slots.
+  `spsc::v1::region_size` is public so a pool can size
+  segment buffers by it.
+- **Protocol** — `seq[i]` starts at `i`. Slot at free-running
+  `pos`:
+  - claimable by the producer when `seq == pos`;
+  - committed when `seq == pos + M + 1` (the producer's
+    `Release` store, after the fill);
+  - released by the consumer storing `seq = pos + M`
+    (`Release`), which is the next lap's claimable value.
+  - Committed is `pos + M + 1`, not Vyukov's `pos + 1`: at
+    `M = 1` that would equal the released value `pos + M`,
+    so the producer would read an unread slot as claimable
+    and overwrite it (found by the `M = 1` tests, which
+    failed and hung on the first cut).
+  - Equality, not a signed diff: there is no lost race to
+    distinguish, so anything but the expected value reads as
+    Full or Empty, and a peer-corrupted seq degrades toward
+    that, never toward an unowned slot.
+- **Index lines are private resume state** — `producer_idx`
+  is loaded and stored by the producer only, `consumer_idx`
+  by the consumer only, both `Relaxed`. They exist so a
+  re-attach resumes mid-stream and so occupancy can be
+  inspected, and no hot path crosses to the other side's
+  line.
+- **Load/store only** — no CAS anywhere, so the v0 atomic
+  floor holds. The MPSC tombstone has no counterpart: a single
+  producer that unwinds mid-fill abandons the reservation,
+  as v0 does.
+- **`M >= 1`** — the state is in the seq, not in an index
+  distance, so `M = 1` is legal: one word cycles through
+  claimable, committed, and released. The user picks `M`, any power of
+  two up to `2^30`, so a segment-size sweep can isolate the
+  segment seam ([the cycle](../TODO.md#feat-segmented-seam-word-spsc-v1)).
+- **Open, for the measurement** — in-slot seq (the payload
+  and its seq in one line, at the cost of the slot contract)
+  against the separate array; and whether the seq array
+  wants line padding, the same question the MPSC ring left
+  open.
+
 ## Messaging layer: pools and descriptor queues
 
 Design for the layer above the ring. The pool half is
