@@ -26,139 +26,43 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### docs: adopt the family agent-files set
+### docs: keep the ladder markers in the closed block
 
 #### Problem
 
-vc-x1 proposed one family set of agent-files, based on this repo's set as landed 2026-08-26 and
-reworked as its cycle `docs: the family agent-files proposal` records (vc-x1 `main` a4309084fdfe,
-the message in `vc-x1-messages/zc-ring-x1.md`). Our copy has drifted below it: it still carries
-`cycle-checklists.md` and `cycle-protocol.md`, which nothing links anymore, cites `hard rule N` by
-numbers that no longer exist, keeps the inline whys the set moved to rationale.md, and numbers its
-`## Todo` entries. Beside that, `.vc-config.md` names this repo's family member as `vc-x1`, a copy
-fossil, so the messaging acquaint check reads the wrong mailbox.
+The close-out's step 2 said to drop the `(current)` / `(done)` markers from the ladder before the
+block moves to `## Closed`, and no rationale entry said why. The markers have value, so a step that
+strips them loses it, and the record lands as a plain title list rather than the ladder as it was
+worked.
 
 #### Solution
 
-The set is adopted whole: `AGENTS.md`, `custom.md`, and `agent-data/*` are byte-identical to
-vc-x1's at `a4309084fdfe`, `cycle-checklists.md` and `cycle-protocol.md` gone and
-`commit-model.md` arrived. `TODO.md` has the set's seven sections with the Todo entries as
-headings, the six live links that still pointed at moved `AGENTS.md` anchors are repointed into
-the agent-data files, `.vc-config.md` names the member `zc-ring-x1`, and the dependencies moved to
-their latest compatible versions on the way. The reply to vc-x1's record follows the landing, in
-the durable mode, with the three remarks from the review (the Size close-out step, Restart as a
-user step, Bullet form's reach over existing prose).
+The step is gone from `AGENTS.md`, `notes.md`'s ladder item says the markers stay when the block
+moves, and `rationale.md`'s Close-out carries the why, which the earlier rule never had. A
+single-step cycle, its one commit carrying the opening's duties, the change, and this record.
 
 #### Acceptance check
 
-`diff -r` of `AGENTS.md` and `agent-data/` against vc-x1's at `a4309084fdfe` is empty, and
-`custom.md` differs only in project content. `vc-x1 validate` passes, every agent-file link
-resolves, and `grep -rn "hard rule [0-9]" AGENTS.md agent-data` finds nothing. The messaging
-acquaint check opens `../vc-x1-messages/zc-ring-x1.md`.
+`grep -n "drop the" AGENTS.md` finds nothing, this block's ladder rung still reads `(done)` in
+`## Closed`, and `vc-x1 validate` passes.
 
-Result: pass. `diff -r` against the set at `a4309084fdfe` is empty for `AGENTS.md`, `custom.md`,
-and `agent-data/` (custom.md identical too, since this project has no overrides). `vc-x1 validate`
-passes, the link check finds nothing unresolved in the agent-files beyond their specimens, the
-`hard rule` grep is empty, and `[family]` resolves to `../vc-x1-messages/zc-ring-x1.md`.
+Result: pass. The grep is empty, the rung below carries its marker, and validation passed.
 
 #### Ladder
 
-- [docs: adopt the family agent-files set opening][1]
-- [fix(config): name this repo's family member][4]
-- [build: upgrade the dependencies to the latest compatible versions][6]
-- [docs: copy the set over the agent-files][2]
-- [docs: repoint the stale links into the agent-files][7]
-- [docs: reshape TODO.md to the set's Todo format][3]
-- [docs: adopt the family agent-files set closing][5]
+- docs: keep the ladder markers in the closed block (done)
 
 #### Deliberation
 
-- Accept the set whole, counter nothing in the copy: the rung copies vc-x1's files verbatim, so the
-  three-way comparison the proposal names as its acceptance check goes empty for this member.
-  - The three reservations from the review (the Size close-out step, Restart as a user step, and
-    Bullet form's reach over existing prose) go in the reply as remarks, not as local edits, since a
-    local edit would reopen the diff the proposal exists to close.
-- The config fix is its own rung, first, not folded into the copy: it is not an agent-file, so
-  `git log -- AGENTS.md agent-data/` keeps showing only rule changes, and it is the one line that
-  breaks the messaging acquaint check today, so it lands before the set that runs the check.
-- The dependency upgrade is a rung, not an entry: it arrived mid-opening, is small, and
-  `vc-x1 validate` after it is its whole check, the rung-or-entry pick under the set's Unplanned
-  work.
-- The request became this block directly rather than a `## Todo` entry first: the opening is the
-  same edit as moving an entry, and the record vc-x1's outcome will cite is this cycle's landmark.
+- The change goes to the set's copy of the agent-files, not `custom.md`: the reason is not
+  project-specific, so the diff against the payload is the proposal, per Changing the agent-files.
+- Single-step: one line goes, one line and one rationale bullet arrive, and no step needs its own
+  review.
+- No `-dev` rename: the opening's rename and Land's restore would be one no-op in the one commit.
+- The why is recorded as given, "the markers have value so they stay", with the reading that a
+  closed block whose rungs all read `(done)` is a check in itself.
 
-#### Ladder details
-
-##### docs: adopt the family agent-files set opening
-
-The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write this
-block, bump the version-of-record, and rename the artifact to `-dev`.
-
-##### fix(config): name this repo's family member
-
-`.vc-config.md` named the family member `vc-x1`, carried over when the file was copied from that
-repo, so the messaging acquaint check would have opened vc-x1's record file rather than ours.
-
-* The `[family] member` key is the only place the member name is stated, and it was the copy's.
-  - It now reads `zc-ring-x1`, so `<family.messages>/<family.member>.md` resolves to
-    `../vc-x1-messages/zc-ring-x1.md`, the file vc-x1's proposal was written to.
-
-##### build: upgrade the dependencies to the latest compatible versions
-
-The manifests asked for `clap 4.6.1` and the lock held transitive entries behind what their reqs
-allowed, so a fresh build used older code than the reqs permitted.
-
-* The manifest reqs were behind the latest compatible releases.
-  - `cargo upgrade` moved `clap` to `4.6.6` in `tp_runner` and `tp_matrix`, the only req with a
-    newer compatible version. No other req had one, and nothing was held behind an incompatible
-    (major) release.
-* The lock's transitive entries were behind their reqs.
-  - `cargo update` moved eleven entries, `zerocopy` `0.8.52` to `0.8.56` and `hdrhistogram`
-    `7.5.4` to `7.6.0` among them, with `nom` `7` to `8` and `zlib-rs` arriving as `hdrhistogram`'s
-    new transitive choices and `minimal-lexical` leaving with the old `nom`.
-
-##### docs: copy the set over the agent-files
-
-Our agent-files were the base the set was built from, and the set's diff against them is the
-proposal. Taking the set whole is what makes the three-way comparison empty for this member.
-
-* `AGENTS.md` and `agent-data/*` differed from the set in the ways the proposal lists.
-  - Replaced by vc-x1's files at `a4309084fdfe`, taken from that commit rather than vc-x1's working
-    tree, which had moved on. `commit-model.md` arrives, `cycle-checklists.md` and
-    `cycle-protocol.md` go, and `agent-data/` and `AGENTS.md` are now byte-identical to the set.
-* `custom.md` pointed at the old `## custom.md: the project layer` heading.
-  - The anchor is `#custommd` now, and `custom.md` is identical to the set's too.
-* `notes/README.md` linked the two retired files.
-  - It names `jj.md`, `versioning.md`, and `cycle-model.md` instead. The other stale inbound
-    anchors a link check found predate this rung and get the next one.
-
-##### docs: repoint the stale links into the agent-files
-
-Six links in live files still pointed at `AGENTS.md` anchors that moved into the agent-data files
-before this cycle, when the prose, todo, and jj sections left AGENTS.md, so each resolved to the
-top of the file rather than its section.
-
-* `Prose form` was cited as `AGENTS.md#prose-form` in `ARCHITECTURE.md`, `notes/bugs.md`,
-  `notes/todo-backlog.md`, and `notes/ring-buffer-design.md`.
-  - Each now points at `agent-data/prose.md#prose-form`.
-* `notes/todo-backlog.md` cited `AGENTS.md#todo-format` and `notes/jj-tips.md` cited
-  `AGENTS.md#cross-repo-linking-ochid-trailers`.
-  - They point at `agent-data/notes.md#todo-format` and
-    `agent-data/jj.md#cross-repo-linking-ochid-trailers`.
-* Three frozen files (`notes/chores/chores-01.md`, `chores-02.md`,
-  `tprobe/notes/chores/chores-01.md`) carry the same stale anchors.
-  - Left as they are: frozen history is never appended, and the link check's list is the record of
-    where they point.
-
-##### docs: reshape TODO.md to the set's Todo format
-
-`TODO.md` had the numbered Todo shape the set retired, and lacked three of the set's sections, so
-a citation of an entry had no anchor and the next agent had nowhere to leave continuation notes.
-
-* The section list was `In Progress`, `Todo`, `Ideas`, with `## Closed` lost by this cycle's
-  opening edit and no `## Bugs` pointer.
-  - The set's seven sections are present in order, each with the intro vc-x1's carries:
-    `## Continuation notes`, `## In Progress`, `## Closed`, `## Waiting`, `## Todo`, `## Ideas`,
+## Waiting`, `## Todo`, `## Ideas`,
     `## Bugs`. The three that hold nothing read `_None._`.
 * The six `## Todo` entries were numbered list items, `N. Title: text`.
   - Each is a `###` heading titled by its lead phrase, its text the paragraph below, sub-bullets
@@ -319,12 +223,5 @@ _See [bugs.md](notes/bugs.md)._
 
 # References
 
-[1]: #docs-adopt-the-family-agent-files-set-opening
-[2]: #docs-copy-the-set-over-the-agent-files
-[3]: #docs-reshape-todomd-to-the-sets-todo-format
-[4]: #fixconfig-name-this-repos-family-member
-[5]: #docs-adopt-the-family-agent-files-set-closing
-[6]: #build-upgrade-the-dependencies-to-the-latest-compatible-versions
-[7]: #docs-repoint-the-stale-links-into-the-agent-files
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [21]: notes/chores/chores-02.md#findings-the-gap-is-line-transfer-economics

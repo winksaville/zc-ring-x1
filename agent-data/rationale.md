@@ -217,6 +217,10 @@ Each close-out step exists because a close-out once went wrong without it.
 - The user restarts the agent after the close-out (wink, 2026-08-24) because context degrades over
   a long session, nothing is in flight once the cycle has landed, and an agent cannot restart
   itself, so the step says what must be written down before the exit.
+- The `(current)` / `(done)` markers stay in the closed block (wink, 2026-08-28) because they have
+  value: the finished block is the ladder as it was worked, and a closed block is one every rung of
+  which reads `(done)`, so a rung reading otherwise is a finding. The earlier "drop the markers"
+  step was one more transform of the record, of the kind [Cycle-record](#cycle-record) retired.
 - The single-step case is spelled out because a single-step close-out went wrong when it was left
   to analogy (2026-08-26): the agent treated the one commit as a closing rung.
   - The agent-repo commit took the title plus " closing" while the work-repo commit kept the bare

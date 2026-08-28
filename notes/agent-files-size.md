@@ -14,11 +14,12 @@ the closing rung's last edit, with the cycle title as the row's label.
 | Landed | Cycle | Files | Lines | Note |
 |---|---|---|---|---|
 | 2026-08-28 | docs: adopt the family agent-files set | 11 | 2126 | the set as proposed, identical to vc-x1's at a4309084fdfe |
+| 2026-08-28 | docs: keep the ladder markers in the closed block | 11 | 2129 | the drop-markers step gone, its rationale added |
 
 Per file at the last row, replaced at each close-out, the history being in the commits:
 
 ```
-   350 AGENTS.md
+   349 AGENTS.md
     11 custom.md
     92 agent-data/code.md
     42 agent-data/commit-model.md
@@ -27,7 +28,7 @@ Per file at the last row, replaced at each close-out, the history being in the c
     46 agent-data/messaging.md
    169 agent-data/notes.md
    360 agent-data/prose.md
-   426 agent-data/rationale.md
+   430 agent-data/rationale.md
    178 agent-data/versioning.md
-  2126 total
+  2129 total
 ```

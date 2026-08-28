@@ -247,7 +247,6 @@ does all of it in its one commit, step 5 aside ([Cycle shape](#cycle-shape)):
 2. Finalize the cycle-record in place ([Cycle-record](#cycle-record)):
    - sync the title if the scope shifted, and every anchor back-reference with it
    - replace the provisional solution statement with what was done
-   - drop the `(current)` / `(done)` markers
    - add the design subsections the deliberation grew
    - complete the closing rung's subsection
    - ask what in the block must outlive the cycle, and write it into the `notes/` file it

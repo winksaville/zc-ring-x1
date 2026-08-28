@@ -131,7 +131,7 @@ under a program heading, each one deeper):
   it. Not the per-commit validation, which asks whether the artifact still works. A changed check is
   one of the things the deliberation exists to justify
 - **ladder**: one rung per step, `- [<title>][M]` plus `(current)` / `(done)`, with `[M]: #<slug>`
-  in the file's `# References`. `<title>` is the rung's commit title, `<type>: <desc>` per
+  in the file's `# References`. The markers stay when the block moves to `## Closed`. `<title>` is the rung's commit title, `<type>: <desc>` per
   [Conventional-commit shape](prose.md#conventional-commit-shape-ladder--commit), so a moved
   `## Todo` entry is retitled. The closing rung, `<cycle title> closing`, is linked like the rest
 - **deliberation**: how the five above were decided, one bullet per decision. The bullet's lead
