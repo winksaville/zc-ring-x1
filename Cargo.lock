@@ -394,7 +394,7 @@ dependencies = [
  "clap",
  "tp_runner",
  "tprobe",
- "zc-ring-x1",
+ "zc-ring-x1-dev",
 ]
 
 [[package]]
@@ -442,8 +442,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "zc-ring-x1"
-version = "0.15.2"
+name = "zc-ring-x1-dev"
+version = "0.15.3-0"
 dependencies = [
  "libc",
  "zerocopy",
