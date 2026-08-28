@@ -17,7 +17,116 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### feat: segmented seam-word SPSC v1
+
+#### Problem
+
+The SPSC ring loses to the MPSC ring cross-core (~10.0 cache lines per round trip vs ~6.7, a 26 to
+40% loss, [[21]]) because each side reads the other's index line, and both rings are fixed-length:
+a Full ring fails the send, and the only overflow design on the books is a per-message pending
+list, which pays a pointer chase per message. There is no SPSC that is both faster than MPSC v0 on
+the non-overflow path and able to carry an arbitrary number of messages.
+
+#### Solution
+
+A `spsc::v1` sibling, in two layers, with the speed in the first:
+
+- Seam-word ring: MPSC v0's per-slot seq protocol with the producer's CAS removed. Each slot's
+  seq word publishes the slot; the producer commits with `seq.store(pos + 1, Release)` and the
+  consumer releases with `seq.store(pos + M, Release)`, so each side reads only slot lines and its
+  own private index and never the other side's index line. Load/store only, so the no-CAS floor
+  holds. `M` is the user's choice, any power of two down to 1, so a sweep isolates the segment seam.
+- Segments: a queue is a chain of ring segments allocated from a `Pool`, each segment one pool
+  buffer holding a v1 ring region. On Full the producer allocates the next segment, inits it, and
+  stores its offset in the current segment's link word (Release), then moves. The consumer, on
+  Empty, loads the link (Acquire); a set link means the old segment is fully drained (the producer
+  moved only after filling it, and Empty means all of it was read), so the consumer moves and frees
+  the old segment. One link per segment, amortized over `M` messages; `M = 1` is the per-message
+  linked list, measured rather than imagined.
+- Pool: we think unchanged, apart from a way to take a buffer as raw bytes for `Ring::init`, if
+  `alloc::<T>` cannot express it. Anything more waits for a shown need.
+
+#### Acceptance check
+
+`vc-x1 validate` passes, including v1 ring tests at `M = 1`, `2`, and a larger power of two, and a
+segmented-queue test that crosses several segment boundaries and returns every segment to the pool.
+`tp-matrix` with a `spsc-v1` flavor shows a faster round trip than `mpsc` cross-core and no slower
+at the SMT placement, and the `M` sweep is recorded in `notes/ring-buffer-design.md`.
+
+#### Ladder
+
+- [feat: segmented seam-word SPSC v1 opening][1] (done)
+- [feat: add the spsc v1 seam-word ring][2]
+- [perf: measure spsc v1 against v0 and mpsc][3]
+- [feat: allocate ring segments from a pool][4]
+- [feat: add the segmented queue over spsc v1][5]
+- [perf: sweep the segment size][6]
+- [feat: segmented seam-word SPSC v1 closing][7]
+
+#### Deliberation
+
+- v1 is a sibling module, not an edit of v0: the module layout exists for this (`spsc::v0` stays
+  pinned by path for the A/B), and the crate root's default re-export moves to v1 only if the
+  numbers earn it, decided at the closing.
+- The ring rung and its measurement are separate rungs, and the measurement comes before any
+  segment work: the whole bet is the ring protocol, and if v1 does not beat MPSC v0 the segment
+  layers are not worth building on it. A failed measurement stops the cycle for a decision, per
+  Stop and ask.
+- Seq placement is a separate seq array first, as MPSC v0 has it, since that keeps the slot
+  contract (`T` fits `slot_size`, cache-line aligned) identical to v0 and the A/B honest. An
+  in-slot seq word (the payload and its seq in one line) is the obvious next experiment and is
+  left as a finding for the measurement rung, not a commitment.
+- The header's index lines stay, diagnostic only: `producer_idx` and `consumer_idx` are the
+  endpoints' private counters, and the header copies are for occupancy inspection. The layout
+  is v1's own (`layout_version` bump), so nothing v0-attached can misread it.
+- The link word lives in the segment's ring header `user` line, word 0, not in the pool's
+  free-stack word: the pool stays ignorant of rings, and the free-stack overwrites its word on free
+  anyway. The value is the pool buffer index, with a sentinel for none.
+- The segmented queue's endpoints hold the pool halves the roles need: the producer holds the
+  `Pool` (its one allocator), the consumer a `PoolResolver` to free. That is the pool's existing
+  contract, no change.
+- Overflow FIFO in `## Todo` is superseded if this lands; its removal is a closing duty.
+- MPSC is out of scope: what the measurements teach is expected to carry to an MPSC v1, and that is
+  its own cycle.
+
+#### Ladder details
+
+##### feat: segmented seam-word SPSC v1 opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
+Todo entry into this block, bump the version-of-record, and rename the demo binary to `-dev`.
+
+##### feat: add the spsc v1 seam-word ring
+
+`spsc::v1`: `Header` with geometry, two diagnostic index lines, and the user line; a seq array of
+`M` words after the header and the slots after that; `Ring::init` / `attach` / `split`, `Producer`
+and `Consumer` with the v0 `reserve_slot_with` / `WriteSlot` / `ReadSlot` surface; tests mirroring
+v0's plus `M = 1`.
+
+##### perf: measure spsc v1 against v0 and mpsc
+
+A `spsc-v1` flavor in `tp-cell` / `tp-matrix` and the demo's one-message loops; run the matrix,
+record the round trip and line-fill numbers beside [[21]]'s in `notes/ring-buffer-design.md`, and
+decide whether the segment rungs go ahead.
+
+##### feat: allocate ring segments from a pool
+
+Take a pool buffer as the byte region a v1 `Ring::init` wants, sized by a `region_size(slot_size,
+M)` the pool caller uses for `buf_size`; whatever the pool needs for that, and nothing else.
+
+##### feat: add the segmented queue over spsc v1
+
+The chain: producer and consumer endpoints, the link word, segment switch on Full and on Empty,
+freeing the drained segment, and the boundary-crossing test.
+
+##### perf: sweep the segment size
+
+`M` from 1 to 256 in the cell, the seam cost as the slope, recorded in
+`notes/ring-buffer-design.md` with the segment size the crate defaults to.
+
+##### feat: segmented seam-word SPSC v1 closing
+
+Closing out the cycle.
 
 ## Closed
 
@@ -25,75 +134,6 @@ The last cycle's finished record, moved here whole by its closing commit and del
 opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the landmark commit's copy
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
-
-### docs: keep the ladder markers in the closed block
-
-#### Problem
-
-The close-out's step 2 said to drop the `(current)` / `(done)` markers from the ladder before the
-block moves to `## Closed`, and no rationale entry said why. The markers have value, so a step that
-strips them loses it, and the record lands as a plain title list rather than the ladder as it was
-worked.
-
-#### Solution
-
-The step is gone from `AGENTS.md`, `notes.md`'s ladder item says the markers stay when the block
-moves, and `rationale.md`'s Close-out carries the why, which the earlier rule never had. A
-single-step cycle, its one commit carrying the opening's duties, the change, and this record.
-
-#### Acceptance check
-
-`grep -n "drop the" AGENTS.md` finds nothing, this block's ladder rung still reads `(done)` in
-`## Closed`, and `vc-x1 validate` passes.
-
-Result: pass. The grep is empty, the rung below carries its marker, and validation passed.
-
-#### Ladder
-
-- docs: keep the ladder markers in the closed block (done)
-
-#### Deliberation
-
-- The change goes to the set's copy of the agent-files, not `custom.md`: the reason is not
-  project-specific, so the diff against the payload is the proposal, per Changing the agent-files.
-- Single-step: one line goes, one line and one rationale bullet arrive, and no step needs its own
-  review.
-- No `-dev` rename: the opening's rename and Land's restore would be one no-op in the one commit.
-- The why is recorded as given, "the markers have value so they stay", with the reading that a
-  closed block whose rungs all read `(done)` is a check in itself.
-
-## Waiting`, `## Todo`, `## Ideas`,
-    `## Bugs`. The three that hold nothing read `_None._`.
-* The six `## Todo` entries were numbered list items, `N. Title: text`.
-  - Each is a `###` heading titled by its lead phrase, its text the paragraph below, sub-bullets
-    kept. Priority is file order, and the `fix-todo` instruction is gone from the intro. One
-    untypeable character in an entry (`transfers are about 0`) converted with it.
-* `## Ideas` entries stay bullets.
-  - Unranked and never cited, so an anchor buys nothing there, and the intro now says how they are
-    triaged, as vc-x1's does.
-* `notes/todo-backlog.md`'s header described the rank-and-renumber scheme and `fix-todo`.
-  - Rewritten to the set's wording, its dashes with it. It holds no entries. `notes/bugs.md` keeps
-    its numbered entries and `fix-todo` note, since the set only asks that `## Bugs` point at it,
-    and vc-x1's `bugs.md` is numbered too.
-
-##### docs: adopt the family agent-files set closing
-
-Closing out the cycle: run the acceptance check, finalize this block and move it to `## Closed`,
-record the agent-files size, and bring the version-of-record to the bare `0.15.3`.
-
-* The set's Close-out gained a Size step, which this repo had no file for.
-  - `notes/agent-files-size.md` is created in vc-x1's shape with this cycle as its first row,
-    2126 lines over 11 files, the same count as the set since the files are identical.
-* Nothing in the block needs to outlive the cycle beyond what the size note now holds.
-  - The link check that found the stale anchors was run by hand and is not kept, since the set's
-    `validate` entry (vc-x1's `## Todo`) is the durable home for it.
-* Close-out shape: trapezoid, the default. The ladder is five subjects, and `main` reads better as
-  one commit per cycle with the rungs reachable behind it.
-* `# Todo` over `## Todo`, and `# Bugs` over `## Bugs` in `notes/bugs.md`, slug to the same anchor,
-  so a link to the section landed on the file's title (found by vc-x1, 2026-08-28).
-  - The titles became `# Todo and cycle record` and `# Known bugs`, amended into this commit
-    before the landing since the bookmark was still a draft.
-
 
 ## Waiting
 
@@ -128,17 +168,6 @@ On ring Full, append the message to a sender-private pending list instead of fai
 - naturally bounded by pool capacity
 - composes per-sender with MPSC, see [Overflow
   readiness](notes/ring-buffer-design.md#overflow-readiness).
-
-### Seam-word SPSC variant
-
-Publish per-slot seq words so neither side ever reads the other's index line, Vyukov-style publish
-but load/store only (no CAS: the single producer's index stays endpoint-private) [[21]]:
-- motivation: cross-core, SPSC moves ~10.0 cache lines per round trip vs MPSC's ~6.7 and loses
-  ~26 to 40%, and the whole gap is line-transfer economics
-- must keep the SMT/1t win (SPSC beats MPSC at 0,12 where transfers are about 0, so the protocol
-  itself is cheaper)
-- costs a seq array in the layout (layout_version bump), so measure A/B with tp_roundtrip before
-  adopting.
 
 ### Batch alloc/free demo
 
@@ -225,3 +254,10 @@ _See [bugs.md](notes/bugs.md)._
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [21]: notes/chores/chores-02.md#findings-the-gap-is-line-transfer-economics
+[1]: #feat-segmented-seam-word-spsc-v1-opening
+[2]: #feat-add-the-spsc-v1-seam-word-ring
+[3]: #perf-measure-spsc-v1-against-v0-and-mpsc
+[4]: #feat-allocate-ring-segments-from-a-pool
+[5]: #feat-add-the-segmented-queue-over-spsc-v1
+[6]: #perf-sweep-the-segment-size
+[7]: #feat-segmented-seam-word-spsc-v1-closing

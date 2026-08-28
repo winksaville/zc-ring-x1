@@ -14,5 +14,5 @@ publish = false
 [dependencies]
 tprobe = { path = "../tprobe" }
 tp_runner = { path = "../tp_runner" }
-zc-ring-x1 = { path = ".." }
+zc-ring-x1 = { package = "zc-ring-x1-dev", path = ".." }
 clap = { version = "4.6.6", features = ["derive", "wrap_help"] }
