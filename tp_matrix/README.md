@@ -22,7 +22,8 @@ also counts its own cross-core cache-line fills via
 user-mode only — no perf(1), root, bash, or scraping), which
 is the hardware's answer to "how many cache lines crossed
 between the cores per round trip". A cell varies along two
-axes: **flavor** (the SPSC ring vs the MPSC sibling at 1p/1c)
+axes: **flavor** (the SPSC v0 ring, the SPSC v1 seam-word
+ring, and the MPSC sibling at 1p/1c)
 and **placement** (which CPUs the two threads sit on — same
 L3, different L3, SMT siblings, or unpinned).
 

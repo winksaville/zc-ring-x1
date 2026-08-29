@@ -700,11 +700,54 @@ its own index.
   claimable, committed, and released. The user picks `M`, any power of
   two up to `2^30`, so a segment-size sweep can isolate the
   segment seam ([the cycle](../TODO.md#feat-segmented-seam-word-spsc-v1)).
-- **Open, for the measurement** — in-slot seq (the payload
-  and its seq in one line, at the cost of the slot contract)
-  against the separate array; and whether the seq array
-  wants line padding, the same question the MPSC ring left
-  open.
+- **Measured (2026-08-28, 3900X, `tp-matrix` 5 s cells and
+  the demo's 1M-message streams)** — v1 closes most of v0's
+  gap and lands beside the MPSC ring, not ahead of it:
+  - fills per round trip: v0 10.0, v1 6.85, MPSC 6.7, at every
+    cross-core placement. The seam word removed the index-line
+    traffic as designed.
+  - round trips per 5 s: 0,1 CCX v0 22.7M, v1 28.5M, MPSC
+    30.7M; 0,3 x-CCX v0 6.5M, v1 8.2M, MPSC 8.8M; 0,12 SMT
+    v0 40.9M, v1 34.2M, MPSC 34.7M. Demo streams, diff cores
+    0+3: v0 166 ns, v1 105 ns, MPSC 92 ns per message; same
+    core 0+12: v0 6.9, v1 13.8, MPSC 15.4; single thread: v0
+    2.6, v1 7.8, MPSC 9.8.
+  - So v1 is ~26% faster than v0 cross-core, ~7% slower than
+    the MPSC ring there, and loses v0's SMT and single-thread
+    win by 2 to 3x, as the MPSC ring does. The cycle's bar,
+    faster than MPSC v0 on the non-overflow path, is not met by
+    the separate-seq-array form.
+  - Open puzzle: v1 does strictly less than the MPSC producer
+    (a load where MPSC has a CAS) and is slower by a few ns per
+    send at every placement (`w.send` 13.0 vs 10.1 ns on the
+    CCX). We think it is not the protocol, and the next
+    candidates are code shape (the `WriteSlot` deref path
+    against `send_with`'s closure fill) and the store ordering
+    (the private index store ahead of the seq store, where the
+    MPSC CAS drains the store buffer first).
+- **Measured on a 7600X (Zen 4, one CCD), the demo's
+  streams** — the picture reverses: single thread v0 2.2 ns,
+  v1 6.1, MPSC 7.1; diff cores 0+1 v0 7.0, v1 18.9, MPSC
+  17.7; same core 0+6 v0 6.0, v1 13.9, MPSC 13.3. Streaming
+  with depth 64, the producer running ahead, v0 beats both
+  seq protocols by 2.5x cross-core. We think the cause is
+  that a seq word is written by both sides every message and
+  16 seq words share a line: v0's slot lines move one way
+  (producer writes, consumer reads) and only its two index
+  lines move both ways, while every v1 message also drags the
+  seq line producer to consumer at commit and back at release,
+  and neighbouring slots' seqs false-share it. The
+  one-in-flight `tp-matrix` cell cannot show this, since there
+  the seq line and the slot line move once each per trip; the
+  streaming demo can.
+- **Open, for the next step** — in-slot seq (the payload and
+  its seq in one line, so a message costs the slot line that
+  was moving anyway and no seq line, at the cost of the slot
+  contract), which targets both the round-trip fill count and
+  the streaming ping-pong; the per-send puzzle above; and
+  whether the seq array wants line padding, the same question
+  the MPSC ring left open, which the streaming result now
+  weights toward yes if the seq stays separate.
 
 ## Messaging layer: pools and descriptor queues
 

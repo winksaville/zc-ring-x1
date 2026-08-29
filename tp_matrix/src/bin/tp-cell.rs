@@ -9,7 +9,7 @@
 
 use clap::Parser;
 
-use tp_matrix::{Flavor, run_cell};
+use tp_matrix::{FLAVORS, Flavor, run_cell};
 use tp_runner::{CommonArgs, parse_pin, report};
 use tprobe::fmt::fmt_commas;
 
@@ -24,12 +24,14 @@ const TOP_ABOUT: &str = concat!(
 /// Which ring flavor(s) a run measures.
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum FlavorArg {
-    /// The SPSC ring (`reserve_slot_with` both ends)
+    /// The SPSC v0 ring (`reserve_slot_with` both ends)
     Spsc,
+    /// The SPSC v1 seam-word ring (same surface, per-slot seq)
+    SpscV1,
     /// The MPSC ring at 1p/1c (`send_with` producers)
     Mpsc,
-    /// Both, SPSC first
-    Both,
+    /// All three, in that order
+    All,
 }
 
 /// The tp-cell CLI.
@@ -44,7 +46,7 @@ struct Cli {
     /// Each protocol phase (send, recv, recv spin, recv
     /// attempts, per side) is measured by its own probe and
     /// reported as a percentile band table.
-    #[arg(value_enum, default_value_t = FlavorArg::Both)]
+    #[arg(value_enum, default_value_t = FlavorArg::All)]
     flavor: FlavorArg,
 
     /// Pin main to MAIN and the worker to WORKER (logical CPU
@@ -70,8 +72,9 @@ fn main() {
     let cfg = cli.common.to_cfg(cli.pin);
     let flavors: &[Flavor] = match cli.flavor {
         FlavorArg::Spsc => &[Flavor::Spsc],
+        FlavorArg::SpscV1 => &[Flavor::SpscV1],
         FlavorArg::Mpsc => &[Flavor::Mpsc],
-        FlavorArg::Both => &[Flavor::Spsc, Flavor::Mpsc],
+        FlavorArg::All => &FLAVORS,
     };
     for &flavor in flavors {
         let res = run_cell(flavor, cfg.duration, cfg.pin);

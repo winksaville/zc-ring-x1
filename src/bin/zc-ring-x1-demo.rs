@@ -12,7 +12,8 @@
 //!   one consumer thread: unpinned, pinned to two different
 //!   physical cores, and pinned to one physical core's two
 //!   SMT siblings (shared L1/L2, when the CPU has SMT).
-//!   The MPSC sibling runs beside it at each placement
+//!   The SPSC v1 seam-word ring (`spsc1_` lines) and the
+//!   MPSC sibling run beside it at each placement
 //!   (send_with closure fill), plus a 2-producer + 1-consumer
 //!   line — the shape only the MPSC ring can run.
 //! - Part 2, the pool: an allocator thread allocs and
@@ -55,10 +56,11 @@ struct Msg {
 #[repr(C, align(64))]
 struct Region([u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE]);
 
-/// Region for the MPSC ring: header + per-slot seq array
-/// (DEPTH × 4 B, padded to a line) + DEPTH one-line slots.
+/// Region for the MPSC or SPSC v1 ring: header + per-slot seq
+/// array (DEPTH × 4 B, padded to a line) + DEPTH one-line
+/// slots — the two layouts have the same shape.
 #[repr(C, align(64))]
-struct MpscRegion(
+struct SeqRegion(
     [u8; 4 * CACHE_LINE_SIZE
         + (DEPTH as usize * 4).next_multiple_of(CACHE_LINE_SIZE)
         + DEPTH as usize * CACHE_LINE_SIZE],
@@ -175,95 +177,118 @@ fn pin_to_cpu(cpu: usize) {
 #[cfg(not(target_os = "linux"))]
 fn pin_to_cpu(_cpu: usize) {}
 
-/// Move COUNT messages single thread through the ring,
-/// pinned to cpu 0 for consistency with the pinned 2t runs;
-/// return elapsed seconds.
+/// Define the SPSC one-message loops over the ring at `$ring`:
+/// `$one_t` moves COUNT messages single thread, pinned to cpu
+/// 0, and `$two_t` moves them producer-thread → consumer-thread
+/// (`pin` as in [`spsc_ring_one_msg_2t`]); each returns elapsed
+/// seconds. v0 and v1 share the endpoint surface and differ by
+/// path, so one body serves both and the two lines read as the
+/// protocol seam alone.
 ///
-/// The loop runs in a scoped thread rather than pinning the
+/// The 1t loop runs in a scoped thread rather than pinning the
 /// main thread: spawned threads inherit the main thread's
 /// affinity mask, which would squeeze every later part onto
 /// cpu 0.
-fn spsc_ring_one_msg_1t() -> f64 {
-    let mut region = Region([0; size_of::<Region>()]);
-    let (mut producer, mut consumer) = Ring::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
-        .split();
+macro_rules! spsc_loops {
+    ($one_t:ident, $two_t:ident, $ring:path, $region:ident) => {
+        fn $one_t() -> f64 {
+            let mut region = $region([0; size_of::<$region>()]);
+            let (mut producer, mut consumer) =
+                <$ring>::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
+                    .unwrap() // OK: $region is sized/aligned for the ring header + DEPTH slots
+                    .split();
 
-    let start = Instant::now();
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            pin_to_cpu(0);
-            for i in 0..COUNT {
-                match producer.reserve_slot_with::<Msg>(|_| false) {
-                    Ok(mut slot) => {
+            let start = Instant::now();
+            std::thread::scope(|s| {
+                s.spawn(move || {
+                    pin_to_cpu(0);
+                    for i in 0..COUNT {
+                        match producer.reserve_slot_with::<Msg>(|_| false) {
+                            Ok(mut slot) => {
+                                slot.seq = i;
+                                slot.commit();
+                            }
+                            Err(Full) => {
+                                panic!(concat!(
+                                    stringify!($one_t),
+                                    ": producer Full SHOULD NOT HAPPEN"
+                                ));
+                            }
+                        }
+                        match consumer.reserve_slot_with::<Msg>(|_| false) {
+                            Ok(msg) => {
+                                assert_eq!(msg.seq, i);
+                                msg.release();
+                            }
+                            Err(Empty) => {
+                                panic!(concat!(
+                                    stringify!($one_t),
+                                    ": consumer Empty SHOULD NOT HAPPEN"
+                                ));
+                            }
+                        }
+                    }
+                });
+            });
+            start.elapsed().as_secs_f64()
+        }
+
+        fn $two_t(pin: PinPair) -> f64 {
+            let mut region = $region([0; size_of::<$region>()]);
+            let (mut producer, mut consumer) =
+                <$ring>::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
+                    .unwrap() // OK: $region is sized/aligned for the ring header + DEPTH slots
+                    .split();
+
+            let start = Instant::now();
+            std::thread::scope(|s| {
+                s.spawn(move || {
+                    if let Some((p, _)) = pin {
+                        pin_to_cpu(p);
+                    }
+                    for i in 0..COUNT {
+                        let mut slot = producer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
                         slot.seq = i;
                         slot.commit();
                     }
-                    Err(Full) => {
-                        panic!("spsc_ring_one_msg_1t: producer Full SHOULD NOT HAPPEN");
+                });
+                s.spawn(move || {
+                    if let Some((_, c)) = pin {
+                        pin_to_cpu(c);
                     }
-                }
-                match consumer.reserve_slot_with::<Msg>(|_| false) {
-                    Ok(msg) => {
+                    for i in 0..COUNT {
+                        let msg = consumer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
                         assert_eq!(msg.seq, i);
                         msg.release();
                     }
-                    Err(Empty) => {
-                        panic!("spsc_ring_one_msg_1t: consumer Empty SHOULD NOT HAPPEN");
-                    }
-                }
-            }
-        });
-    });
-    start.elapsed().as_secs_f64()
+                });
+            });
+            start.elapsed().as_secs_f64()
+        }
+    };
 }
 
-/// Move COUNT messages producer-thread → consumer-thread
-/// through the ring; return elapsed seconds.
-///
-/// - `pin` — `Some((p, c))` pins the producer to cpu `p` and
-///   the consumer to cpu `c`; `None` lets the scheduler place
-///   them (the number then depends on where they land).
-fn spsc_ring_one_msg_2t(pin: PinPair) -> f64 {
-    let mut region = Region([0; size_of::<Region>()]);
-    let (mut producer, mut consumer) = Ring::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
-        .split();
-
-    let start = Instant::now();
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            if let Some((p, _)) = pin {
-                pin_to_cpu(p);
-            }
-            for i in 0..COUNT {
-                let mut slot = producer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
-                slot.seq = i;
-                slot.commit();
-            }
-        });
-        s.spawn(move || {
-            if let Some((_, c)) = pin {
-                pin_to_cpu(c);
-            }
-            for i in 0..COUNT {
-                let msg = consumer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
-                assert_eq!(msg.seq, i);
-                msg.release();
-            }
-        });
-    });
-    start.elapsed().as_secs_f64()
-}
+spsc_loops!(
+    spsc_ring_one_msg_1t,
+    spsc_ring_one_msg_2t,
+    zc_ring_x1::spsc::v0::Ring,
+    Region
+);
+spsc_loops!(
+    spsc1_ring_one_msg_1t,
+    spsc1_ring_one_msg_2t,
+    zc_ring_x1::spsc::v1::Ring,
+    SeqRegion
+);
 
 /// Move COUNT messages single thread through the MPSC ring,
 /// pinned to cpu 0 — the sibling of spsc_ring_one_msg_1t, so
 /// the two lines read as the seam between the protocols
 /// (claim CAS + seq vs load/store); return elapsed seconds.
 fn mpsc_ring_one_msg_1t() -> f64 {
-    let mut region = MpscRegion([0; size_of::<MpscRegion>()]);
+    let mut region = SeqRegion([0; size_of::<SeqRegion>()]);
     let (producer, mut consumer) = MpscRing::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: MpscRegion is sized/aligned for header + seqs + DEPTH slots
+        .unwrap() // OK: SeqRegion is sized/aligned for header + seqs + DEPTH slots
         .split();
 
     let start = Instant::now();
@@ -297,9 +322,9 @@ fn mpsc_ring_one_msg_1t() -> f64 {
 ///   the consumer to cpu `c`; `None` lets the scheduler place
 ///   them (the number then depends on where they land).
 fn mpsc_ring_one_msg_2t(pin: PinPair) -> f64 {
-    let mut region = MpscRegion([0; size_of::<MpscRegion>()]);
+    let mut region = SeqRegion([0; size_of::<SeqRegion>()]);
     let (producer, mut consumer) = MpscRing::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: MpscRegion is sized/aligned for header + seqs + DEPTH slots
+        .unwrap() // OK: SeqRegion is sized/aligned for header + seqs + DEPTH slots
         .split();
 
     let start = Instant::now();
@@ -336,9 +361,9 @@ fn mpsc_ring_one_msg_2t(pin: PinPair) -> f64 {
 /// interleave is whatever the claim race said. Returns
 /// elapsed seconds.
 fn mpsc_ring_one_msg_3t() -> f64 {
-    let mut region = MpscRegion([0; size_of::<MpscRegion>()]);
+    let mut region = SeqRegion([0; size_of::<SeqRegion>()]);
     let (producer, mut consumer) = MpscRing::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: MpscRegion is sized/aligned for header + seqs + DEPTH slots
+        .unwrap() // OK: SeqRegion is sized/aligned for header + seqs + DEPTH slots
         .split();
 
     let start = Instant::now();
@@ -641,6 +666,7 @@ fn main() {
     // Single thread, core 0.
     println!();
     report("spsc_ring_one_msg_1t (core 0):", spsc_ring_one_msg_1t());
+    report("spsc1_ring_one_msg_1t (core 0):", spsc1_ring_one_msg_1t());
     report("mpsc_ring_one_msg_1t (core 0):", mpsc_ring_one_msg_1t());
     report(
         "spsc_ring_one_pool_msg_1t (core 0):",
@@ -656,6 +682,10 @@ fn main() {
     report(
         "spsc_ring_one_msg_2t (unpinned):",
         spsc_ring_one_msg_2t(None),
+    );
+    report(
+        "spsc1_ring_one_msg_2t (unpinned):",
+        spsc1_ring_one_msg_2t(None),
     );
     report(
         "mpsc_ring_one_msg_2t (unpinned):",
@@ -686,6 +716,10 @@ fn main() {
                 spsc_ring_one_msg_2t(far),
             );
             report(
+                &format!("spsc1_ring_one_msg_2t (diff cores {p}+{c}):"),
+                spsc1_ring_one_msg_2t(far),
+            );
+            report(
                 &format!("mpsc_ring_one_msg_2t (diff cores {p}+{c}):"),
                 mpsc_ring_one_msg_2t(far),
             );
@@ -711,6 +745,10 @@ fn main() {
             report(
                 &format!("spsc_ring_one_msg_2t (same core {p}+{c}):"),
                 spsc_ring_one_msg_2t(smt),
+            );
+            report(
+                &format!("spsc1_ring_one_msg_2t (same core {p}+{c}):"),
+                spsc1_ring_one_msg_2t(smt),
             );
             report(
                 &format!("mpsc_ring_one_msg_2t (same core {p}+{c}):"),

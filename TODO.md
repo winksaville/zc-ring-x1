@@ -9,7 +9,24 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-_None._
+- Cycle `feat: segmented seam-word SPSC v1` is mid-ladder on bookmark
+  `feat-segmented-seam-word-spsc-v1`, trapezoid at close-out. Three rungs pushed: opening, the v1
+  ring, the measurement. Working copy should be empty after the last push.
+- Next rung is the inserted `perf: try the in-slot seq`, version-of-record `0.15.5-3` at its
+  start. Its gate: v1 must beat MPSC v0 cross-core and not lose to v0 at SMT, or the segment rungs
+  do not proceed. Test the hypotheses before building on them, and phrase every analysis as a
+  hypothesis until a measurement confirms it (user's standing instruction, 2026-08-28).
+- Cheap first probe: line-pad the seq array (one seq per cache line) and rerun the demo's
+  streaming lines on the 3900X and the 7600X. If the 7600X cross-core stream (v0 7.0 ns, v1 18.9)
+  closes, the false-sharing hypothesis stands and the in-slot seq is the fix; if not, look at the
+  two-way-written word itself and at the per-send cost hunt (`WriteSlot` deref path vs `send_with`,
+  index store before seq store).
+- Measuring: `./target/release/tp-matrix` (5 s per cell, 12 cells) and the installed
+  `zc-ring-x1-demo-dev`; the 7600X runs the demo binary copied over by scp. Both are timing runs,
+  never overlap them. Numbers so far are in `notes/ring-buffer-design.md` under "SPSC v1:
+  seam-word ring".
+- Not done: `notes/README.md` update for the new `spsc::v1` module and the `spsc1_` demo lines,
+  a closing duty.
 
 ## In Progress
 
@@ -57,7 +74,8 @@ at the SMT placement, and the `M` sweep is recorded in `notes/ring-buffer-design
 
 - [feat: segmented seam-word SPSC v1 opening][1] (done)
 - [feat: add the spsc v1 seam-word ring][2] (done)
-- [perf: measure spsc v1 against v0 and mpsc][3]
+- [perf: measure spsc v1 against v0 and mpsc][3] (done)
+- [perf: try the in-slot seq][8]
 - [feat: allocate ring segments from a pool][4]
 - [feat: add the segmented queue over spsc v1][5]
 - [perf: sweep the segment size][6]
@@ -85,6 +103,11 @@ at the SMT placement, and the `M` sweep is recorded in `notes/ring-buffer-design
 - The segmented queue's endpoints hold the pool halves the roles need: the producer holds the
   `Pool` (its one allocator), the consumer a `PoolResolver` to free. That is the pool's existing
   contract, no change.
+- The measurement rung failed its gate (v1 at MPSC parity cross-core, not ahead, and 2.5x
+  behind v0 on the 7600X's streaming lines) and the user chose to insert an in-slot seq rung
+  rather than accept MPSC or stop: the seq riding the slot line is the one lever left on the
+  line count, and we think the streaming loss is the separate seq line, a hypothesis the rung
+  tests rather than assumes. The segment rungs wait on its result.
 - Overflow FIFO in `## Todo` is superseded if this lands; its removal is a closing duty.
 - MPSC is out of scope: what the measurements teach is expected to carry to an MPSC v1, and that is
   its own cycle.
@@ -124,9 +147,38 @@ loss to MPSC comes from. The rung adds the seam-word protocol as a sibling.
 
 ##### perf: measure spsc v1 against v0 and mpsc
 
-A `spsc-v1` flavor in `tp-cell` / `tp-matrix` and the demo's one-message loops; run the matrix,
-record the round trip and line-fill numbers beside [[21]]'s in `notes/ring-buffer-design.md`, and
-decide whether the segment rungs go ahead.
+The v1 ring existed with no measurement beside v0 and the MPSC ring, and the cycle's bet is a
+number. The rung is the gate: the numbers decide whether the segment rungs go ahead.
+
+* The cell and the demo loops were written against the v0 `Ring` type by name.
+  - v0 and v1 share the endpoint surface and differ by path, so the SPSC cell body and the demo's
+    two one-message loops each became a macro instantiated for both, and the A/B measures the
+    protocol alone. `tp-cell` gains `spsc-v1` and `all` (the new default), `tp-matrix` runs every
+    flavor from one `FLAVORS` list, and the demo prints `spsc1_` lines beside the `spsc_` ones.
+* The result had to be recorded where the design lives.
+  - `notes/ring-buffer-design.md`'s v1 section carries the numbers: fills per round trip v0 10.0,
+    v1 6.85, MPSC 6.7, so the seam word removed the index-line traffic as designed; round trips
+    v1 ~26% ahead of v0 cross-core and ~7% behind the MPSC ring, and v0's 2 to 3x SMT and
+    single-thread win lost, as the MPSC ring loses it. The bar, faster than MPSC v0 on the
+    non-overflow path, is not met by the separate-seq-array form, and the demo reproduces the
+    ordering.
+  - Recorded with it: v1 does strictly less than the MPSC producer and is a few ns slower per
+    send at every placement, an open puzzle with two candidates named (code shape of the
+    `WriteSlot` path against `send_with`, and the private index store ahead of the seq store).
+  - A 7600X run of the demo reversed the streaming picture, v0 2.5x ahead of both seq protocols
+    cross-core. Recorded with it, as a hypothesis and not a finding: that the seq line is
+    written by both sides every message and false-shared across 16 slots, which a one-in-flight
+    cell cannot show. The gate is not met, and the next rung was inserted on the user's choice.
+
+##### perf: try the in-slot seq
+
+We think the seq word in its own array costs a second line per message and, streaming, a line
+both sides write. The rung tests that before building on it (line-padding the seq array is the
+cheap probe: if false sharing is the cost, padding cuts the streaming loss), then puts the seq
+in the slot's own line and measures again: the `tp-matrix` round trip and the demo's streams on
+both machines, against v0 and MPSC, with the per-send puzzle chased while in there. The slot
+contract changes (`T` shares the slot with the seq), so the shape of that is part of the rung's
+finding, and the segment rungs go ahead only if the numbers now clear the bar.
 
 ##### feat: allocate ring segments from a pool
 
@@ -280,3 +332,4 @@ _See [bugs.md](notes/bugs.md)._
 [5]: #feat-add-the-segmented-queue-over-spsc-v1
 [6]: #perf-sweep-the-segment-size
 [7]: #feat-segmented-seam-word-spsc-v1-closing
+[8]: #perf-try-the-in-slot-seq

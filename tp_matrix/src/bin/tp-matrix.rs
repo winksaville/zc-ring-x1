@@ -11,7 +11,7 @@
 
 use clap::Parser;
 
-use tp_matrix::{CellResult, Flavor, run_cell};
+use tp_matrix::{CellResult, FLAVORS, Flavor, run_cell};
 use tp_runner::topo::{Placement, discover_placements};
 use tp_runner::{Cfg, CommonArgs};
 use tprobe::{TProbe, ticks};
@@ -126,14 +126,14 @@ fn main() {
         "{} cells, {:.1}s each; phase cells are mean/stdev of the trimmed \
          min-p99 band in {unit}; att in polls/waiting reserve; fills/RT = cross-core \
          cache-line fills per round trip",
-        placements.len() * 2,
+        placements.len() * FLAVORS.len(),
         cfg.duration.as_secs_f64(),
     );
     println!();
 
     let mut cells: Vec<(&Placement, Flavor, CellResult)> = Vec::new();
     for placement in &placements {
-        for flavor in [Flavor::Spsc, Flavor::Mpsc] {
+        for flavor in FLAVORS {
             eprintln!("running {} {} ...", placement.label, flavor.as_str());
             let res = run_cell(flavor, cfg.duration, placement.pin);
             cells.push((placement, flavor, res));

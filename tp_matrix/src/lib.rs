@@ -27,7 +27,7 @@ use std::time::Duration;
 use tp_runner::{STOP, drive, pin_to_cpu, spin, unpin_current};
 use tprobe::TProbe;
 use tprobe::ticks;
-use zc_ring_x1::{CACHE_LINE_SIZE, MpscRing, Ring};
+use zc_ring_x1::{CACHE_LINE_SIZE, MpscRing};
 
 /// Ring slots per direction — a power of two, comfortably above
 /// the one message ever in flight.
@@ -38,10 +38,11 @@ const DEPTH: u32 = 8;
 #[repr(C, align(64))]
 struct Region([u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE]);
 
-/// Region for one MPSC ring: header + per-slot seq array
-/// (DEPTH × 4 B, padded to a line) + DEPTH one-line slots.
+/// Region for one MPSC or SPSC v1 ring: header + per-slot seq
+/// array (DEPTH × 4 B, padded to a line) + DEPTH one-line
+/// slots — the two layouts have the same shape.
 #[repr(C, align(64))]
-struct MpscRegion(
+struct SeqRegion(
     [u8; 4 * CACHE_LINE_SIZE
         + (DEPTH as usize * 4).next_multiple_of(CACHE_LINE_SIZE)
         + DEPTH as usize * CACHE_LINE_SIZE],
@@ -50,17 +51,23 @@ struct MpscRegion(
 /// The ring flavor a cell measures.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Flavor {
-    /// The SPSC ring (`reserve_slot_with` both ends).
+    /// The SPSC v0 ring (`reserve_slot_with` both ends).
     Spsc,
+    /// The SPSC v1 seam-word ring (same surface, per-slot seq).
+    SpscV1,
     /// The MPSC ring at 1p/1c (`send_with` producers).
     Mpsc,
 }
+
+/// Every flavor, in report order.
+pub const FLAVORS: [Flavor; 3] = [Flavor::Spsc, Flavor::SpscV1, Flavor::Mpsc];
 
 impl Flavor {
     /// Lowercase name for labels and CLI parsing.
     pub fn as_str(self) -> &'static str {
         match self {
             Flavor::Spsc => "spsc",
+            Flavor::SpscV1 => "spsc-v1",
             Flavor::Mpsc => "mpsc",
         }
     }
@@ -212,6 +219,7 @@ pub fn run_cell(flavor: Flavor, dur: Duration, pin: Option<(usize, usize)>) -> C
     let fills = Fills::open();
     let probes = match flavor {
         Flavor::Spsc => run_spsc(dur, pin.map(|(_, w)| w)),
+        Flavor::SpscV1 => run_spsc_v1(dur, pin.map(|(_, w)| w)),
         Flavor::Mpsc => run_mpsc(dur, pin.map(|(_, w)| w)),
     };
     #[cfg(target_os = "linux")]
@@ -222,116 +230,138 @@ pub fn run_cell(flavor: Flavor, dur: Duration, pin: Option<(usize, usize)>) -> C
     CellResult { probes, rts, fills }
 }
 
-/// SPSC cell body: two `Ring`s, both ends `reserve_slot_with`
-/// under the [`spin`] policy (recv sites instrumented).
-fn run_spsc(dur: Duration, worker_cpu: Option<usize>) -> [TProbe; 8] {
-    let mut req_region = Region([0; size_of::<Region>()]);
-    let mut resp_region = Region([0; size_of::<Region>()]);
-    let (mut req_tx, mut req_rx) = Ring::init(&mut req_region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: Region is sized/aligned for the header + DEPTH slots
-        .split();
-    let (mut resp_tx, mut resp_rx) = Ring::init(&mut resp_region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: Region is sized/aligned for the header + DEPTH slots
-        .split();
+/// Define an SPSC cell body over the ring at `$ring`: two
+/// rings, both ends `reserve_slot_with` under the [`spin`]
+/// policy (recv sites instrumented). v0 and v1 share the
+/// endpoint surface and differ by path, so one body serves
+/// both and the A/B measures the protocol alone.
+macro_rules! spsc_cell {
+    ($name:ident, $ring:path, $region:ident, $flavor:expr) => {
+        fn $name(dur: Duration, worker_cpu: Option<usize>) -> [TProbe; 8] {
+            use $ring as Ring;
+            let mut req_region = $region([0; size_of::<$region>()]);
+            let mut resp_region = $region([0; size_of::<$region>()]);
+            let (mut req_tx, mut req_rx) =
+                Ring::init(&mut req_region.0, CACHE_LINE_SIZE as u32, DEPTH)
+                    .unwrap() // OK: $region is sized/aligned for the header + DEPTH slots
+                    .split();
+            let (mut resp_tx, mut resp_rx) =
+                Ring::init(&mut resp_region.0, CACHE_LINE_SIZE as u32, DEPTH)
+                    .unwrap() // OK: $region is sized/aligned for the header + DEPTH slots
+                    .split();
 
-    std::thread::scope(|s| {
-        let worker = s.spawn(move || {
-            if let Some(cpu) = worker_cpu {
-                pin_to_cpu(cpu);
-            }
-            let mut recv = RecvProbes::new(Flavor::Spsc, "worker");
-            let mut send_probe = TProbe::new("spsc worker send (reserve+commit)");
-            loop {
-                let v = instrumented_recv(&mut recv, |attempts, spin_start| {
-                    let slot = req_rx
-                        .reserve_slot_with::<u64>(|a| {
-                            if a == 0 {
-                                *spin_start = ticks::read_ticks();
-                            }
-                            *attempts = a + 1;
-                            core::hint::spin_loop();
-                            true
-                        })
-                        .expect("spin never gives up");
-                    let v = *slot;
-                    slot.release();
-                    v
+            std::thread::scope(|s| {
+                let worker = s.spawn(move || {
+                    if let Some(cpu) = worker_cpu {
+                        pin_to_cpu(cpu);
+                    }
+                    let mut recv = RecvProbes::new($flavor, "worker");
+                    let mut send_probe = TProbe::new(&format!(
+                        "{} worker send (reserve+commit)",
+                        $flavor.as_str()
+                    ));
+                    loop {
+                        let v = instrumented_recv(&mut recv, |attempts, spin_start| {
+                            let slot = req_rx
+                                .reserve_slot_with::<u64>(|a| {
+                                    if a == 0 {
+                                        *spin_start = ticks::read_ticks();
+                                    }
+                                    *attempts = a + 1;
+                                    core::hint::spin_loop();
+                                    true
+                                })
+                                .expect("spin never gives up");
+                            let v = *slot;
+                            slot.release();
+                            v
+                        });
+                        if v == STOP {
+                            break;
+                        }
+                        let s = ticks::read_ticks();
+                        let mut slot = resp_tx
+                            .reserve_slot_with::<u64>(spin)
+                            .expect("spin never gives up");
+                        *slot = v;
+                        slot.commit();
+                        send_probe.record(ticks::read_ticks().wrapping_sub(s));
+                    }
+                    (recv, send_probe)
                 });
-                if v == STOP {
-                    break;
-                }
-                let s = ticks::read_ticks();
-                let mut slot = resp_tx
-                    .reserve_slot_with::<u64>(spin)
-                    .expect("spin never gives up");
-                *slot = v;
-                slot.commit();
-                send_probe.record(ticks::read_ticks().wrapping_sub(s));
-            }
-            (recv, send_probe)
-        });
 
-        let mut send_probe = TProbe::new("spsc main send (reserve+commit)");
-        let mut recv = RecvProbes::new(Flavor::Spsc, "main");
-        drive(
-            dur,
-            |v| {
-                let s = ticks::read_ticks();
+                let mut send_probe =
+                    TProbe::new(&format!("{} main send (reserve+commit)", $flavor.as_str()));
+                let mut recv = RecvProbes::new($flavor, "main");
+                drive(
+                    dur,
+                    |v| {
+                        let s = ticks::read_ticks();
+                        let mut slot = req_tx
+                            .reserve_slot_with::<u64>(spin)
+                            .expect("spin never gives up");
+                        *slot = v;
+                        slot.commit();
+                        send_probe.record(ticks::read_ticks().wrapping_sub(s));
+                    },
+                    || {
+                        instrumented_recv(&mut recv, |attempts, spin_start| {
+                            let slot = resp_rx
+                                .reserve_slot_with::<u64>(|a| {
+                                    if a == 0 {
+                                        *spin_start = ticks::read_ticks();
+                                    }
+                                    *attempts = a + 1;
+                                    core::hint::spin_loop();
+                                    true
+                                })
+                                .expect("spin never gives up");
+                            let v = *slot;
+                            slot.release();
+                            v
+                        })
+                    },
+                );
                 let mut slot = req_tx
                     .reserve_slot_with::<u64>(spin)
                     .expect("spin never gives up");
-                *slot = v;
+                *slot = STOP;
                 slot.commit();
-                send_probe.record(ticks::read_ticks().wrapping_sub(s));
-            },
-            || {
-                instrumented_recv(&mut recv, |attempts, spin_start| {
-                    let slot = resp_rx
-                        .reserve_slot_with::<u64>(|a| {
-                            if a == 0 {
-                                *spin_start = ticks::read_ticks();
-                            }
-                            *attempts = a + 1;
-                            core::hint::spin_loop();
-                            true
-                        })
-                        .expect("spin never gives up");
-                    let v = *slot;
-                    slot.release();
-                    v
-                })
-            },
-        );
-        let mut slot = req_tx
-            .reserve_slot_with::<u64>(spin)
-            .expect("spin never gives up");
-        *slot = STOP;
-        slot.commit();
-        let (worker_recv, worker_send) = worker.join().expect("worker panicked");
-        [
-            send_probe,
-            worker_recv.phase,
-            worker_recv.spin,
-            worker_recv.attempts,
-            worker_send,
-            recv.phase,
-            recv.spin,
-            recv.attempts,
-        ]
-    })
+                let (worker_recv, worker_send) = worker.join().expect("worker panicked");
+                [
+                    send_probe,
+                    worker_recv.phase,
+                    worker_recv.spin,
+                    worker_recv.attempts,
+                    worker_send,
+                    recv.phase,
+                    recv.spin,
+                    recv.attempts,
+                ]
+            })
+        }
+    };
 }
+
+spsc_cell!(run_spsc, zc_ring_x1::spsc::v0::Ring, Region, Flavor::Spsc);
+spsc_cell!(
+    run_spsc_v1,
+    zc_ring_x1::spsc::v1::Ring,
+    SeqRegion,
+    Flavor::SpscV1
+);
 
 /// MPSC cell body: two `MpscRing`s at 1p/1c — producers
 /// `send_with` (closure fill), the consumer `reserve_slot_with`,
 /// both under the [`spin`] policy (recv sites instrumented).
 fn run_mpsc(dur: Duration, worker_cpu: Option<usize>) -> [TProbe; 8] {
-    let mut req_region = MpscRegion([0; size_of::<MpscRegion>()]);
-    let mut resp_region = MpscRegion([0; size_of::<MpscRegion>()]);
+    let mut req_region = SeqRegion([0; size_of::<SeqRegion>()]);
+    let mut resp_region = SeqRegion([0; size_of::<SeqRegion>()]);
     let (req_tx, mut req_rx) = MpscRing::init(&mut req_region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: MpscRegion is sized/aligned for header + seqs + DEPTH slots
+        .unwrap() // OK: SeqRegion is sized/aligned for header + seqs + DEPTH slots
         .split();
     let (resp_tx, mut resp_rx) = MpscRing::init(&mut resp_region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: MpscRegion is sized/aligned for header + seqs + DEPTH slots
+        .unwrap() // OK: SeqRegion is sized/aligned for header + seqs + DEPTH slots
         .split();
 
     std::thread::scope(|s| {
