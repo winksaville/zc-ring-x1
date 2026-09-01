@@ -57,13 +57,16 @@ struct Msg {
 struct Region([u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE]);
 
 /// Region for the MPSC or SPSC v1 ring: header + per-slot seq
-/// array (DEPTH × 4 B, padded to a line) + DEPTH one-line
-/// slots — the two layouts have the same shape.
+/// array + DEPTH one-line slots — the two layouts have the
+/// same shape.
+///
+/// The seq array is sized at its widest, one line per seq, so
+/// the region fits either `spsc::v1::SEQ_STRIDE`; the MPSC ring
+/// and the packed v1 leave the surplus untouched, and both
+/// probe builds then differ by the stride alone.
 #[repr(C, align(64))]
 struct SeqRegion(
-    [u8; 4 * CACHE_LINE_SIZE
-        + (DEPTH as usize * 4).next_multiple_of(CACHE_LINE_SIZE)
-        + DEPTH as usize * CACHE_LINE_SIZE],
+    [u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE],
 );
 
 /// Group a count into comma-separated thousands

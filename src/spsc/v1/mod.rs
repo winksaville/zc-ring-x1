@@ -158,7 +158,7 @@ impl<'a> Ring<'a> {
         // `seq[i] = i`: every slot claimable for lap 0.
         for i in 0..capacity {
             // SAFETY: i < capacity, inside the seq array.
-            unsafe { &*seqs.add(i as usize) }.store(i, Ordering::Relaxed);
+            unsafe { &*seqs.byte_add(i as usize * SEQ_STRIDE) }.store(i, Ordering::Relaxed);
         }
         // Published last: a peer that pre-mapped the region must
         // never observe MAGIC before the geometry and seqs it
@@ -268,13 +268,24 @@ fn header_ptr(base: *mut u8, len: usize) -> Result<*const Header, Error> {
     Ok(base as *const Header)
 }
 
+/// Bytes from one seq word to the next.
+///
+/// - `size_of::<AtomicU32>()` packs the array, 16 seqs to a
+///   cache line, which is the form the measurement rung ran.
+/// - [`CACHE_LINE_SIZE`] gives every seq its own line. We
+///   think the streaming loss to v0 is that both sides write
+///   a seq word every message and 16 of them share a line, so
+///   neighbouring slots false-share it; padding is the cheap
+///   probe of that, and the in-slot seq the fix if it holds.
+const SEQ_STRIDE: usize = size_of::<AtomicU32>();
+
 /// Bytes the seq array occupies, padded up to a cache line so
 /// the slot array behind it stays line-aligned.
 ///
-/// - u64: `capacity * 4` reaches `2^32` at the `2^30` cap,
-///   which would wrap a 32-bit usize.
+/// - u64: `capacity * SEQ_STRIDE` reaches `2^36` at the `2^30`
+///   cap, which would wrap a 32-bit usize.
 fn seq_bytes(capacity: u32) -> u64 {
-    (capacity as u64 * size_of::<AtomicU32>() as u64).next_multiple_of(CACHE_LINE_SIZE as u64)
+    (capacity as u64 * SEQ_STRIDE as u64).next_multiple_of(CACHE_LINE_SIZE as u64)
 }
 
 /// Byte offset of the slot array: header, then the padded seq
@@ -325,9 +336,11 @@ mod tests {
         val: u64,
     }
 
-    /// Test region: header + seq line (up to 16 × 4 B) + 16
+    /// Test region: header + the seq array at its widest (16
+    /// seqs × 1 line, so either [`SEQ_STRIDE`] fits) + 16
     /// slots × 1 line — enough for every capacity the tests use.
-    const REGION_BYTES: usize = size_of::<Header>() + CACHE_LINE_SIZE + (16 * CACHE_LINE_SIZE);
+    const REGION_BYTES: usize =
+        size_of::<Header>() + (16 * CACHE_LINE_SIZE) + (16 * CACHE_LINE_SIZE);
 
     /// Cache-line-aligned backing store for the tests' rings.
     #[repr(C, align(64))]
@@ -406,16 +419,17 @@ mod tests {
 
     #[test]
     fn region_size_pads_seqs_to_a_line() {
-        // 1 to 16 seqs fit one line; 17 needs two.
-        assert_eq!(region_size(64, 1), size_of::<Header>() as u64 + 64 + 64);
-        assert_eq!(
-            region_size(64, 16),
-            size_of::<Header>() as u64 + 64 + 16 * 64
-        );
-        assert_eq!(
-            region_size(64, 32),
-            size_of::<Header>() as u64 + 128 + 32 * 64
-        );
+        // Whatever [`SEQ_STRIDE`] is, the seq array holds
+        // `capacity` strided words and rounds up to a whole
+        // line, so the slots behind it stay line-aligned.
+        for capacity in [1u32, 4, 16, 32] {
+            let want = capacity as u64 * SEQ_STRIDE as u64;
+            let seqs =
+                region_size(64, capacity) - size_of::<Header>() as u64 - 64 * capacity as u64;
+            assert!((want..want + CACHE_LINE_SIZE as u64).contains(&seqs));
+            assert!(seqs.is_multiple_of(CACHE_LINE_SIZE as u64));
+            assert!(slots_offset(capacity).is_multiple_of(CACHE_LINE_SIZE));
+        }
     }
 
     #[test]
@@ -509,7 +523,8 @@ mod tests {
         ring.header.consumer_idx.store(start, Ordering::Relaxed);
         for i in 0..4u32 {
             let idx = start.wrapping_add(i);
-            unsafe { &*ring.seqs.add((idx & ring.mask) as usize) }.store(idx, Ordering::Relaxed);
+            unsafe { &*ring.seqs.byte_add((idx & ring.mask) as usize * SEQ_STRIDE) }
+                .store(idx, Ordering::Relaxed);
         }
         let (mut prod, mut cons) = ring.split();
         // Fill across the wrap: positions 2, 3, 0, 1.

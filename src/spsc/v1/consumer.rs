@@ -62,9 +62,13 @@ impl<'a> Consumer<'a> {
 
     /// The seq word for free-running position `idx`.
     fn seq(&self, idx: u32) -> &AtomicU32 {
-        // SAFETY: idx is masked to < capacity, inside the seq
-        // array validated at init/attach.
-        unsafe { &*self.seqs.add((idx & self.mask) as usize) }
+        // SAFETY: idx is masked to < capacity, and the array is
+        // capacity × SEQ_STRIDE bytes, validated at init/attach.
+        unsafe {
+            &*self
+                .seqs
+                .byte_add((idx & self.mask) as usize * super::SEQ_STRIDE)
+        }
     }
 
     /// Reserve the oldest unread slot as a `&T`, applying an

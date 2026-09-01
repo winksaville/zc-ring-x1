@@ -9,24 +9,7 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- Cycle `feat: segmented seam-word SPSC v1` is mid-ladder on bookmark
-  `feat-segmented-seam-word-spsc-v1`, trapezoid at close-out. Three rungs pushed: opening, the v1
-  ring, the measurement. Working copy should be empty after the last push.
-- Next rung is the inserted `perf: try the in-slot seq`, version-of-record `0.15.5-3` at its
-  start. Its gate: v1 must beat MPSC v0 cross-core and not lose to v0 at SMT, or the segment rungs
-  do not proceed. Test the hypotheses before building on them, and phrase every analysis as a
-  hypothesis until a measurement confirms it (user's standing instruction, 2026-08-28).
-- Cheap first probe: line-pad the seq array (one seq per cache line) and rerun the demo's
-  streaming lines on the 3900X and the 7600X. If the 7600X cross-core stream (v0 7.0 ns, v1 18.9)
-  closes, the false-sharing hypothesis stands and the in-slot seq is the fix; if not, look at the
-  two-way-written word itself and at the per-send cost hunt (`WriteSlot` deref path vs `send_with`,
-  index store before seq store).
-- Measuring: `./target/release/tp-matrix` (5 s per cell, 12 cells) and the installed
-  `zc-ring-x1-demo-dev`; the 7600X runs the demo binary copied over by scp. Both are timing runs,
-  never overlap them. Numbers so far are in `notes/ring-buffer-design.md` under "SPSC v1:
-  seam-word ring".
-- Not done: `notes/README.md` update for the new `spsc::v1` module and the `spsc1_` demo lines,
-  a closing duty.
+_None._
 
 ## In Progress
 
@@ -75,6 +58,7 @@ at the SMT placement, and the `M` sweep is recorded in `notes/ring-buffer-design
 - [feat: segmented seam-word SPSC v1 opening][1] (done)
 - [feat: add the spsc v1 seam-word ring][2] (done)
 - [perf: measure spsc v1 against v0 and mpsc][3] (done)
+- [perf: probe the v1 streaming loss][9] (done)
 - [perf: try the in-slot seq][8]
 - [feat: allocate ring segments from a pool][4]
 - [feat: add the segmented queue over spsc v1][5]
@@ -108,6 +92,11 @@ at the SMT placement, and the `M` sweep is recorded in `notes/ring-buffer-design
   rather than accept MPSC or stop: the seq riding the slot line is the one lever left on the
   line count, and we think the streaming loss is the separate seq line, a hypothesis the rung
   tests rather than assumes. The segment rungs wait on its result.
+- The padding probe was split out as its own rung ahead of the in-slot seq, on the user's call
+  (2026-09-04), so the in-slot A/B starts from a measured baseline rather than a hypothesis. It
+  refuted false sharing, found the two machines' "diff cores" placements differ (cross-L3 on the
+  3900X, same-L3 on the 7600X) so they never disagreed, and found neither side waits under
+  streaming; the in-slot rung's plan was rewritten from those.
 - Overflow FIFO in `## Todo` is superseded if this lands; its removal is a closing duty.
 - MPSC is out of scope: what the measurements teach is expected to carry to an MPSC v1, and that is
   its own cycle.
@@ -170,15 +159,44 @@ number. The rung is the gate: the numbers decide whether the segment rungs go ah
     written by both sides every message and false-shared across 16 slots, which a one-in-flight
     cell cannot show. The gate is not met, and the next rung was inserted on the user's choice.
 
+##### perf: probe the v1 streaming loss
+
+The measurement rung's 7600X streaming loss came with a hypothesis, false sharing of the packed
+seq array, and the in-slot seq was about to be built on it. This rung tests it first, and the
+in-slot seq starts from what it found.
+
+* The hypothesis needed a one-const flip to test honestly.
+  - `spsc::v1` gains `SEQ_STRIDE`, the bytes between seq words: the packed
+    `size_of::<AtomicU32>()`, or `CACHE_LINE_SIZE` for one seq per line. Both endpoints' `seq()`
+    and `init`'s fill go through it, the harness regions (`SeqRegion` in the demo and in
+    `tp_matrix`) are sized at one line per seq so the two builds differ by the const alone, and the
+    two tests that encoded the packed layout are stride-agnostic.
+  - Padding refuted the hypothesis: fewer lines per round trip on both machines and no throughput
+    for it, and the 7600X cross-core stream it was meant to fix got 13% worse. Packed stays. The
+    numbers are in `notes/ring-buffer-design.md` under "SPSC v1: seam-word ring".
+* The flow-control reading that replaced it needed testing too, and the streaming loops' own
+  premise, the producer running ahead, had never been checked.
+  - `examples/occupancy_probe` runs the demo's two-thread stream and counts each side's wait-policy
+    calls. Neither side waits, under 0.1% of sends and 0 to 8% of receives at every placement on
+    both machines, so the loss is steady-state cost and not blocking. Kept as the instrument that
+    checks the streaming assumption.
+* The two machines' "diff cores" lines were not the same experiment.
+  - The demo's pair is the first cpu outside cpu0's L3, cross-L3 on the 3900X and same-L3 on the
+    7600X. Measured same-L3 on the 3900X, the picture matches the 7600X, so the reversal that
+    motivated the in-slot rung was placement, not architecture. Recorded in the design note; the
+    picker's fix is left for a rung of its own.
+* The commit was checked against the previous rung's binary on both machines: identical within
+  noise.
+
 ##### perf: try the in-slot seq
 
-We think the seq word in its own array costs a second line per message and, streaming, a line
-both sides write. The rung tests that before building on it (line-padding the seq array is the
-cheap probe: if false sharing is the cost, padding cuts the streaming loss), then puts the seq
-in the slot's own line and measures again: the `tp-matrix` round trip and the demo's streams on
-both machines, against v0 and MPSC, with the per-send puzzle chased while in there. The slot
-contract changes (`T` shares the slot with the seq), so the shape of that is part of the rung's
-finding, and the segment rungs go ahead only if the numbers now clear the bar.
+Starts from the probe rung's findings: packed seq array, neither side waiting, v0 ahead within an
+L3 and v1 ahead across one. Puts the seq in the slot's own line, a crate-owned slot header ahead
+of the user-owned body, and measures again on both machines, `tp-matrix` and the demo's streams
+against v0 and MPSC, with the prediction on record that it helps the round trip and may hurt
+streaming. The slot contract changes (the body sits behind the slot header, sized by the crate),
+so the shape of that is part of the rung's finding, and the segment rungs go ahead only if the
+numbers now clear the bar.
 
 ##### feat: allocate ring segments from a pool
 
@@ -333,3 +351,4 @@ _See [bugs.md](notes/bugs.md)._
 [6]: #perf-sweep-the-segment-size
 [7]: #feat-segmented-seam-word-spsc-v1-closing
 [8]: #perf-try-the-in-slot-seq
+[9]: #perf-probe-the-v1-streaming-loss

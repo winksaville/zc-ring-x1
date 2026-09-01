@@ -39,13 +39,15 @@ const DEPTH: u32 = 8;
 struct Region([u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE]);
 
 /// Region for one MPSC or SPSC v1 ring: header + per-slot seq
-/// array (DEPTH × 4 B, padded to a line) + DEPTH one-line
-/// slots — the two layouts have the same shape.
+/// array + DEPTH one-line slots — the two layouts have the
+/// same shape.
+///
+/// The seq array is sized at its widest, one line per seq, so
+/// the region fits either `spsc::v1::SEQ_STRIDE`; see the
+/// demo's `SeqRegion` for why both probe builds want it.
 #[repr(C, align(64))]
 struct SeqRegion(
-    [u8; 4 * CACHE_LINE_SIZE
-        + (DEPTH as usize * 4).next_multiple_of(CACHE_LINE_SIZE)
-        + DEPTH as usize * CACHE_LINE_SIZE],
+    [u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE],
 );
 
 /// The ring flavor a cell measures.

@@ -636,12 +636,11 @@ iiac-perf (sibling repo) grows an mpsc set alongside `zcr`:
 
 ### MPSC open questions
 
-- **Seq array padding**:
-  - packed `M × 4` bytes — Vyukov's shape; adjacent-slot
-    false sharing;
-  - line-padded — `M × 64` bytes of overhead;
-  - start packed, and the bench matrix decides whether a
-    padded variant earns a layout flag.
+- **Seq array padding** — answered by the SPSC v1 probe
+  ([SPSC v1: seam-word ring](#spsc-v1-seam-word-ring),
+  measured 2026-09-04): packed wins, on both machines and
+  in both instruments, so the family keeps Vyukov's shape
+  and no padded variant earns a flag.
 - **Tombstone encoding**:
   - reserved seq bit — masked arithmetic, `M <= 2^30`;
   - or a per-slot side word;
@@ -740,14 +739,58 @@ its own index.
   one-in-flight `tp-matrix` cell cannot show this, since there
   the seq line and the slot line move once each per trip; the
   streaming demo can.
-- **Open, for the next step** — in-slot seq (the payload and
-  its seq in one line, so a message costs the slot line that
-  was moving anyway and no seq line, at the cost of the slot
-  contract), which targets both the round-trip fill count and
-  the streaming ping-pong; the per-send puzzle above; and
-  whether the seq array wants line padding, the same question
-  the MPSC ring left open, which the streaming result now
-  weights toward yes if the seq stays separate.
+- **Measured (2026-09-04, both machines, the rung `perf:
+  probe the v1 streaming loss`)** — the false-sharing
+  hypothesis above is refuted, and two things the numbers
+  rested on turned out to be assumptions:
+  - Line-padding the seq array (one seq per line, a
+    `SEQ_STRIDE` flip in `spsc::v1`) cuts fills per round
+    trip from 6.4 to 5.3 on the 3900X, below the MPSC ring's
+    6.4, and buys no throughput: normalised to MPSC in the
+    same runs, v1's round trips fell at every placement on
+    both machines. Streaming, padding cost 13% on the 7600X
+    cross-core line it was meant to fix (17.6 to 19.9 ns)
+    and 12% at the 3900X's SMT pair, and gained 31% at the
+    7600X's SMT pair (12.9 to 8.9 ns, the one placement
+    where v1 beats MPSC), an effect with no account yet.
+    Packed stays. We think padding loses because the seq
+    words are a queue, not unrelated neighbours: packed,
+    sixteen consecutive commits land in one line and its
+    acquisition amortises; padded, every commit pays its
+    own.
+  - Neither side waits. `examples/occupancy_probe` runs the
+    demo's two-thread stream and counts wait-policy calls:
+    the producer waited on under 0.1% of sends and the
+    consumer on 0 to 8% of receives, at every placement on
+    both machines. The loss is steady-state per-message
+    cost, not one side blocking on the other.
+  - The two machines never disagreed. The demo's "diff
+    cores" pair is the first cpu outside cpu0's L3: cpu 3 on
+    the 3900X, a different CCX, and cpu 1 on the 7600X,
+    whose six cores share one L3. Measured same-L3 on the
+    3900X (0+1), v0 streams at 12.9 ns against v1's 34.7,
+    the 7600X's shape exactly, and v1 wins only across L3
+    (0+3: v0 171, v1 105). One picture: v0 wins streaming
+    within an L3, v1 wins streaming across one.
+  - Every fills-per-round-trip figure in this note is from
+    the one-in-flight `tp-matrix` cell; the demo's `*_2t`
+    lines are the only streaming evidence.
+- **Open, for the next step** — the per-send puzzle stands
+  and is sharper: padded v1 moves fewer lines per round trip
+  than MPSC and is still slower. Candidates, all untested:
+  the store buffer (MPSC's claim CAS is a full fence and v1
+  has none, so a fence after v1's commit is a one-line
+  probe); the private index store ahead of the seq store;
+  the guard's code shape against `send_with`. The in-slot
+  seq stays the layout step, framed as a crate-owned slot
+  header ahead of the user-owned body, with a prediction to
+  test: it should help the round trip and may hurt
+  streaming, since the slot line would then travel both
+  ways every message where today it goes one way and the
+  seq line amortises. The seq's width is not to be assumed
+  and wants measuring (u32 against the native width) before
+  the slot header fixes it. The demo's pin-pair picker wants
+  a same-L3 placement and honest labels.
 
 ## Messaging layer: pools and descriptor queues
 
