@@ -187,10 +187,13 @@ then expects zero.
 
 The agent-files (`AGENTS.md`, `custom*`, `agent-data/*`) carry no historical exemption and are swept
 to zero. Any other historical file keeps its existing semicolons only until it is touched: a commit
-that edits a file converts that whole file's prose semicolons in the same commit, code spans exempt,
-using the joins above. Files outside the commit's diff are never converted, since that is a sweep
-and sweeps are their own cycle. Source-file comments are prose under this rule (see
-[code.md](code.md#comments-are-prose)).
+that edits a file makes that whole file's prose semicolons owed, code spans exempt, and the cycle
+pays them in a penultimate rung of its own, or in its one commit when single-step, using the joins
+above, so the touching rung's diff reads as its change alone. What is owed still follows from
+touching the file, and only the payment moves. New prose is written correct and is never a sweep
+item. A file whose count means rewriting rather than repunctuating becomes its own cycle. Files
+outside a cycle's diff are never converted, since that is a sweep and sweeps are their own cycle.
+Source-file comments are prose under this rule (see [code.md](code.md#comments-are-prose)).
 
 ### Typeable punctuation only
 
@@ -199,9 +202,9 @@ not presence: a file may legitimately hold a banned character it transcribed (se
 scan is not the rule and a sweep needs the authored/transcribed judgment. Banned from authoring:
 `—`, `–`, `…`, `→`. None can be entered without a compose key or a paste, so none can be grepped
 for, and an em dash next to option syntax reads as another flag. Like the semicolon rule above, the
-agent-files are swept to zero and any other file converts whole when a commit touches it (specimens
-and transcriptions aside, below). A banned character costs nothing to write and is paid on every
-read, so the rule is not softer than that.
+agent-files are swept to zero and any other file converts whole when a cycle touches it, paid in
+the same penultimate rung as the semicolons (specimens and transcriptions aside, below). A banned
+character costs nothing to write and is paid on every read, so the rule is not softer than that.
 
 `…` becomes `...` and `→` becomes `->`. The dashes have no single replacement, because an em dash
 usually stands in for a structural decision that was not made. Make the decision:
@@ -282,15 +285,54 @@ title, in both repos and in its one ladder rung ([Cycle shape](../AGENTS.md#cycl
 repeats across the pair even though the bookends are mostly bookkeeping: identical prefixes make
 them scannable. Rungs between keep their own titles on the stem.
 
-**Commit description details**, beyond the shape: the title is a [Conventional
+### Commit titles and descriptions
+
+([why](rationale.md#commit-titles-and-descriptions))
+
+The vocabulary over the structure: [Conventional-commit
+shape](#conventional-commit-shape-ladder--commit) holds what a title and body are shaped like, and
+this section holds what may fill them. The title is a [Conventional
 Commit](https://www.conventionalcommits.org/), `<type>: <short description>` with an optional
-`(scope)`, at the width in [Line widths](#line-widths), common types `feat`, `fix`, `refactor`,
-`test`, `docs`, `chore`. A scope names a component as its user would name it (a subcommand, a
-repo), never a file or directory, and is omitted when there is none. The body is the [Commit-body
-form](#commit-body-form) above, wrapped per Line widths, with no version in title or body, no file
-list, and no deliberation. `vc-x1 push` gives both repos' commits the same title and body. `ochid:`
-is the body's last line, stamped by push, and a breaking change uses the hyphenated
+`(scope)`, at the width in [Line widths](#line-widths). The body is the [Commit-body
+form](#commit-body-form), wrapped per Line widths, with no version in title or body, no file list,
+and no deliberation. `vc-x1 push` gives both repos' commits the same title and body. `ochid:` is
+the body's last line, stamped by push, and a breaking change uses the hyphenated
 `BREAKING-CHANGE:` trailer key.
+
+#### Conventional commit types
+
+The common types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`. A type beyond the common set
+is a declared one ([Project-declared types](#project-declared-types)), and a title check admits
+exactly the two vocabularies.
+
+#### Conventional commit scopes
+
+A scope names a component as its user would name it (a subcommand, a repo), never a file or
+directory, and is omitted when there is none. A declared type's scope slot carries its
+declaration's vocabulary instead ([Project-declared types](#project-declared-types)).
+
+#### Project-declared types
+
+Beyond the common types, a project may declare its own when a recurring kind of work deserves one
+searchable token. The declaration names the type, its scope vocabulary, and its description
+grammar, so a reader can parse the titles and a title check can admit them by name, and the scope
+slot then carries what the declaration says rather than a component. A project's own declarations
+live in its `custom.md`, and the set declares for itself:
+
+- `agent-files`, the set's own lifecycle: `agent-files(<scope>): vX.Y.Z`, the description being the
+  agent-files version in its `v` spelling ([Agent-files
+  version](versioning.md#agent-files-version)), which keeps the formulaic titles unique and is the
+  one version a title may carry ([Versions live in the version-of-record
+  only](#versions-live-in-the-version-of-record-only)).
+  - The two scopes:
+    - `proposal`, outbound work for others to adopt. The cycle bumps the agent-files version, and
+      the title names the new one.
+    - `adoption`, inbound. The cycle copies the source's version file, and the title names what it
+      took.
+  - Who proposed to whom, or adopted from whom, is the message record's `from:` and `to:`, never
+    the title's.
+  - `git log --grep 'agent-files('` finds every agent-files title, the recurring type being the
+    token that collects the thread.
 
 ### Steps are named, not numbered
 
@@ -316,7 +358,10 @@ the position and then have to be maintained.
 No version appears in durable prose: not in a ladder rung, a commit title, or a commit body. The
 manifest is the version's only written home (see [versioning.md](versioning.md)), and a commit's
 version is read from that file at that commit
-([why](rationale.md#versions-live-in-the-version-of-record-only)).
+([why](rationale.md#versions-live-in-the-version-of-record-only)). The one exception is the set's
+own version in an `agent-files` title, wherever that title appears ([Project-declared
+types](#project-declared-types)): it names an agreed text, not a build, and naming which is the
+title's job.
 
 **No surface records a version.** Which commit a version names is read from the manifest at that
 commit, and "what shipped in 0.42.0" is answered by `git log` on the manifest, not by a list kept in

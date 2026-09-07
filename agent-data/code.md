@@ -17,10 +17,11 @@ reflow.
 ## Comments are prose
 
 Doc comments and inline comments are prose and follow prose.md, its
-[Semicolons](prose.md#semicolons) rule included: a commit that edits a source file converts that
-file's comment semicolons in the same commit, whole file, code spans and the code itself exempt,
-using the prose rule's joins (a period, a comma with a conjunction, or a restructure). Files not in
-the commit's diff are left alone, since converting them is a sweep and sweeps are their own cycle.
+[Semicolons](prose.md#semicolons) rule included: a commit that edits a source file makes that file's
+comment semicolons owed, whole file, code spans and the code itself exempt, and the cycle pays them
+in its penultimate rung, or its one commit when single-step, using the prose rule's joins (a period,
+a comma with a conjunction, or a restructure). Files outside the cycle's diff are left alone, since
+converting them is a sweep and sweeps are their own cycle.
 
 ## Doc comments on every file, function, and method
 
@@ -61,8 +62,8 @@ When one is used, three obligations attach:
     used because they require a decoder ring for readers seeing the code out of context.
 - **Alert the user in conversation** when introducing one, so the site gets reviewed and appropriate
   uses are learned. Don't let it ride in silently on a larger diff.
-- For `.unwrap()` / `.expect(...)`, an `#[allow(...)]` at the site, because Rust projects enable the
-  project-wide lints in `Cargo.toml`:
+- For `.unwrap()` / `.expect(...)`, an `#[allow(...)]` at the site when the crate enables the
+  project-wide lints in `Cargo.toml`, the recommended base:
 
   ```toml
   [lints.clippy]
@@ -71,9 +72,10 @@ When one is used, three obligations attach:
   ```
 
   Every panicking site is then opt-in and visible in the diff, and clippy (in the per-commit flow)
-  catches any that slip through. The `_or*` siblings have no clippy lint. They are covered by the
-  comment convention and the conversational alert. (The template repository's `CargoRust.toml` seeds
-  a base `Cargo.toml` with this section already in place.)
+  catches any that slip through. A crate without the lints owes the comment and the alert alone,
+  and the `#[allow]` returns with the lints. The `_or*` siblings have no clippy lint. They are
+  covered by the comment convention and the conversational alert. (The template repository's
+  `CargoRust.toml` seeds a base `Cargo.toml` with this section already in place.)
 
 ```rust
 let max = stderr_level.unwrap_or(LevelFilter::Info); // OK: default verbosity when -v/-vv absent

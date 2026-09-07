@@ -15,20 +15,20 @@ the closing rung's last edit, with the cycle title as the row's label.
 |---|---|---|---|---|
 | 2026-08-28 | docs: adopt the family agent-files set | 11 | 2126 | the set as proposed, identical to vc-x1's at a4309084fdfe |
 | 2026-08-28 | docs: keep the ladder markers in the closed block | 11 | 2129 | the drop-markers step gone, its rationale added |
+| 2026-09-07 | agent-files(adoption): v0.2.3 | 10 | 2315 | iiac-perf's set at d5d5e77a3bb1 copied whole, messaging.md gone, the version marker added |
 
 Per file at the last row, replaced at each close-out, the history being in the commits:
 
 ```
-   349 AGENTS.md
-    11 custom.md
-    92 agent-data/code.md
+   384 AGENTS.md
+    12 custom.md
+    94 agent-data/code.md
     42 agent-data/commit-model.md
     76 agent-data/cycle-model.md
-   376 agent-data/jj.md
-    46 agent-data/messaging.md
-   169 agent-data/notes.md
-   360 agent-data/prose.md
-   430 agent-data/rationale.md
-   178 agent-data/versioning.md
-  2129 total
+   391 agent-data/jj.md
+   166 agent-data/notes.md
+   405 agent-data/prose.md
+   541 agent-data/rationale.md
+   204 agent-data/versioning.md
+  2315 total
 ```

@@ -15,6 +15,10 @@ anything `custom.md` points at. `TODO.md` is not one, since its content is the p
 but the agent-files require that there is one, of the shape in [Todo
 format](agent-data/notes.md#todo-format).
 
+Agent-files version: the set's own version, `vX.Y.Z`, the name of an empty
+`agent-data/agent-files-vX.Y.Z` file, bumped by `agent-files` proposal cycles and copied by
+adoptions ([Agent-files version](agent-data/versioning.md#agent-files-version)).
+
 Project layer: the project's own agent-files, `custom.md` and what it points at.
 
 Set: the agent-files as the template repository's payload carries them, the copy every adopter
@@ -44,11 +48,17 @@ not when following one.
 
 ## The dual-repo model
 
-Two separate jj-git colocated repos ([jj.md](agent-data/jj.md)):
+Two separate jj-git colocated repos ([jj.md](agent-data/jj.md)), located by a `.vc-config.md`,
+never by the current directory ([.vc-config.md](agent-data/jj.md#vc-configmd),
+[why](agent-data/rationale.md#the-dual-repo-model)):
 
-1. Work-repo: the project root, `.`, holding the project's work product.
-2. Agent-repo: `<project>/.claude`, the agent's session data, reached by Claude Code through a
-   symlink at `~/.claude/projects/<mangled-project-path>` (`vc-x1 symlink` creates it).
+1. Work-repo: the project's work product. Its directory is the workspace root, the directory
+   holding the work-repo's `.vc-config.md`, whose `[repos] work` is `"."`.
+2. Agent-repo: the agent's session data, in the directory that file's `[repos] agent` names, a
+   path relative to the workspace root or an absolute one, so it may sit anywhere. Written
+   `<agent-dir>` wherever a command below needs it, and reached by Claude Code through a symlink
+   at `~/.claude/projects/<mangled-project-path>`, which `vc-x1 init` creates for a dual
+   workspace and `vc-x1 symlink` creates on demand.
 
 ## Rules
 
@@ -56,9 +66,14 @@ The rules, indexed: each a one-sentence summary and a link to the section that s
 file's rules first and then the outer files' in their order ([why](agent-data/rationale.md#rules)).
 The section is the rule, the sentence its handle. None is absolute: a rule bends only when the
 user says so explicitly, at the moment or as a scoped delegation ([Stop and ask](#stop-and-ask) is
-the path), and the exception is recorded in the cycle's records. No rule bends silently.
+the path), and the exception is recorded in the cycle's records, naming what the bend covers and
+what it does not, so a waiver over a cycle's pushes says whether Land is inside it. No rule bends
+silently.
 
 - Read custom.md first: read [custom.md](custom.md), whose rules override all others.
+- A session's rules are its own agent-files: the ones it started in, binding in every repo it
+  writes, and another repo's rules bind only by delegation ([A session's rules are its own
+  agent-files](#a-sessions-rules-are-its-own-agent-files)).
 - Bookmark per cycle: a cycle runs on one topic bookmark in the work-repo, and `main` advances
   only when the cycle lands ([Cycles run on a bookmark](#cycles-run-on-a-bookmark)).
 - Shape at the first push: single-step or multi-step is fixed by the cycle's first push, and a
@@ -129,6 +144,10 @@ Work that arrives while a cycle runs goes one of two ways, and the user picks wh
 - A rung inserted into the ladder, usually when it is inside the cycle's subject or blocks it.
 - A `## Todo` or `## Waiting` entry, run as its own cycle later.
 
+A rung inserted while the working copy already holds the next rung's edits sets those edits aside
+as a patch first, so the inserted rung's commit carries its own change alone, and they return once
+it has pushed.
+
 ### Cycle-record
 
 A cycle's record is its `TODO.md > ## In Progress` block and nothing else, the cycle-record
@@ -141,9 +160,9 @@ A cycle's record is its `TODO.md > ## In Progress` block and nothing else, the c
   the next opening.
   - `## In Progress` reads `_No cycle currently in progress._` between cycles.
   - The closing commit's tree carries the final form, and the file never grows.
-- After that jj holds it: `git log --grep "<cycle title>"` finds the commits, and the landmark on
-  `main` (the trapezoid merge, or the single-step commit) holds the finished block in its
-  `TODO.md > ## Closed`.
+- After that jj holds it: `git log --grep "<cycle title>"` finds the commits, on the title the
+  pushed bookends carry when a rename came mid-cycle, and the landmark on `main` (the trapezoid
+  merge, or the single-step commit) holds the finished block in its `TODO.md > ## Closed`.
 - No backfill: a rung carries no `[[N]]` placeholder, no SHA, and no version.
 - Never amended: a late finding about a closed cycle is recorded where it is found, citing the
   landmark.
@@ -164,7 +183,9 @@ shape](#cycle-shape)). Before that commit ([why](agent-data/rationale.md#opening
    `## In Progress`, shaped as [The In Progress block](agent-data/notes.md#the-in-progress-block)
    says, the specimen in [cycle-model.md](agent-data/cycle-model.md).
 4. Bump: bump the version-of-record to the opening's version ([Suffix
-   scheme](agent-data/versioning.md#suffix-scheme)).
+   scheme](agent-data/versioning.md#suffix-scheme)), and the agent-files version with it when the
+   cycle is an `agent-files` proposal ([Agent-files
+   version](agent-data/versioning.md#agent-files-version)).
 5. Rename: when the built artifact has consumers, rename `<name>` to `<name>-dev` ([Dev artifact
    name](agent-data/versioning.md#dev-artifact-name)). Land restores it.
 
@@ -178,7 +199,8 @@ immediately before acting ([why](agent-data/rationale.md#the-per-rung-flow)):
 
 1. Mark current: mark the rung `(current)` in `TODO.md > ## In Progress`, as the first edit.
 2. Bump: bump the version-of-record to this commit's version ([Suffix
-   scheme](agent-data/versioning.md#suffix-scheme)).
+   scheme](agent-data/versioning.md#suffix-scheme)), the agent-files version beside it in an
+   `agent-files` proposal cycle.
 3. Work: do the work. On any deviation from the agreed plan, or any question, stop ([Stop and
    ask](#stop-and-ask)).
 4. Ladder details: write what this rung changed, conceptually, into its subsection. The rung stays
@@ -206,7 +228,8 @@ saves and [local ladder](#local-ladders) intermediates. What push does is in [vc
 
 ### Commit description
 
-The title is a Conventional Commit, distinct within its cycle [Commit description details][cdd]).
+The title is a Conventional Commit, distinct within its cycle ([Commit titles and
+descriptions][cdd]).
 The body is in [Commit-body form](agent-data/prose.md#commit-body-form): no version, file list, or
 deliberation ([why](agent-data/rationale.md#commit-description)).
 
@@ -231,7 +254,7 @@ item's tail ([why](agent-data/rationale.md#at-rest-push-stop-squash-push)):
 1. The agent publishes: completing a step means issuing its publishing command. The agent says what
    is worth saying *before* the final publishing command, responds with the one word "Published",
    and does nothing further until the user speaks.
-2. The user squash-pushes: `vc-x1 squash-push -R .claude` whenever they want both repos fully
+2. The user squash-pushes: `vc-x1 squash-push -R <agent-dir>` whenever they want both repos fully
    pushed.
 
 "Clean" means both repos' `@` empty. A late work-repo tweak after the push is a remote rewrite and
@@ -245,7 +268,9 @@ does all of it in its one commit, step 5 aside ([Cycle shape](#cycle-shape)):
 1. Acceptance check: run the check the opening stated and record pass or fail. A failure is a
    finding, and why it failed is determined.
 2. Finalize the cycle-record in place ([Cycle-record](#cycle-record)):
-   - sync the title if the scope shifted, and every anchor back-reference with it
+   - sync the title if the scope shifted, and every anchor back-reference with it. A pushed rung
+     title and the bookend pair keep their names, since retitling one is a re-describe of a
+     published commit, so a rename mid-cycle reaches the block's text and the unpushed rungs only
    - replace the provisional solution statement with what was done
    - add the design subsections the deliberation grew
    - complete the closing rung's subsection
@@ -265,7 +290,7 @@ does all of it in its one commit, step 5 aside ([Cycle shape](#cycle-shape)):
    cycle](#cycles-run-on-a-bookmark), [Land](agent-data/jj.md#cycle-bookmarks-create-and-land)).
 7. Restart: the user restarts the agent, and before the exit anything the next agent needs is
    written into `TODO.md > ## Continuation notes`, the first section, which the next acquaint reads
-   first and resets.
+   first, files or keeps, and resets ([Todo format](agent-data/notes.md#todo-format)).
 
 ### Local ladders
 
@@ -275,7 +300,7 @@ the machine and collapses into the rung before the cycle continues, each validat
 [why](agent-data/rationale.md#local-ladders)).
 
 [cbt]: agent-data/prose.md#conventional-commit-shape-ladder--commit
-[cdd]: agent-data/prose.md#conventional-commit-shape-ladder--commit
+[cdd]: agent-data/prose.md#commit-titles-and-descriptions
 [llb]: agent-data/jj.md#long-lived-bookmarks-merge-only-by-default-deletable-once-merged
 [snn]: agent-data/prose.md#steps-are-named-not-numbered
 [vpush]: agent-data/jj.md#vc-x1-push-what-it-does-and-does-not-do
@@ -301,6 +326,16 @@ the machine and collapses into the rung before the cycle continues, each validat
   marker](agent-data/prose.md#speculation-marker)).
 - Plain synopsis: end a technical explanation in conversation with one, marked "The plain version:"
   ([Plain synopsis](agent-data/prose.md#plain-synopsis-after-technical-explanations)).
+
+### A session's rules are its own agent-files
+
+A session's rules are the agent-files of the project it started in, and rules living in any other
+repo are ignored unless these files or the user direct otherwise
+([why](agent-data/rationale.md#a-sessions-rules-are-its-own-agent-files)). So another repo's own
+protocol (a shared store's README, another project's agent-files) governs a write to it only as
+far as the delegation reaches, and this file's conduct rules, the step reads, the reviews, the
+per-push approval, and the stops, bind every commit and push the session makes, in any repo,
+cycle or not. A repo with a live agent of its own is not written at all: message its agent.
 
 ### Stop and ask
 

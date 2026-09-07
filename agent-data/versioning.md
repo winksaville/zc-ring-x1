@@ -176,3 +176,29 @@ Disambiguation:
 Bump the version-of-record at the start of every step (the per-commit checklist carries the step),
 so the manifest always records the commit it will be part of and, per the preference above, every
 commit carries a distinct version.
+
+## Agent-files version
+
+The agent-files set has a version of its own, apart from the artifact's, so which set an adopter
+carries is read from a listing rather than a diff, and an `agent-files` title has a token that is
+unique by construction ([Project-declared types](prose.md#project-declared-types),
+[why](rationale.md#agent-files-version)).
+
+- **Record**: an empty file, `agent-data/agent-files-vX.Y.Z{-suffix}`, the version its name. `ls
+  agent-data` shows it without a read, a bump is a rename, and
+  `git log --diff-filter=A -- 'agent-data/agent-files-v*'` lists every version beside the commit
+  that introduced it.
+- **Spelling**: `vX.Y.Z` everywhere the agent-files version is written, the file name, an
+  `agent-files` title, and vc-x1's output, so `agent-files v0.1.0` reads the same in all three. The
+  `v` is the name-plus-version pair as cargo prints it (`bar v1.0.0`), and a tool's own banner stays
+  bare (`vc-x1 0.82.0`), so a `v` number is the set's and a bare one the artifact's.
+- **Proposals bump, adoptions copy**: a proposal cycle bumps it at the opening, advancing per
+  [Advancing X.Y.Z](#advancing-xyz-patch-by-default), and its rungs walk the [Suffix
+  scheme](#suffix-scheme) beside the artifact's version, `-0`, `-1`, then bare at the close-out, so
+  a set copied from a draft bookmark says on its face that it is unfinished. An adoption copies the
+  source's bare file and bumps nothing.
+- **Agreed**: the payload's number is the family's agreed version. An adopter ahead of it is
+  proposing, one behind has not re-synced, and two proposers claiming one number are settled by the
+  maintainer at convergence, the loser re-proposing under the next.
+- **Which digit**: tend toward the patch digit, kept to one digit and rolled over into the minor.
+  We think the minor stays within two digits and major increments when the family decides.

@@ -17,8 +17,12 @@ trailers) is expressed in jj terms.
 Reaching for `git` invites state that doesn't match the jj documentation here. There is no `jj mv`:
 to move/rename a tracked file, just `mv` it on disk and jj detects the rename by content.
 
-- `jj st -R .` / `jj st -R .claude`: show working copy status
-- `jj log -R .` / `jj log -R .claude`: show commit log
+Below, `<repo>` is either side's path and `<agent-dir>` the agent-repo's, which the work-repo's
+`.vc-config.md` names under `[repos] agent` ([.vc-config.md](#vc-configmd)) rather than any
+fixed directory.
+
+- `jj st -R .` / `jj st -R <agent-dir>`: show working copy status
+- `jj log -R .` / `jj log -R <agent-dir>`: show commit log
 - `jj commit -m "title" -m "body" -R <repo>`: finalize working copy into a commit
 - `jj describe -m "title" -m "body" -R <repo>`: set description without committing
 - `jj git push --bookmark <name> -R <repo>`: push a bookmark (no `--allow-new` flag: jj pushes new
@@ -69,10 +73,16 @@ commit points at its counterpart in the other repo, so the "what" (code) and the
 
 A **chid** is jj's change ID, a permanent identifier that survives rebases and `describe`s (unlike
 the commit ID / git SHA, which changes on rewrite). An **ochid** trailer carries the counterpart
-commit's chid as a workspace-root-relative path:
+commit's chid behind a prefix naming the repo it lives in:
 
-- Paths start with `/`, the workspace root, i.e. the work-repo (the project root). `/.claude` is the
-  agent sub-repo.
+- The prefix names a side, not a location. `/` refers to the work-repo and `/.claude` to the
+  agent-repo, and each repo's own location is the path the work-repo's `.vc-config.md` declares,
+  `[repos] work` and `[repos] agent`. The agent one may be any reachable relative path, under
+  the work-repo's tree or outside it, and the `.claude` in the label is a constant that says
+  nothing about it, so a sweep over the agent-repo's directory leaves every trailer alone.
+- Which label a commit takes is decided by reading a repo's own `.vc-config.md`, its
+  `[repos] agent` resolved relative to that file and compared against the directory holding it.
+  So the config picks the side and the label is a constant, and the two never need to agree.
 - `ochid: /<chid>` references a change in the **work-repo**.
 - `ochid: /.claude/<chid>` references a change in the **agent-repo**.
 
@@ -111,7 +121,7 @@ repo's `main`. Three behaviors to keep in mind:
   bookmark's remote refs are tracked.
 - **Rerunning is safe.** Push keeps no state and cannot resume: every stage no-ops when its work is
   already done, so a failed run is re-run, not resumed. If push exits after `push-work` but before
-  the agent-repo publish, `vc-x1 squash-push -R .claude` by hand is the rest of it.
+  the agent-repo publish, `vc-x1 squash-push -R <agent-dir>` by hand is the rest of it.
 - **`ochid:` trailers are stamped by push** ([No hand-written
   trailers](#cross-repo-linking-ochid-trailers)), never hand-written into `--title` or `--body`.
 - **The agent-repo is a linear journal.**
@@ -361,16 +371,21 @@ last committed change), not `@`.
 ## .vc-config.md
 
 Each repo contains a `.vc-config.md` whose toml blocks hold a `[repos]` registry that records the
-workspace layout. Values are ordinary paths relative to the config file's directory (absolute
-allowed, discouraged), so the two sides' blocks **differ**: the entry that resolves to the config's
-own directory names its side, and the two sides must agree on the same resolved work/agent pair:
+workspace layout ([The dual-repo model](../AGENTS.md#the-dual-repo-model)). Values are ordinary
+paths relative to the config file's directory, or absolute, so the two sides' blocks **differ**:
+the entry that resolves to the config's own directory names its side, and the two sides must agree
+on the same resolved work/agent pair:
 
 ```toml
-# work side          # agent side
-[repos]              [repos]
-work = "."           work = ".."
-agent = ".claude"    agent = "."
+# work side              # agent side
+[repos]                  [repos]
+work = "."               work = ".."
+agent = "<agent-dir>"    agent = "."
 ```
 
-Ochid trailer prefixes are fixed per-side labels (`/` work, `/.claude` agent) resolved by side
-detection, not filesystem paths.
+`<agent-dir>` is the only cell the project chooses, the other three being fixed by the layout.
+It stays a placeholder here because naming a directory would trade one project's bias for
+another's, and where the agent-repo sits is exactly what this registry exists to say.
+
+The `ochid:` trailer's prefixes do not read this registry
+([Cross-repo linking](#cross-repo-linking-ochid-trailers)).

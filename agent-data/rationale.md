@@ -42,6 +42,11 @@ bred "hard rule N" citations that broke on every renumber. Flat, not grouped by 
 a nesting level, and the order alone keeps this file's rules ahead of the outer files'. A section
 that has a why links it at its head, so the index carries none.
 
+A bend's record names its scope (2026-09-05) because a scoped waiver, "complete it as you see fit"
+over a whole cycle, left the agent to decide alone whether Land was inside it. It decided not, and
+the decision was right, but a rule that makes the agent draw that line is a rule that will be drawn
+differently next time.
+
 ## Terminology
 
 **Retired names.** "Bot repo" (2026-08-21), when the code respelled the side `agent`. "Instruction
@@ -50,7 +55,14 @@ files", which named the agent-files back when `custom.md` was the only editable 
 
 ## The dual-repo model
 
-_None recorded._
+Simplified (wink, 2026-09-07) because the earlier text defined the work-repo by a resolution the
+reader had to perform, a walk up to the nearest config and its `work` key resolved against that
+file's directory, and then spent a paragraph on why a walk that reached the agent-repo's copy
+first still landed on the work-repo. Fixing `[repos] work` at `"."` makes the workspace root the
+config file's own directory by definition, so the walk and the two-sided registry are the
+mechanism's business and stay in jj.md. `[repos] agent` is the one cell the project chooses, and
+saying it may be a path relative to the root or an absolute one states the freedom the registry
+exists to give, in place of a clause about nesting.
 
 ## Cycle protocol
 
@@ -101,6 +113,10 @@ docs commits that went to `main` as interludes are the case against the exceptio
 a bookmark](#cycles-run-on-a-bookmark)). The choice between a rung and an entry is the user's
 because it depends on what they want from the running cycle at that moment, which no rule can
 know.
+
+The patch-aside sentence (2026-09-05): a rename arrived while the working copy held the next rung's
+guide edit, and the inserted rung would have carried both. Setting the edit aside as a patch and
+re-applying it after the push is what was done, and it was invented on the spot.
 
 ### Cycle-record
 
@@ -196,7 +212,7 @@ user can still say no at no cost.
 
 #### At rest: push, stop, squash-push
 
-The agent-repo (`.claude`) is a live journal, so everything after a `vc-x1 push` invocation, its own
+The agent-repo is a live journal, so everything after a `vc-x1 push` invocation, its own
 record and any closing words, lands in the agent-repo's `@` as a trailing tail. That tail is why the
 agent cannot squash-push the agent-repo: the squash-push is itself an action that adds to the tail,
 so it never reaches a fixed point. Thus the user must do the squash-push in the agent-repo anytime
@@ -229,6 +245,14 @@ Each close-out step exists because a close-out once went wrong without it.
   - The In Progress block was deleted rather than moved, so the cycle reached neither
     `notes/chores/` nor `## Done`.
   - The repair was a hand re-describe and squash.
+- Pushed titles keep their names through a rename (2026-09-05) because the sync step said only
+  "sync the title if the scope shifted", and a mid-cycle rename of the benches met three pushed
+  rung titles and a bookend pair on the old name. Retitling a pushed commit is a re-describe of
+  a published one, so the sync can reach the block's text and the unpushed rungs and nothing
+  else, and saying so keeps the bookend grep intact.
+- The continuation notes are filed or kept before the reset (2026-09-05) because two acquaints in
+  a row found bullets whose facts had no other home, a host's clock episode among them, and the
+  rule as written told the reader to destroy the only copy.
 
 ### Local ladders
 
@@ -263,6 +287,18 @@ publishes.
 **Delegate mechanical subtasks to lesser models** because top-model tokens are the scarce resource.
 **Don't use the per-project memory directory** because easy for everyone to find beats convenient
 for the agent alone. **Mark speculation** so a reader can tell the measured from the inferred.
+
+### A session's rules are its own agent-files
+
+Written after a session, working from this project, committed and pushed in a sibling shared repo
+under that repo's own protocol alone (2026-08-30): it read the sibling's README as displacing
+these files' review stops, and the scoping clause that would have caught it sat inside a file it
+had already decided not to open, so the scope had to move into the rules themselves. Stating rule
+identity plus explicit delegation removes the conflict between "the sibling's README governs" and
+"these files govern" rather than adjudicating it: each governs its own jurisdiction, the repo's
+protocol the write's shape, the session's files the conduct around it. The dual-repo thought
+experiment settled the boundary (wink): were the target a full dual-repo project, the answer is
+to message its agent rather than write its repo, so a foreign repo's rules never bind by default.
 
 ### Stop and ask
 
@@ -318,6 +354,11 @@ the rest of the file identical to the payload's.
 **The user is told of every `unwrap*` outside tests** so the site gets reviewed while it is one
 line in the conversation rather than one of many in a diff, and so the acceptable uses are learned
 case by case instead of the call riding in silently.
+
+The `#[allow]` obligation follows the lints (2026-09-05) because the rule assumed every Rust
+project enables them and one did not, so the obligation there was either meaningless or a demand
+to enable lints as a side effect of adding a bench. The comment and the alert are what the
+convention is for, and they hold without the lints.
 
 ## jj.md
 
@@ -375,6 +416,22 @@ The rule widened from typeable punctuation to the whole of prose form (2026-08-2
 - Bullet form (wink, 2026-08-27): sentence bullets and thing-list bullets read differently, and a
   list that mixes them makes the reader decide which each one is.
 
+### Semicolons
+
+A touched file's conversion is paid in a penultimate rung (2026-09-05) rather than in the rung that
+touched it. Paid in the touching rung, every hunk of that rung's diff had to be read to tell
+repunctuation from a real change (wink, 2026-09-03), and a rename rung that touched two docs holding
+62 prose semicolons would have buried a rename under a rewrite. The obligation is unchanged, what is
+owed still follows from touching the file, and only the payment moves, so the wording keeps
+"whether" and "when" apart. It names its exceptions, new prose written correct and a rewrite-sized
+count becoming its own cycle, rather than hedging, since a hedge tells a reader a deviation is
+allowed without telling them when. Dashes ride the same rung, since one rung had swept seven em
+dashes into a content change beside six semicolons.
+
+### Typeable punctuation only
+
+Paid in the same penultimate rung as the semicolons, for the reason given there.
+
 ### Conventional-commit shape (ladder / commit)
 
 **One title per step** because the title is the identifier: a record points at a step by its
@@ -382,12 +439,33 @@ title, a plain greppable mention, so the ladder rung, the details heading, and t
 must be verbatim identical for one mention to find all three, and no other identifier is kept
 ([Steps are named, not numbered](prose.md#steps-are-named-not-numbered)).
 
+### Commit titles and descriptions
+
+Split from [Conventional-commit shape](#conventional-commit-shape-ladder--commit) (wink,
+2026-08-31): the shape section owns the structural identity, and its trailing vocabulary paragraph
+gave the types and scopes no anchors to cite, so the vocabulary became its own section with a
+subsection per slot.
+
+- **Project-declared types** because a recurring kind of work deserves one searchable token, and a
+  declaration naming the type, its scope vocabulary, and its description grammar is what lets a
+  reader parse the formulaic titles and a title check admit them by name.
+- **The declaration owns its scope slot**: the deviation from the typical conventional commit,
+  where a scope names a component, is real, and stating that the declaration's vocabulary wins
+  confines the deviation to declared types.
+
 ### Versions live in the version-of-record only
 
 **The version is a build stamp**, answering "which commit produced this artifact", not a name for a
 step. Written into prose it becomes a second identifier that history is free to invalidate: one
 renumber of published versions turns every prose mention, transcript and pasted report into residue
 that needs a decoder to read. A renumber cannot touch a title.
+
+**The `agent-files` title is the exception** (wink, 2026-09-01) because the agent-files version is
+not a build stamp: it names an agreed text, the family converging on that number is the point, and a
+renumber is the failure the version exists to prevent, not a thing history is free to do. The title
+needed a unique token, the member-list-and-date grammar ran past the title cap (59 and 61 characters
+against 50, reported by an adopter) and repeated the message record's fields, and the version is
+unique by the discipline the artifact version already keeps, one bump per cycle.
 
 ### Agent-files name no project
 
@@ -428,3 +506,36 @@ multi-dash version outright, and the PEP 440 reference parser (`packaging` 26.2,
 `+` are all invalid. `1.2.3+3.1` / `1.2.3+3.1.hotfix` parse at any depth. `1.2.3-1` parses but
 silently becomes the post-release `1.2.3.post1`. The one-dash dotted grammar is the largest form
 every medium accepts.
+
+### Agent-files version
+
+**An empty file named by the version** (wink, 2026-09-01) because a listing then shows the number
+without a read, a bump is a rename git records as one, and the pattern's add-history is the version
+log. A one-line file needs a read and a diff for the same answers. A version in AGENTS.md's H1, or
+a `## Version` section at its top, was rejected because a heading is an anchor and every bump
+would break the links to it. The file is `agent-files-vX.Y.Z` rather than `version-vX.Y.Z` so the
+name says what is versioned and does not stutter.
+
+**The `v` spelling** (wink, 2026-09-01) because a bare number after a title's colon could be
+anything, and the `v` says "version" in one character, the marker git tags made familiar. Cargo's
+output set the rule that keeps it one spelling: bare for a program's own banner (`cargo 1.80.0`),
+`v` for a name paired with its version in a line (`Compiling bar v1.0.0`), and the agent-files
+version is always the pair.
+
+**The suffix walks in the file name and never in a title** because a rung's title is its ladder
+line, which carries no version ([Steps are named, not
+numbered](prose.md#steps-are-named-not-numbered)), so a proposal cycle's rungs are told apart by
+the bookends while the file says at every commit whether the set is mid-cycle, which is what a copy
+taken from a draft bookmark needs to say on its face.
+
+**Proposals bump and adoptions copy** because a proposal is the diff, and the bump is part of it,
+while an adoption takes a text that already has its number: the same title in two repos then reads
+as the copy and its origin.
+
+**Patch by default, with digit limits** (wink, 2026-09-07) because the earlier rule, patch for a
+correction and minor for a rule change, would have moved the minor at nearly every proposal: a set
+change is a rule change more often than not, and each is incompatible in the SemVer sense, since an
+adopter on the old text and one on the new behave differently until the re-sync. A digit that
+moves every time signals nothing, so the agent-files version counts rather than classifies, and the
+one-digit patch and two-digit minor are what keep a counter readable at a glance in a file name
+and a title.

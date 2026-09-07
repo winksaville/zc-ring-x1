@@ -21,7 +21,7 @@ further on demand ([why](rationale.md#file-reads-read-the-slice-you-need)).
 - **`notes/todo-backlog.md`**: the long-tail backlog (lower-priority entries below `## Todo`). Read
   only when picking up a backlog item, and grep to locate it first.
 - **`notes/bugs.md`**: the bug list. Small, so read it whole when triaging a bug or chasing the
-  `## Bugs` pointer in TODO.md.
+  `## Bugs` pointer in `TODO.md`.
 - **`notes/done.md`** + **`notes/chores/chores-NN.md`**: frozen history. Scan headings first
   (`grep '^## ' notes/chores/chores-NN.md`), then read only the section you need.
 
@@ -33,31 +33,24 @@ several (comma-separated, not `[2,3]` or `[[2]][[3]]`). The `[N]:` definitions i
 
 ## Reference numbering
 
-Every note file (`TODO.md`, `todo-backlog.md`, `bugs.md`, `chores-NN.md`, `done.md`) keeps a
-file-local `# References` section at the bottom. Reference numbers are scoped to that file: `[1]` in
-`chores-07.md` and `[1]` in `chores-01.md` are independent slots that may point at completely
-different URLs.
+Every note file keeps a file-local `# References` section at the bottom, and its numbers are scoped
+to that file: the same `[1]` in two files is two independent slots, each pointing wherever its own
+file defines.
 
-Treat `[N]` like a **footnote**: the number is a local slot, only meaningful within its file's
-`# References`. So a `[N]` *citation* (bare `[N]`, or doubled `[[N]]`) never reuses another file's
-number. To cite a target a sibling file references, pick your own next-local slot and define it (the
-same target may carry a different number in each file). A `[N]` *inside a code span* (`` `[72]` ``)
-is different: that's a quoted identifier, literal text naming a ref-key (often from another file's
-namespace), data, not a citation, so it needs no definition here. To point at a section of another
-file from prose, use an inline link with an anchor, `[that section](../chores-07.md#...)`, not a
-bare number.
-
-A `# References` entry is usually a `/notes/<file>.md#anchor` (or `/ARCHITECTURE.md`) path, but may
-also be a **same-file fragment**, `[N]: #<slug>`, a ladder rung's link to its own subsection ([The
-In Progress block](#the-in-progress-block)).
-
-A file's `# References` can be **re-packed** to a contiguous `[1]..[N]` in first-citation-appearance
-order: walk the file's prose in document order (`TODO.md` is `## In Progress`, `## Closed`, then
-`## Todo`) and number refs as their first `[[N]]` citation appears. This is a file-local rewrite, so
-only that file's `[[N]]` citations and `[N]:` definitions move. Every target and sibling file is
-untouched. A `[[N]]` inside a `` ` `` code span is a literal token, not a citation, and is left
-alone. A new ref takes the next free number, out of order is fine. When you think a re-pack is
-needed, ask. The frozen files are never re-packed.
+- Treat `[N]` as a **footnote**, a slot meaningful only inside its own file's `# References`, so a
+  citation never reuses another file's number. To cite a target a sibling file references, take your
+  own next free slot and define it, and the same target may carry a different number in each file.
+- A `[N]` *inside a code span* (`` `[72]` ``) is a quoted identifier, data rather than a citation,
+  so it needs no definition.
+- To point at a section of another file, use an inline link with an anchor rather than a bare
+  number.
+- A definition is usually a path with an anchor, and may also be a **same-file fragment**,
+  `[N]: #<slug>`, which is how a ladder rung links its own subsection ([The In Progress
+  block](#the-in-progress-block)).
+- A file's `# References` may be **re-packed** to a contiguous `[1]..[N]` in first-citation order,
+  walking the file's prose top to bottom. A file-local rewrite: no other file moves, and a new ref
+  may take the next free number, out of order being fine. Ask before re-packing, and never re-pack
+  [frozen history](#frozen-history-chores-and-done).
 
 ## Markdown anchor links
 
@@ -75,15 +68,18 @@ reference links to more detail.
 
 - `## Continuation notes`: where the agent was, for the agent that comes next. Ephemeral, never a
   record, `_None._` by default, written before a restart or a loss of context, and reset by the
-  agent that reads it.
+  agent that reads it, after filing each fact into its home or keeping the bullet whose fact has
+  none, so a reset never destroys the only copy of anything.
 - `## In Progress`: the running cycle's record ([Cycle-record](../AGENTS.md#cycle-record)).
-- `## Closed`: the last cycle's finished record.
 - `## Waiting`: important work that cannot start yet. Each entry names what it waits on and its
   rank once unblocked, and every opening checks the conditions.
 - `## Todo`: entries in priority order, the first highest. The long-tail backlog is in
   [todo-backlog.md](../notes/todo-backlog.md).
 - `## Ideas`: unranked.
 - `## Bugs`: a pointer to [bugs.md](../notes/bugs.md).
+- `## Closed`: the last cycle's finished record.
+- `# References`: the file-local reference definitions, the file's last section ([Reference
+  numbering](#reference-numbering)).
 
 Every adopter has one `TODO.md` of this shape. It is not an agent-file, since its content is the
 project's record, and the payload ships it as a skeleton: `## In Progress` reading
@@ -131,7 +127,8 @@ under a program heading, each one deeper):
   it. Not the per-commit validation, which asks whether the artifact still works. A changed check is
   one of the things the deliberation exists to justify
 - **ladder**: one rung per step, `- [<title>][M]` plus `(current)` / `(done)`, with `[M]: #<slug>`
-  in the file's `# References`. The markers stay when the block moves to `## Closed`. `<title>` is the rung's commit title, `<type>: <desc>` per
+  in the file's `# References`. The markers stay when the block moves to `## Closed`. `<title>` is
+  the rung's commit title, `<type>: <desc>` per
   [Conventional-commit shape](prose.md#conventional-commit-shape-ladder--commit), so a moved
   `## Todo` entry is retitled. The closing rung, `<cycle title> closing`, is linked like the rest
 - **deliberation**: how the five above were decided, one bullet per decision. The bullet's lead
