@@ -77,18 +77,27 @@ fn main() {
         FlavorArg::All => &FLAVORS,
     };
     for &flavor in flavors {
-        let res = run_cell(flavor, cfg.duration, cfg.pin);
-        report(flavor.as_str(), &cfg, res.probes);
-        match &res.fills {
-            Some(f) => println!(
-                "  fills: lcl_cache={} ({:.3}/RT)  lcl_l2={}  lcl_dram={}  [RTs={}]\n",
-                fmt_commas(f.lcl_cache),
-                f.lcl_cache as f64 / res.rts.max(1) as f64,
-                fmt_commas(f.lcl_l2),
-                fmt_commas(f.lcl_dram),
-                fmt_commas(res.rts),
-            ),
-            None => println!("  fills: unavailable\n"),
+        for &depth in &cfg.depths {
+            if depth < flavor.min_depth() {
+                println!(
+                    "{} round trip [depth={depth}]: skipped, below the flavor's floor\n",
+                    flavor.as_str()
+                );
+                continue;
+            }
+            let res = run_cell(flavor, cfg.duration, cfg.pin, depth);
+            report(flavor.as_str(), &cfg, depth, res.probes);
+            match &res.fills {
+                Some(f) => println!(
+                    "  fills: lcl_cache={} ({:.3}/RT)  lcl_l2={}  lcl_dram={}  [RTs={}]\n",
+                    fmt_commas(f.lcl_cache),
+                    f.lcl_cache as f64 / res.rts.max(1) as f64,
+                    fmt_commas(f.lcl_l2),
+                    fmt_commas(f.lcl_dram),
+                    fmt_commas(res.rts),
+                ),
+                None => println!("  fills: unavailable\n"),
+            }
         }
     }
 }

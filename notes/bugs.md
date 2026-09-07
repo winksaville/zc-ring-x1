@@ -12,5 +12,12 @@ failure. Entries are numbered (`1.` `2.` ...), an index rather than a rank. Run
    "the atomic floor rises only for pool users". The MPSC module gates on
    `target_has_atomic = "32"`, and pool (and registry, which uses Pool) should gate the same way.
    Found while adding the gate for MPSC (0.11.0-1).
+2. The MPSC ring accepts capacity 1 and its protocol collapses there: the producer commits
+   `pos + 1` and the consumer releases `pos + capacity`, the same value at `M = 1`, so after the
+   first release the producer reads the slot as committed rather than claimable, the consumer reads
+   it as released rather than committed, and both sides spin forever. `init` should reject a
+   capacity below 2, or the committed value should become `pos + M + 1` as `spsc::v1` did when its
+   `M = 1` tests caught the same collapse. The measurement tools skip the MPSC flavor at depth 1
+   until then. Found by the demo's depth sweep (2026-09-07).
 
 # References

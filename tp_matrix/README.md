@@ -41,14 +41,23 @@ ready to paste into notes:
   (polls per waiting reserve), per side, plus `fills/RT`.
 
 ```sh
-$ tp-matrix -d 10          # 8 cells x 10 s on a typical SMT machine
+$ tp-matrix -d 10                  # 12 cells x 10 s on a typical SMT machine, depth 8
+$ tp-matrix -d 5 --depth 1,2,8,64  # every cell again at each depth
 tp-matrix 0.1.0 - run the full measurement matrix, markdown tables out
 ...
-| placement | flavor |   m.send |     w.recv | ... |  RTs | fills/RT |
-|-----------|--------|---------:|-----------:|-----|-----:|---------:|
-| 0,1 CCX   | spsc   | 22.3/6.0 | 132.5/13.9 | ... | 3.7M |   10.120 |
-| 0,1 CCX   | mpsc   |  9.5/4.2 |  95.5/19.6 | ... | 5.2M |    6.617 |
+| placement | flavor | depth |   m.send |     w.recv | ... |  RTs | fills/RT |
+|-----------|--------|------:|---------:|-----------:|-----|-----:|---------:|
+| 0,1 CCX   | spsc   |     8 | 22.3/6.0 | 132.5/13.9 | ... | 3.7M |   10.120 |
+| 0,1 CCX   | mpsc   |     8 |  9.5/4.2 |  95.5/19.6 | ... | 5.2M |    6.617 |
 ```
+
+`--depth` takes a comma-separated list of ring depths (slots
+per ring, powers of two from 1 up), the default `8`, and each
+cell repeats per depth. One message is ever in flight, so the
+depth changes how many seq words share a line and, at 1,
+whether the ring has any slack. The MPSC ring's protocol
+collapses at depth 1 (`notes/bugs.md`), so its cells there are
+skipped with a note.
 
 This is the tool that answers "which flavor is faster here,
 and why": e.g. on a Zen 2 the SPSC ring moves ~10 cache lines

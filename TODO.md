@@ -53,7 +53,7 @@ with a why paragraph per placement, the fence probe's result, and the seq width 
 #### Ladder
 
 - [feat: in-slot seq SPSC v2 opening][1] (done)
-- [feat: runtime depth in the demo and tp-matrix][2]
+- [feat: runtime depth in the demo and tp-matrix][2] (done)
 - [feat: add the spsc v2 in-slot seq ring][3]
 - [feat: spsc v2 as a fourth flavor][4]
 - [perf: probe a fence after the v1 commit][5]
@@ -98,6 +98,25 @@ Todo entry into this block, bump the version-of-record, and rename the demo bina
 
 Both tools fix the ring depth at build time, so no run can compare depths. The rung makes depth a
 runtime parameter and adds the demo's depth sweep table.
+
+* The regions were const stack arrays sized by a `DEPTH` const, one per build.
+  - The runner gains a line-aligned heap region sized at runtime by each ring's own size function,
+    and the demo carries the same helper over zerocopy. Heap against stack changes nothing the
+    loops measure, since the region is touched once at init.
+  - v0 exports no region size function, its header being a fixed shape, so both tools compute it
+    from the header's size. A v0 export is a deferral, not a need.
+* Nothing let a run ask for a depth.
+  - `--depth` on the shared args takes a comma list of powers of two, default 8, and every
+    `tp-matrix` and `tp-cell` cell repeats per depth, the matrix tables gaining a depth column.
+  - The demo's lines stay at depth 64 and a sweep follows them: the ring flavors at every placement
+    and at depths 1, 2, 8, and 64, one markdown table per placement in ns per message.
+* The MPSC ring accepts capacity 1 and its protocol collapses there, found when the sweep's first
+  mpsc cell at depth 1 spun forever.
+  - Filed in `notes/bugs.md`: committed `pos + 1` and released `pos + M` coincide at `M = 1`, the
+    collapse v1's `M = 1` tests caught in its own first cut. Each flavor now names its floor, and
+    the tools skip a cell below it with a note, the demo printing `-`.
+  - The fix is unplanned work and stays out of this cycle, on the rule that unplanned work is the
+    user's to place.
 
 ##### feat: add the spsc v2 in-slot seq ring
 

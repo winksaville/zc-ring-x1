@@ -81,6 +81,7 @@ fn rts_cell(res: &CellResult) -> String {
 
 /// Print `rows` as an aligned markdown table under `headers`;
 /// the first two columns left-aligned, the rest right-aligned.
+/// The depth column is numeric, so it takes the right side.
 fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     let mut w: Vec<usize> = headers.iter().map(|h| h.len()).collect();
     for row in rows {
@@ -126,26 +127,41 @@ fn main() {
         "{} cells, {:.1}s each; phase cells are mean/stdev of the trimmed \
          min-p99 band in {unit}; att in polls/waiting reserve; fills/RT = cross-core \
          cache-line fills per round trip",
-        placements.len() * FLAVORS.len(),
+        placements.len() * FLAVORS.len() * cfg.depths.len(),
         cfg.duration.as_secs_f64(),
     );
     println!();
 
-    let mut cells: Vec<(&Placement, Flavor, CellResult)> = Vec::new();
+    let mut cells: Vec<(&Placement, Flavor, u32, CellResult)> = Vec::new();
     for placement in &placements {
         for flavor in FLAVORS {
-            eprintln!("running {} {} ...", placement.label, flavor.as_str());
-            let res = run_cell(flavor, cfg.duration, placement.pin);
-            cells.push((placement, flavor, res));
+            for &depth in &cfg.depths {
+                if depth < flavor.min_depth() {
+                    eprintln!(
+                        "skipping {} {} depth {depth}: below the flavor's floor",
+                        placement.label,
+                        flavor.as_str()
+                    );
+                    continue;
+                }
+                eprintln!(
+                    "running {} {} depth {depth} ...",
+                    placement.label,
+                    flavor.as_str()
+                );
+                let res = run_cell(flavor, cfg.duration, placement.pin, depth);
+                cells.push((placement, flavor, depth, res));
+            }
         }
     }
 
     let phase_rows: Vec<Vec<String>> = cells
         .iter()
-        .map(|(p, f, r)| {
+        .map(|(p, f, d, r)| {
             vec![
                 p.label.clone(),
                 f.as_str().to_string(),
+                d.to_string(),
                 stat_cell(&r.probes[M_SEND], &cfg),
                 stat_cell(&r.probes[W_RECV], &cfg),
                 stat_cell(&r.probes[W_SEND], &cfg),
@@ -161,6 +177,7 @@ fn main() {
         &[
             "placement",
             "flavor",
+            "depth",
             "m.send",
             "w.recv",
             "w.send",
@@ -174,10 +191,11 @@ fn main() {
 
     let spin_rows: Vec<Vec<String>> = cells
         .iter()
-        .map(|(p, f, r)| {
+        .map(|(p, f, d, r)| {
             vec![
                 p.label.clone(),
                 f.as_str().to_string(),
+                d.to_string(),
                 stat_cell(&r.probes[W_SPIN], &cfg),
                 stat_cell(&r.probes[W_ATT], &cfg),
                 stat_cell(&r.probes[M_SPIN], &cfg),
@@ -192,6 +210,7 @@ fn main() {
         &[
             "placement",
             "flavor",
+            "depth",
             "w.spin",
             "w.att",
             "m.spin",

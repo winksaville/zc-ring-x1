@@ -16,6 +16,9 @@
 //!   MPSC sibling run beside it at each placement
 //!   (send_with closure fill), plus a 2-producer + 1-consumer
 //!   line — the shape only the MPSC ring can run.
+//! - The depth sweep, last: the ring flavors again at every
+//!   placement and at depths 1, 2, 8, and 64, one table per
+//!   placement, so depth and protocol can be told apart.
 //! - Part 2, the pool: an allocator thread allocs and
 //!   fills `BufSlot`s and hands them to a freer thread —
 //!   "send" today is moving the guard (see the README's
@@ -30,7 +33,7 @@ use std::time::Instant;
 
 use zc_ring_x1::{
     BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, MpscRing, Pool, PoolRegistry, Ring,
-    policy,
+    mpsc_region_size, policy,
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -40,6 +43,9 @@ const COUNT: u64 = 1_000_000;
 /// Ring slots / pool buffers (small on purpose: recycling
 /// under pressure is the interesting case).
 const DEPTH: u32 = 64;
+
+/// The ring depths the sweep runs, DEPTH among them.
+const DEPTHS: [u32; 4] = [1, 2, 8, 64];
 
 /// The demo message: the sequence number the consumer
 /// asserts, and `val` — spare payload, doubling as the
@@ -51,23 +57,36 @@ struct Msg {
     val: u64,
 }
 
-/// Region for either primitive: biggest header (ring, 4
-/// lines) + DEPTH one-line slots/buffers.
+/// Region for the pool, or a v0 ring at DEPTH: biggest header
+/// (4 lines) + DEPTH one-line slots/buffers.
 #[repr(C, align(64))]
 struct Region([u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE]);
 
-/// Region for the MPSC or SPSC v1 ring: header + per-slot seq
-/// array + DEPTH one-line slots — the two layouts have the
-/// same shape.
-///
-/// The seq array is sized at its widest, one line per seq, so
-/// the region fits either `spsc::v1::SEQ_STRIDE`; the MPSC ring
-/// and the packed v1 leave the surplus untouched, and both
-/// probe builds then differ by the stride alone.
+/// One cache line of backing store, so a `Vec` of them is a
+/// line-aligned region of any length, viewed as bytes through
+/// zerocopy.
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C, align(64))]
-struct SeqRegion(
-    [u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE],
-);
+struct CacheLine([u8; CACHE_LINE_SIZE]);
+
+/// A zeroed, line-aligned heap region of at least `bytes`
+/// bytes, sized at runtime so a ring's depth is a parameter.
+///
+/// - Heap against stack changes nothing the loops measure: the
+///   region is touched once at init and lives in cache after.
+fn region(bytes: u64) -> Vec<CacheLine> {
+    let lines = bytes.div_ceil(CACHE_LINE_SIZE as u64) as usize;
+    (0..lines)
+        .map(|_| CacheLine([0; CACHE_LINE_SIZE]))
+        .collect()
+}
+
+/// Bytes a v0 ring region needs: the four-line header, then
+/// the slots. v0 exports no size function, its header being a
+/// fixed shape.
+fn v0_region_size(slot_size: u32, capacity: u32) -> u64 {
+    size_of::<zc_ring_x1::Header>() as u64 + slot_size as u64 * capacity as u64
+}
 
 /// Group a count into comma-separated thousands
 /// (`1234567` → `"1,234,567"`).
@@ -180,26 +199,27 @@ fn pin_to_cpu(cpu: usize) {
 #[cfg(not(target_os = "linux"))]
 fn pin_to_cpu(_cpu: usize) {}
 
-/// Define the SPSC one-message loops over the ring at `$ring`:
-/// `$one_t` moves COUNT messages single thread, pinned to cpu
-/// 0, and `$two_t` moves them producer-thread → consumer-thread
-/// (`pin` as in [`spsc_ring_one_msg_2t`]); each returns elapsed
-/// seconds. v0 and v1 share the endpoint surface and differ by
-/// path, so one body serves both and the two lines read as the
-/// protocol seam alone.
+/// Define the SPSC one-message loops over the ring at `$ring`,
+/// its region sized by `$size(slot_size, depth)`: `$one_t`
+/// moves COUNT messages single thread, pinned to cpu 0, and
+/// `$two_t` moves them producer-thread → consumer-thread (`pin`
+/// as in [`spsc_ring_one_msg_2t`]), both over a ring of `depth`
+/// slots; each returns elapsed seconds. The SPSC versions share
+/// the endpoint surface and differ by path, so one body serves
+/// them all and the lines read as the protocol seam alone.
 ///
 /// The 1t loop runs in a scoped thread rather than pinning the
 /// main thread: spawned threads inherit the main thread's
 /// affinity mask, which would squeeze every later part onto
 /// cpu 0.
 macro_rules! spsc_loops {
-    ($one_t:ident, $two_t:ident, $ring:path, $region:ident) => {
-        fn $one_t() -> f64 {
-            let mut region = $region([0; size_of::<$region>()]);
-            let (mut producer, mut consumer) =
-                <$ring>::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-                    .unwrap() // OK: $region is sized/aligned for the ring header + DEPTH slots
-                    .split();
+    ($one_t:ident, $two_t:ident, $ring:path, $size:path) => {
+        fn $one_t(depth: u32) -> f64 {
+            let slot = CACHE_LINE_SIZE as u32;
+            let mut region = region($size(slot, depth));
+            let (mut producer, mut consumer) = <$ring>::init(region.as_mut_bytes(), slot, depth)
+                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
+                .split();
 
             let start = Instant::now();
             std::thread::scope(|s| {
@@ -236,12 +256,12 @@ macro_rules! spsc_loops {
             start.elapsed().as_secs_f64()
         }
 
-        fn $two_t(pin: PinPair) -> f64 {
-            let mut region = $region([0; size_of::<$region>()]);
-            let (mut producer, mut consumer) =
-                <$ring>::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-                    .unwrap() // OK: $region is sized/aligned for the ring header + DEPTH slots
-                    .split();
+        fn $two_t(pin: PinPair, depth: u32) -> f64 {
+            let slot = CACHE_LINE_SIZE as u32;
+            let mut region = region($size(slot, depth));
+            let (mut producer, mut consumer) = <$ring>::init(region.as_mut_bytes(), slot, depth)
+                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
+                .split();
 
             let start = Instant::now();
             std::thread::scope(|s| {
@@ -275,23 +295,24 @@ spsc_loops!(
     spsc_ring_one_msg_1t,
     spsc_ring_one_msg_2t,
     zc_ring_x1::spsc::v0::Ring,
-    Region
+    v0_region_size
 );
 spsc_loops!(
     spsc1_ring_one_msg_1t,
     spsc1_ring_one_msg_2t,
     zc_ring_x1::spsc::v1::Ring,
-    SeqRegion
+    zc_ring_x1::spsc::v1::region_size
 );
 
 /// Move COUNT messages single thread through the MPSC ring,
 /// pinned to cpu 0 — the sibling of spsc_ring_one_msg_1t, so
 /// the two lines read as the seam between the protocols
 /// (claim CAS + seq vs load/store); return elapsed seconds.
-fn mpsc_ring_one_msg_1t() -> f64 {
-    let mut region = SeqRegion([0; size_of::<SeqRegion>()]);
-    let (producer, mut consumer) = MpscRing::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: SeqRegion is sized/aligned for header + seqs + DEPTH slots
+fn mpsc_ring_one_msg_1t(depth: u32) -> f64 {
+    let slot = CACHE_LINE_SIZE as u32;
+    let mut region = region(mpsc_region_size(slot, depth));
+    let (producer, mut consumer) = MpscRing::init(region.as_mut_bytes(), slot, depth)
+        .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
         .split();
 
     let start = Instant::now();
@@ -324,10 +345,11 @@ fn mpsc_ring_one_msg_1t() -> f64 {
 /// - `pin` — `Some((p, c))` pins the producer to cpu `p` and
 ///   the consumer to cpu `c`; `None` lets the scheduler place
 ///   them (the number then depends on where they land).
-fn mpsc_ring_one_msg_2t(pin: PinPair) -> f64 {
-    let mut region = SeqRegion([0; size_of::<SeqRegion>()]);
-    let (producer, mut consumer) = MpscRing::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: SeqRegion is sized/aligned for header + seqs + DEPTH slots
+fn mpsc_ring_one_msg_2t(pin: PinPair, depth: u32) -> f64 {
+    let slot = CACHE_LINE_SIZE as u32;
+    let mut region = region(mpsc_region_size(slot, depth));
+    let (producer, mut consumer) = MpscRing::init(region.as_mut_bytes(), slot, depth)
+        .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
         .split();
 
     let start = Instant::now();
@@ -364,9 +386,10 @@ fn mpsc_ring_one_msg_2t(pin: PinPair) -> f64 {
 /// interleave is whatever the claim race said. Returns
 /// elapsed seconds.
 fn mpsc_ring_one_msg_3t() -> f64 {
-    let mut region = SeqRegion([0; size_of::<SeqRegion>()]);
-    let (producer, mut consumer) = MpscRing::init(&mut region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: SeqRegion is sized/aligned for header + seqs + DEPTH slots
+    let slot = CACHE_LINE_SIZE as u32;
+    let mut region = region(mpsc_region_size(slot, DEPTH));
+    let (producer, mut consumer) = MpscRing::init(region.as_mut_bytes(), slot, DEPTH)
+        .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
         .split();
 
     let start = Instant::now();
@@ -650,8 +673,106 @@ fn global_alloc_free_1t() -> f64 {
     start.elapsed().as_secs_f64()
 }
 
-/// Run both parts and print their throughput; `-V` /
-/// `--version` prints the version-of-record and exits.
+/// One ring flavor's stream loops, for the depth sweep.
+struct StreamFlavor {
+    /// The label the table carries.
+    name: &'static str,
+    /// The smallest depth the protocol runs at: the MPSC ring
+    /// collapses at 1 (`notes/bugs.md`), so its cell there is
+    /// printed as `-`.
+    min_depth: u32,
+    /// The single-thread loop at a depth.
+    one_t: fn(u32) -> f64,
+    /// The two-thread loop at a placement and a depth.
+    two_t: fn(PinPair, u32) -> f64,
+}
+
+/// The flavors the sweep runs, in table order.
+const STREAM_FLAVORS: [StreamFlavor; 3] = [
+    StreamFlavor {
+        name: "spsc",
+        min_depth: 1,
+        one_t: spsc_ring_one_msg_1t,
+        two_t: spsc_ring_one_msg_2t,
+    },
+    StreamFlavor {
+        name: "spsc-v1",
+        min_depth: 1,
+        one_t: spsc1_ring_one_msg_1t,
+        two_t: spsc1_ring_one_msg_2t,
+    },
+    StreamFlavor {
+        name: "mpsc",
+        min_depth: 2,
+        one_t: mpsc_ring_one_msg_1t,
+        two_t: mpsc_ring_one_msg_2t,
+    },
+];
+
+/// Where a sweep row's threads sit.
+enum SweepPlacement {
+    /// Both ends on one thread, pinned to cpu 0.
+    OneT,
+    /// Producer and consumer threads at `PinPair`.
+    TwoT(PinPair),
+}
+
+/// Run every flavor at every depth of [`DEPTHS`] at each
+/// placement the machine offers, and print one markdown table
+/// per placement, ns per message in the depth columns.
+///
+/// - The same loops as the lines above, so a `d=64` cell and
+///   the matching line agree up to run noise.
+/// - Depth 1 is lockstep: every message is its own handoff, so
+///   streaming there costs what a round trip does.
+fn depth_sweep(smt: PinPair, far: PinPair) {
+    let mut placements = vec![
+        ("1t core 0".to_string(), SweepPlacement::OneT),
+        ("2t unpinned".to_string(), SweepPlacement::TwoT(None)),
+    ];
+    if let Some((p, c)) = far {
+        placements.push((format!("2t diff cores {p}+{c}"), SweepPlacement::TwoT(far)));
+    }
+    if let Some((p, c)) = smt {
+        placements.push((format!("2t same core {p}+{c}"), SweepPlacement::TwoT(smt)));
+    }
+    let depth_list: Vec<String> = DEPTHS.iter().map(|d| d.to_string()).collect();
+    println!(
+        "depth sweep: {} messages per cell, ns/msg at depths {}",
+        commas(COUNT),
+        depth_list.join(", ")
+    );
+    for (label, placement) in &placements {
+        println!();
+        let mut header = format!("| {label:<22} |");
+        let mut sep = format!("|{}|", "-".repeat(24));
+        for d in &depth_list {
+            header.push_str(&format!(" {:>7} |", format!("d={d}")));
+            sep.push_str(&format!("{}:|", "-".repeat(8)));
+        }
+        println!("{header}");
+        println!("{sep}");
+        for flavor in &STREAM_FLAVORS {
+            let mut row = format!("| {:<22} |", flavor.name);
+            for &depth in &DEPTHS {
+                if depth < flavor.min_depth {
+                    row.push_str(&format!(" {:>7} |", "-"));
+                    continue;
+                }
+                let secs = match placement {
+                    SweepPlacement::OneT => (flavor.one_t)(depth),
+                    SweepPlacement::TwoT(pin) => (flavor.two_t)(*pin, depth),
+                };
+                row.push_str(&format!(" {:>7.1} |", secs * 1e9 / COUNT as f64));
+            }
+            println!("{row}");
+        }
+    }
+}
+
+/// Run both parts and print their throughput, then the depth
+/// sweep; `-V` / `--version` prints the version-of-record and
+/// exits.
 fn main() {
     let banner = concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"));
     println!("{banner}");
@@ -668,9 +789,18 @@ fn main() {
 
     // Single thread, core 0.
     println!();
-    report("spsc_ring_one_msg_1t (core 0):", spsc_ring_one_msg_1t());
-    report("spsc1_ring_one_msg_1t (core 0):", spsc1_ring_one_msg_1t());
-    report("mpsc_ring_one_msg_1t (core 0):", mpsc_ring_one_msg_1t());
+    report(
+        "spsc_ring_one_msg_1t (core 0):",
+        spsc_ring_one_msg_1t(DEPTH),
+    );
+    report(
+        "spsc1_ring_one_msg_1t (core 0):",
+        spsc1_ring_one_msg_1t(DEPTH),
+    );
+    report(
+        "mpsc_ring_one_msg_1t (core 0):",
+        mpsc_ring_one_msg_1t(DEPTH),
+    );
     report(
         "spsc_ring_one_pool_msg_1t (core 0):",
         spsc_ring_one_pool_msg_1t(),
@@ -684,15 +814,15 @@ fn main() {
     println!();
     report(
         "spsc_ring_one_msg_2t (unpinned):",
-        spsc_ring_one_msg_2t(None),
+        spsc_ring_one_msg_2t(None, DEPTH),
     );
     report(
         "spsc1_ring_one_msg_2t (unpinned):",
-        spsc1_ring_one_msg_2t(None),
+        spsc1_ring_one_msg_2t(None, DEPTH),
     );
     report(
         "mpsc_ring_one_msg_2t (unpinned):",
-        mpsc_ring_one_msg_2t(None),
+        mpsc_ring_one_msg_2t(None, DEPTH),
     );
     report(
         "spsc_ring_one_pool_msg_2t (unpinned):",
@@ -716,15 +846,15 @@ fn main() {
         Some((p, c)) => {
             report(
                 &format!("spsc_ring_one_msg_2t (diff cores {p}+{c}):"),
-                spsc_ring_one_msg_2t(far),
+                spsc_ring_one_msg_2t(far, DEPTH),
             );
             report(
                 &format!("spsc1_ring_one_msg_2t (diff cores {p}+{c}):"),
-                spsc1_ring_one_msg_2t(far),
+                spsc1_ring_one_msg_2t(far, DEPTH),
             );
             report(
                 &format!("mpsc_ring_one_msg_2t (diff cores {p}+{c}):"),
-                mpsc_ring_one_msg_2t(far),
+                mpsc_ring_one_msg_2t(far, DEPTH),
             );
             report(
                 &format!("spsc_ring_one_pool_msg_2t (diff cores {p}+{c}):"),
@@ -747,15 +877,15 @@ fn main() {
         Some((p, c)) => {
             report(
                 &format!("spsc_ring_one_msg_2t (same core {p}+{c}):"),
-                spsc_ring_one_msg_2t(smt),
+                spsc_ring_one_msg_2t(smt, DEPTH),
             );
             report(
                 &format!("spsc1_ring_one_msg_2t (same core {p}+{c}):"),
-                spsc1_ring_one_msg_2t(smt),
+                spsc1_ring_one_msg_2t(smt, DEPTH),
             );
             report(
                 &format!("mpsc_ring_one_msg_2t (same core {p}+{c}):"),
-                mpsc_ring_one_msg_2t(smt),
+                mpsc_ring_one_msg_2t(smt, DEPTH),
             );
             report(
                 &format!("spsc_ring_one_pool_msg_2t (same core {p}+{c}):"),
@@ -771,4 +901,8 @@ fn main() {
             println!("  skipped, no SMT sibling found");
         }
     }
+
+    // The depth sweep, the ring flavors at every placement.
+    println!();
+    depth_sweep(smt, far);
 }

@@ -10,7 +10,8 @@
 //! - `main send` / `worker send` — the producer's reserve +
 //!   fill + commit, including any stall acquiring peer-written
 //!   cache lines. The ring is never full here (one message in
-//!   flight, 8 slots), so no send ever waits for space.
+//!   flight, at any depth from 1 up), so no send ever waits
+//!   for space.
 //! - `worker recv` / `main recv` — the consumer's spin wait +
 //!   read + release; these absorb the in-flight half trip.
 //! - `… recv spin` / `… recv attempts` — the wait inside the
@@ -24,31 +25,21 @@
 
 use std::time::Duration;
 
-use tp_runner::{STOP, drive, pin_to_cpu, spin, unpin_current};
+use tp_runner::{LINE_BYTES, LineBuf, STOP, drive, pin_to_cpu, spin, unpin_current};
 use tprobe::TProbe;
 use tprobe::ticks;
-use zc_ring_x1::{CACHE_LINE_SIZE, MpscRing};
+use zc_ring_x1::{CACHE_LINE_SIZE, MpscRing, mpsc_region_size};
 
-/// Ring slots per direction — a power of two, comfortably above
-/// the one message ever in flight.
-const DEPTH: u32 = 8;
+// The runner's line-aligned regions must be aligned the way
+// the rings want them.
+const _: () = assert!(LINE_BYTES == CACHE_LINE_SIZE);
 
-/// Region for one SPSC ring: 4-line header + DEPTH one-line
-/// slots.
-#[repr(C, align(64))]
-struct Region([u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE]);
-
-/// Region for one MPSC or SPSC v1 ring: header + per-slot seq
-/// array + DEPTH one-line slots — the two layouts have the
-/// same shape.
-///
-/// The seq array is sized at its widest, one line per seq, so
-/// the region fits either `spsc::v1::SEQ_STRIDE`; see the
-/// demo's `SeqRegion` for why both probe builds want it.
-#[repr(C, align(64))]
-struct SeqRegion(
-    [u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE],
-);
+/// Bytes a v0 region needs: the four-line header, then the
+/// slots. v0 exports no size function of its own, its header
+/// being a fixed shape.
+fn v0_region_size(slot_size: u32, capacity: u32) -> u64 {
+    size_of::<zc_ring_x1::Header>() as u64 + slot_size as u64 * capacity as u64
+}
 
 /// The ring flavor a cell measures.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -71,6 +62,16 @@ impl Flavor {
             Flavor::Spsc => "spsc",
             Flavor::SpscV1 => "spsc-v1",
             Flavor::Mpsc => "mpsc",
+        }
+    }
+
+    /// The smallest depth the flavor's protocol runs at. The
+    /// MPSC ring's committed and released seq values coincide
+    /// at capacity 1 (`notes/bugs.md`), so its cells start at 2.
+    pub fn min_depth(self) -> u32 {
+        match self {
+            Flavor::Mpsc => 2,
+            _ => 1,
         }
     }
 }
@@ -209,20 +210,26 @@ fn instrumented_recv(
 
 /// Run one measurement cell: pin (or unpin) the calling thread,
 /// open the fill counters, drive `dur` worth of round trips at
-/// `flavor` with the worker on `pin.1`, and return probes +
-/// counters. The caller's thread affinity is left as the cell
-/// set it.
-pub fn run_cell(flavor: Flavor, dur: Duration, pin: Option<(usize, usize)>) -> CellResult {
+/// `flavor` and ring `depth` with the worker on `pin.1`, and
+/// return probes + counters. The caller's thread affinity is
+/// left as the cell set it.
+pub fn run_cell(
+    flavor: Flavor,
+    dur: Duration,
+    pin: Option<(usize, usize)>,
+    depth: u32,
+) -> CellResult {
     match pin {
         Some((main_cpu, _)) => pin_to_cpu(main_cpu),
         None => unpin_current(),
     }
     #[cfg(target_os = "linux")]
     let fills = Fills::open();
+    let worker = pin.map(|(_, w)| w);
     let probes = match flavor {
-        Flavor::Spsc => run_spsc(dur, pin.map(|(_, w)| w)),
-        Flavor::SpscV1 => run_spsc_v1(dur, pin.map(|(_, w)| w)),
-        Flavor::Mpsc => run_mpsc(dur, pin.map(|(_, w)| w)),
+        Flavor::Spsc => run_spsc(dur, worker, depth),
+        Flavor::SpscV1 => run_spsc_v1(dur, worker, depth),
+        Flavor::Mpsc => run_mpsc(dur, worker, depth),
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(Fills::finish);
@@ -232,25 +239,25 @@ pub fn run_cell(flavor: Flavor, dur: Duration, pin: Option<(usize, usize)>) -> C
     CellResult { probes, rts, fills }
 }
 
-/// Define an SPSC cell body over the ring at `$ring`: two
-/// rings, both ends `reserve_slot_with` under the [`spin`]
-/// policy (recv sites instrumented). v0 and v1 share the
-/// endpoint surface and differ by path, so one body serves
-/// both and the A/B measures the protocol alone.
+/// Define an SPSC cell body over the ring at `$ring`, its
+/// regions sized by `$size(slot_size, depth)`: two rings, both
+/// ends `reserve_slot_with` under the [`spin`] policy (recv
+/// sites instrumented). The SPSC versions share the endpoint
+/// surface and differ by path, so one body serves them all and
+/// the A/B measures the protocol alone.
 macro_rules! spsc_cell {
-    ($name:ident, $ring:path, $region:ident, $flavor:expr) => {
-        fn $name(dur: Duration, worker_cpu: Option<usize>) -> [TProbe; 8] {
+    ($name:ident, $ring:path, $size:path, $flavor:expr) => {
+        fn $name(dur: Duration, worker_cpu: Option<usize>, depth: u32) -> [TProbe; 8] {
             use $ring as Ring;
-            let mut req_region = $region([0; size_of::<$region>()]);
-            let mut resp_region = $region([0; size_of::<$region>()]);
-            let (mut req_tx, mut req_rx) =
-                Ring::init(&mut req_region.0, CACHE_LINE_SIZE as u32, DEPTH)
-                    .unwrap() // OK: $region is sized/aligned for the header + DEPTH slots
-                    .split();
-            let (mut resp_tx, mut resp_rx) =
-                Ring::init(&mut resp_region.0, CACHE_LINE_SIZE as u32, DEPTH)
-                    .unwrap() // OK: $region is sized/aligned for the header + DEPTH slots
-                    .split();
+            let slot = CACHE_LINE_SIZE as u32;
+            let mut req_region = LineBuf::new($size(slot, depth));
+            let mut resp_region = LineBuf::new($size(slot, depth));
+            let (mut req_tx, mut req_rx) = Ring::init(req_region.as_mut_bytes(), slot, depth)
+                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
+                .split();
+            let (mut resp_tx, mut resp_rx) = Ring::init(resp_region.as_mut_bytes(), slot, depth)
+                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
+                .split();
 
             std::thread::scope(|s| {
                 let worker = s.spawn(move || {
@@ -345,25 +352,31 @@ macro_rules! spsc_cell {
     };
 }
 
-spsc_cell!(run_spsc, zc_ring_x1::spsc::v0::Ring, Region, Flavor::Spsc);
+spsc_cell!(
+    run_spsc,
+    zc_ring_x1::spsc::v0::Ring,
+    v0_region_size,
+    Flavor::Spsc
+);
 spsc_cell!(
     run_spsc_v1,
     zc_ring_x1::spsc::v1::Ring,
-    SeqRegion,
+    zc_ring_x1::spsc::v1::region_size,
     Flavor::SpscV1
 );
 
 /// MPSC cell body: two `MpscRing`s at 1p/1c — producers
 /// `send_with` (closure fill), the consumer `reserve_slot_with`,
 /// both under the [`spin`] policy (recv sites instrumented).
-fn run_mpsc(dur: Duration, worker_cpu: Option<usize>) -> [TProbe; 8] {
-    let mut req_region = SeqRegion([0; size_of::<SeqRegion>()]);
-    let mut resp_region = SeqRegion([0; size_of::<SeqRegion>()]);
-    let (req_tx, mut req_rx) = MpscRing::init(&mut req_region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: SeqRegion is sized/aligned for header + seqs + DEPTH slots
+fn run_mpsc(dur: Duration, worker_cpu: Option<usize>, depth: u32) -> [TProbe; 8] {
+    let slot = CACHE_LINE_SIZE as u32;
+    let mut req_region = LineBuf::new(mpsc_region_size(slot, depth));
+    let mut resp_region = LineBuf::new(mpsc_region_size(slot, depth));
+    let (req_tx, mut req_rx) = MpscRing::init(req_region.as_mut_bytes(), slot, depth)
+        .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
         .split();
-    let (resp_tx, mut resp_rx) = MpscRing::init(&mut resp_region.0, CACHE_LINE_SIZE as u32, DEPTH)
-        .unwrap() // OK: SeqRegion is sized/aligned for header + seqs + DEPTH slots
+    let (resp_tx, mut resp_rx) = MpscRing::init(resp_region.as_mut_bytes(), slot, depth)
+        .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
         .split();
 
     std::thread::scope(|s| {
