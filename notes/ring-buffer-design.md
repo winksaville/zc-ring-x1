@@ -825,6 +825,51 @@ its own index.
     as raw bytes for `Ring::init`, if `alloc::<T>` cannot
     express it. Anything more waits for a shown need.
 
+## SPSC v2: in-slot seq ring
+
+The third SPSC protocol, `spsc::v2`, a sibling of v0 and v1
+under the same module layout, the in-slot seq experiment the
+v1 cycle left open ([SPSC v1: seam-word
+ring](#spsc-v1-seam-word-ring)). v1 publishes a slot through a
+seq word in a separate array, so a message costs the slot line
+and a share of a seq line. v2 moves the seq into the slot it
+publishes, so the commit store and the message it publishes
+travel on one line.
+
+- **Region**: the v0 four-line `Header` shape (own type, own
+  magic `ZCR3`, own layout version), then the slots, and no
+  seq array. `spsc::v2::region_size` is header plus slots.
+- **Slot header**: every slot opens with `SLOT_HEADER_BYTES`
+  (16) of crate-owned bytes, the seq word at offset 0 and the
+  rest reserved and zeroed. The user's body starts behind it,
+  so a slot of N bytes carries `N - 16` bytes of message at an
+  alignment of at most 16. Sixteen so the seq can be u32 or
+  u64 without moving the body.
+- **Slot contract**: `T` must fit the body and align to at
+  most the header's size, checked at every reserve as the
+  other rings check theirs, against the body rather than the
+  slot. A one-line slot carries a 48-byte message. This is the
+  contract change the Todo entry named as part of the finding.
+- **Protocol**: v1's, unchanged: claimable at `seq == pos`,
+  committed at `pos + M + 1`, released at `pos + M`, equality
+  checks, load/store only, `M` any power of two down to 1, and
+  the index lines private resume state. The one difference is
+  where the word lives.
+- **Seq width**: one alias, `Seq`, chooses `AtomicU32` or
+  `AtomicU64`. The indices stay u32 and wrap there, so the
+  word holds the same values at either width and the flip
+  changes the store's width alone. The measurement rung runs
+  both before the layout version fixes one.
+- **Prediction, on record before measuring**: the round trip
+  should gain, since the consumer needs one fill for data plus
+  flag instead of two. Streaming may lose, since the
+  consumer's release store dirties the slot line and it then
+  travels producer to consumer at commit and back at release,
+  two transfers per message, where v1's slot line moves one
+  way and its packed seq line amortises sixteen commits. At
+  depth 1, v2 is a single line ping-ponging between the cores,
+  the cheapest handoff the hardware can express.
+
 ## Messaging layer: pools and descriptor queues
 
 Design for the layer above the ring. The pool half is

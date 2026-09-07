@@ -54,7 +54,7 @@ with a why paragraph per placement, the fence probe's result, and the seq width 
 
 - [feat: in-slot seq SPSC v2 opening][1] (done)
 - [feat: runtime depth in the demo and tp-matrix][2] (done)
-- [feat: add the spsc v2 in-slot seq ring][3]
+- [feat: add the spsc v2 in-slot seq ring][3] (done)
 - [feat: spsc v2 as a fourth flavor][4]
 - [perf: probe a fence after the v1 commit][5]
 - [perf: measure spsc v2 across depths][6]
@@ -122,6 +122,21 @@ runtime parameter and adds the demo's depth sweep table.
 
 The seq and the slot it publishes live on different lines in v1. The rung adds the sibling ring
 whose slot carries its own seq, with the tests v1 grew.
+
+* The protocol needed a home for the seq inside the slot without a second design change.
+  - `spsc::v2` is v1's protocol over a region of header then slots, every slot opening with a
+    16-byte crate header, the seq at offset 0 and the rest reserved. The endpoint surface is v1's,
+    so a caller or a bench flips between versions by path alone.
+  - The seq's width is one type alias, `Seq`, the indices staying u32 so the word holds the same
+    values at either width. The measurement rung flips it.
+* The slot contract had to change, since the body no longer starts at the slot.
+  - v2 checks `T` against the body, `slot_size - 16` at an alignment of at most 16, its own check
+    beside the crate's, and a test pins the body's address to slot base plus the header.
+* The tests v1 grew carry over whole, the `M = 1` alternation and the threaded stream at 1, 2, 4,
+  and 16 among them, plus the cross-kind attach against a v1 region.
+* The design note gains "SPSC v2: in-slot seq ring" with the prediction written down before the
+  numbers: the round trip should gain and streaming may lose, since the slot line then travels
+  both ways per message.
 
 ##### feat: spsc v2 as a fourth flavor
 
