@@ -11,9 +11,9 @@ the records of earlier cycles, frozen as history
 Project design docs:
 
 - [ring-buffer-design.md](ring-buffer-design.md): the
-  zero-copy ring buffer and its MPSC sibling (terminology,
-  requirements, layout, API, validation), kept in sync with
-  `src/`.
+  zero-copy ring buffer, its MPSC sibling, and the seam-word
+  SPSC v1 with its measurements (terminology, requirements,
+  layout, API, validation), kept in sync with `src/`.
 - [../tprobe/notes/design.md](../tprobe/notes/design.md):
   the tprobe measurement crate (probe primitives, ticks,
   report renderer, the tprobe/tp_runner split). The crate

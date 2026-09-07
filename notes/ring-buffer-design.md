@@ -636,12 +636,11 @@ iiac-perf (sibling repo) grows an mpsc set alongside `zcr`:
 
 ### MPSC open questions
 
-- **Seq array padding**:
-  - packed `M × 4` bytes — Vyukov's shape; adjacent-slot
-    false sharing;
-  - line-padded — `M × 64` bytes of overhead;
-  - start packed, and the bench matrix decides whether a
-    padded variant earns a layout flag.
+- **Seq array padding** — answered by the SPSC v1 probe
+  ([SPSC v1: seam-word ring](#spsc-v1-seam-word-ring),
+  measured 2026-09-04): packed wins, on both machines and
+  in both instruments, so the family keeps Vyukov's shape
+  and no padded variant earns a flag.
 - **Tombstone encoding**:
   - reserved seq bit — masked arithmetic, `M <= 2^30`;
   - or a per-slot side word;
@@ -651,6 +650,180 @@ iiac-perf (sibling repo) grows an mpsc set alongside `zcr`:
   - keep as diagnostic occupancy (Relaxed stores by the
     consumer), or drop the line entirely;
   - the `occupancy()` polish todo argues for keeping it.
+
+## SPSC v1: seam-word ring
+
+The second SPSC protocol, `spsc::v1`, a sibling of v0 under
+the same module layout ([Findings: the gap is line-transfer
+economics](chores/chores-02.md#findings-the-gap-is-line-transfer-economics)
+is the motivation). v0 loses to the MPSC ring cross-core,
+~10.0 cache lines per round trip against ~6.7, because each
+side polls the other side's index line. v1 is the MPSC
+protocol with the claim CAS removed: a per-slot seq word
+publishes each slot, and each side reads only slot lines and
+its own index.
+
+- **Region** — the v0 four-line `Header` shape (own type,
+  own magic `ZCR2`, own layout version), then the seq array
+  (`M x AtomicU32`, padded to a cache line), then the slots.
+  `spsc::v1::region_size` is public so a pool can size
+  segment buffers by it.
+- **Protocol** — `seq[i]` starts at `i`. Slot at free-running
+  `pos`:
+  - claimable by the producer when `seq == pos`;
+  - committed when `seq == pos + M + 1` (the producer's
+    `Release` store, after the fill);
+  - released by the consumer storing `seq = pos + M`
+    (`Release`), which is the next lap's claimable value.
+  - Committed is `pos + M + 1`, not Vyukov's `pos + 1`: at
+    `M = 1` that would equal the released value `pos + M`,
+    so the producer would read an unread slot as claimable
+    and overwrite it (found by the `M = 1` tests, which
+    failed and hung on the first cut).
+  - Equality, not a signed diff: there is no lost race to
+    distinguish, so anything but the expected value reads as
+    Full or Empty, and a peer-corrupted seq degrades toward
+    that, never toward an unowned slot.
+- **Index lines are private resume state** — `producer_idx`
+  is loaded and stored by the producer only, `consumer_idx`
+  by the consumer only, both `Relaxed`. They exist so a
+  re-attach resumes mid-stream and so occupancy can be
+  inspected, and no hot path crosses to the other side's
+  line.
+- **Load/store only** — no CAS anywhere, so the v0 atomic
+  floor holds. The MPSC tombstone has no counterpart: a single
+  producer that unwinds mid-fill abandons the reservation,
+  as v0 does.
+- **`M >= 1`** — the state is in the seq, not in an index
+  distance, so `M = 1` is legal: one word cycles through
+  claimable, committed, and released. The user picks `M`, any power of
+  two up to `2^30`, so a segment-size sweep can isolate the
+  segment seam ([the cycle](../TODO.md#feat-seam-word-spsc-v1)).
+- **Measured (2026-08-28, 3900X, `tp-matrix` 5 s cells and
+  the demo's 1M-message streams)** — v1 closes most of v0's
+  gap and lands beside the MPSC ring, not ahead of it:
+  - fills per round trip: v0 10.0, v1 6.85, MPSC 6.7, at every
+    cross-core placement. The seam word removed the index-line
+    traffic as designed.
+  - round trips per 5 s: 0,1 CCX v0 22.7M, v1 28.5M, MPSC
+    30.7M; 0,3 x-CCX v0 6.5M, v1 8.2M, MPSC 8.8M; 0,12 SMT
+    v0 40.9M, v1 34.2M, MPSC 34.7M. Demo streams, diff cores
+    0+3: v0 166 ns, v1 105 ns, MPSC 92 ns per message; same
+    core 0+12: v0 6.9, v1 13.8, MPSC 15.4; single thread: v0
+    2.6, v1 7.8, MPSC 9.8.
+  - So v1 is ~26% faster than v0 cross-core, ~7% slower than
+    the MPSC ring there, and loses v0's SMT and single-thread
+    win by 2 to 3x, as the MPSC ring does. The cycle's bar,
+    faster than MPSC v0 on the non-overflow path, is not met by
+    the separate-seq-array form.
+  - Open puzzle: v1 does strictly less than the MPSC producer
+    (a load where MPSC has a CAS) and is slower by a few ns per
+    send at every placement (`w.send` 13.0 vs 10.1 ns on the
+    CCX). We think it is not the protocol, and the next
+    candidates are code shape (the `WriteSlot` deref path
+    against `send_with`'s closure fill) and the store ordering
+    (the private index store ahead of the seq store, where the
+    MPSC CAS drains the store buffer first).
+- **Measured on a 7600X (Zen 4, one CCD), the demo's
+  streams** — the picture reverses: single thread v0 2.2 ns,
+  v1 6.1, MPSC 7.1; diff cores 0+1 v0 7.0, v1 18.9, MPSC
+  17.7; same core 0+6 v0 6.0, v1 13.9, MPSC 13.3. Streaming
+  with depth 64, the producer running ahead, v0 beats both
+  seq protocols by 2.5x cross-core. We think the cause is
+  that a seq word is written by both sides every message and
+  16 seq words share a line: v0's slot lines move one way
+  (producer writes, consumer reads) and only its two index
+  lines move both ways, while every v1 message also drags the
+  seq line producer to consumer at commit and back at release,
+  and neighbouring slots' seqs false-share it. The
+  one-in-flight `tp-matrix` cell cannot show this, since there
+  the seq line and the slot line move once each per trip; the
+  streaming demo can.
+- **Measured (2026-09-04, both machines, the rung `perf:
+  probe the v1 streaming loss`)** — the false-sharing
+  hypothesis above is refuted, and two things the numbers
+  rested on turned out to be assumptions:
+  - Line-padding the seq array (one seq per line, a
+    `SEQ_STRIDE` flip in `spsc::v1`) cuts fills per round
+    trip from 6.4 to 5.3 on the 3900X, below the MPSC ring's
+    6.4, and buys no throughput: normalised to MPSC in the
+    same runs, v1's round trips fell at every placement on
+    both machines. Streaming, padding cost 13% on the 7600X
+    cross-core line it was meant to fix (17.6 to 19.9 ns)
+    and 12% at the 3900X's SMT pair, and gained 31% at the
+    7600X's SMT pair (12.9 to 8.9 ns, the one placement
+    where v1 beats MPSC), an effect with no account yet.
+    Packed stays. We think padding loses because the seq
+    words are a queue, not unrelated neighbours: packed,
+    sixteen consecutive commits land in one line and its
+    acquisition amortises; padded, every commit pays its
+    own.
+  - Neither side waits. `examples/occupancy_probe` runs the
+    demo's two-thread stream and counts wait-policy calls:
+    the producer waited on under 0.1% of sends and the
+    consumer on 0 to 8% of receives, at every placement on
+    both machines. The loss is steady-state per-message
+    cost, not one side blocking on the other.
+  - The two machines never disagreed. The demo's "diff
+    cores" pair is the first cpu outside cpu0's L3: cpu 3 on
+    the 3900X, a different CCX, and cpu 1 on the 7600X,
+    whose six cores share one L3. Measured same-L3 on the
+    3900X (0+1), v0 streams at 12.9 ns against v1's 34.7,
+    the 7600X's shape exactly, and v1 wins only across L3
+    (0+3: v0 171, v1 105). One picture: v0 wins streaming
+    within an L3, v1 wins streaming across one.
+  - Every fills-per-round-trip figure in this note is from
+    the one-in-flight `tp-matrix` cell; the demo's `*_2t`
+    lines are the only streaming evidence.
+- **Open, for the next step** — the per-send puzzle stands
+  and is sharper: padded v1 moves fewer lines per round trip
+  than MPSC and is still slower. Candidates, all untested:
+  the store buffer (MPSC's claim CAS is a full fence and v1
+  has none, so a fence after v1's commit is a one-line
+  probe); the private index store ahead of the seq store;
+  the guard's code shape against `send_with`. The in-slot
+  seq stays the layout step, framed as a crate-owned slot
+  header ahead of the user-owned body, with a prediction to
+  test: it should help the round trip and may hurt
+  streaming, since the slot line would then travel both
+  ways every message where today it goes one way and the
+  seq line amortises. The seq's width is not to be assumed
+  and wants measuring (u32 against the native width) before
+  the slot header fixes it. The demo's pin-pair picker wants
+  a same-L3 placement and honest labels.
+
+- **Landed as-is (2026-09-07, the cycle `feat: seam-word
+  SPSC v1`)**: the ring landed on `main` with its bar unmet,
+  so the later experiments compare against a landmark rather
+  than a draft. The crate's default `Ring` stays v0 and v1 is
+  reached by path. The in-slot seq and the segments are
+  `TODO.md` entries, "In-slot seq for spsc v1" and "Segmented
+  queue over spsc v1".
+- **Segments, designed and deferred**: the layer the cycle
+  meant to build on the ring, held until a v1 form clears the
+  bar. The design as decided:
+  - A queue is a chain of ring segments allocated from a
+    `Pool`, each segment one pool buffer holding a v1 region
+    sized by `region_size`.
+  - The link word is the segment's header `user` line, word
+    0, holding the next segment's pool buffer index with a
+    sentinel for none. Not the pool's free-stack word: the
+    free overwrites it, and the pool stays ignorant of rings.
+  - Producer on Full: allocate the next segment, init it,
+    store its index in the link (`Release`), move. Consumer
+    on Empty: load the link (`Acquire`), and a set link means
+    the old segment is fully drained, since the producer
+    moved only after filling it and Empty means all of it was
+    read, so the consumer moves and frees the old segment.
+  - The endpoints hold the pool halves their roles need: the
+    producer the `Pool`, its one allocator, and the consumer a
+    `PoolResolver` to free. The pool's existing contract.
+  - One link per segment, amortised over `M` messages, and
+    `M = 1` is the per-message linked list, measured by the
+    size sweep rather than imagined.
+  - The pool is unchanged apart from a way to take a buffer
+    as raw bytes for `Ring::init`, if `alloc::<T>` cannot
+    express it. Anything more waits for a shown need.
 
 ## Messaging layer: pools and descriptor queues
 
