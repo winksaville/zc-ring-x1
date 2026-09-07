@@ -55,7 +55,7 @@ with a why paragraph per placement, the fence probe's result, and the seq width 
 - [feat: in-slot seq SPSC v2 opening][1] (done)
 - [feat: runtime depth in the demo and tp-matrix][2] (done)
 - [feat: add the spsc v2 in-slot seq ring][3] (done)
-- [feat: spsc v2 as a fourth flavor][4]
+- [feat: spsc v2 as a fourth flavor][4] (done)
 - [perf: probe a fence after the v1 commit][5]
 - [perf: measure spsc v2 across depths][6]
 - [feat: a streaming cell with fill counts][7]
@@ -141,6 +141,22 @@ whose slot carries its own seq, with the tests v1 grew.
 ##### feat: spsc v2 as a fourth flavor
 
 The tools know three flavors. The rung adds v2 to `tp-matrix`, `tp-cell`, and the demo.
+
+* Every tool spelled the flavor list out in its own way.
+  - `tp-matrix` and `tp-cell` gain `spsc-v2` from the one `FLAVORS` list, a cell instantiated
+    from the shared SPSC macro over v2's `region_size`, so the round-trip A/B is the protocol
+    alone.
+  - The demo gains `spsc2_` lines beside the `spsc1_` ones at every placement and a `spsc-v2` row
+    in each sweep table, and the occupancy probe a `v2` line, all from the macros the v1 rung
+    wrote.
+* The first numbers, on the 3900X, are a finding the measurement rung must confirm.
+  - Streaming across the CCX boundary at depth 64, v2 moves a message in 12 ns against v1's 104
+    and v0's 207, and holds that within an L3 and at the SMT pair, where v1 lost to v0 by 2x. In
+    the round-trip cell v2 moves 3.5 to 4.0 lines per trip against v1's 6.85.
+  - We think the streaming gain is not the line count but the line independence: v2 has no line
+    both sides write per message except the slot itself, and consecutive slots are consecutive
+    lines, so the transfers pipeline where v1's packed seq line and v0's index lines serialised
+    them. The prediction on record, that streaming may lose, is refuted on this machine.
 
 ##### perf: probe a fence after the v1 commit
 

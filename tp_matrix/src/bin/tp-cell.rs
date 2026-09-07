@@ -28,9 +28,12 @@ enum FlavorArg {
     Spsc,
     /// The SPSC v1 seam-word ring (same surface, per-slot seq)
     SpscV1,
+    /// The SPSC v2 in-slot seq ring (same surface, the seq in
+    /// its slot)
+    SpscV2,
     /// The MPSC ring at 1p/1c (`send_with` producers)
     Mpsc,
-    /// All three, in that order
+    /// All four, in that order
     All,
 }
 
@@ -73,6 +76,7 @@ fn main() {
     let flavors: &[Flavor] = match cli.flavor {
         FlavorArg::Spsc => &[Flavor::Spsc],
         FlavorArg::SpscV1 => &[Flavor::SpscV1],
+        FlavorArg::SpscV2 => &[Flavor::SpscV2],
         FlavorArg::Mpsc => &[Flavor::Mpsc],
         FlavorArg::All => &FLAVORS,
     };

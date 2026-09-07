@@ -23,7 +23,8 @@ user-mode only — no perf(1), root, bash, or scraping), which
 is the hardware's answer to "how many cache lines crossed
 between the cores per round trip". A cell varies along two
 axes: **flavor** (the SPSC v0 ring, the SPSC v1 seam-word
-ring, and the MPSC sibling at 1p/1c)
+ring, the SPSC v2 in-slot seq ring, and the MPSC sibling at
+1p/1c)
 and **placement** (which CPUs the two threads sit on — same
 L3, different L3, SMT siblings, or unpinned).
 
@@ -41,7 +42,7 @@ ready to paste into notes:
   (polls per waiting reserve), per side, plus `fills/RT`.
 
 ```sh
-$ tp-matrix -d 10                  # 12 cells x 10 s on a typical SMT machine, depth 8
+$ tp-matrix -d 10                  # 16 cells x 10 s on a typical SMT machine, depth 8
 $ tp-matrix -d 5 --depth 1,2,8,64  # every cell again at each depth
 tp-matrix 0.1.0 - run the full measurement matrix, markdown tables out
 ...

@@ -48,12 +48,15 @@ pub enum Flavor {
     Spsc,
     /// The SPSC v1 seam-word ring (same surface, per-slot seq).
     SpscV1,
+    /// The SPSC v2 in-slot seq ring (same surface, the seq at
+    /// the front of its slot).
+    SpscV2,
     /// The MPSC ring at 1p/1c (`send_with` producers).
     Mpsc,
 }
 
 /// Every flavor, in report order.
-pub const FLAVORS: [Flavor; 3] = [Flavor::Spsc, Flavor::SpscV1, Flavor::Mpsc];
+pub const FLAVORS: [Flavor; 4] = [Flavor::Spsc, Flavor::SpscV1, Flavor::SpscV2, Flavor::Mpsc];
 
 impl Flavor {
     /// Lowercase name for labels and CLI parsing.
@@ -61,6 +64,7 @@ impl Flavor {
         match self {
             Flavor::Spsc => "spsc",
             Flavor::SpscV1 => "spsc-v1",
+            Flavor::SpscV2 => "spsc-v2",
             Flavor::Mpsc => "mpsc",
         }
     }
@@ -229,6 +233,7 @@ pub fn run_cell(
     let probes = match flavor {
         Flavor::Spsc => run_spsc(dur, worker, depth),
         Flavor::SpscV1 => run_spsc_v1(dur, worker, depth),
+        Flavor::SpscV2 => run_spsc_v2(dur, worker, depth),
         Flavor::Mpsc => run_mpsc(dur, worker, depth),
     };
     #[cfg(target_os = "linux")]
@@ -363,6 +368,12 @@ spsc_cell!(
     zc_ring_x1::spsc::v1::Ring,
     zc_ring_x1::spsc::v1::region_size,
     Flavor::SpscV1
+);
+spsc_cell!(
+    run_spsc_v2,
+    zc_ring_x1::spsc::v2::Ring,
+    zc_ring_x1::spsc::v2::region_size,
+    Flavor::SpscV2
 );
 
 /// MPSC cell body: two `MpscRing`s at 1p/1c — producers

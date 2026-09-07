@@ -12,8 +12,9 @@
 //!   one consumer thread: unpinned, pinned to two different
 //!   physical cores, and pinned to one physical core's two
 //!   SMT siblings (shared L1/L2, when the CPU has SMT).
-//!   The SPSC v1 seam-word ring (`spsc1_` lines) and the
-//!   MPSC sibling run beside it at each placement
+//!   The SPSC v1 seam-word ring (`spsc1_` lines), the SPSC v2
+//!   in-slot seq ring (`spsc2_` lines), and the MPSC sibling
+//!   run beside it at each placement
 //!   (send_with closure fill), plus a 2-producer + 1-consumer
 //!   line — the shape only the MPSC ring can run.
 //! - The depth sweep, last: the ring flavors again at every
@@ -302,6 +303,12 @@ spsc_loops!(
     spsc1_ring_one_msg_2t,
     zc_ring_x1::spsc::v1::Ring,
     zc_ring_x1::spsc::v1::region_size
+);
+spsc_loops!(
+    spsc2_ring_one_msg_1t,
+    spsc2_ring_one_msg_2t,
+    zc_ring_x1::spsc::v2::Ring,
+    zc_ring_x1::spsc::v2::region_size
 );
 
 /// Move COUNT messages single thread through the MPSC ring,
@@ -688,7 +695,7 @@ struct StreamFlavor {
 }
 
 /// The flavors the sweep runs, in table order.
-const STREAM_FLAVORS: [StreamFlavor; 3] = [
+const STREAM_FLAVORS: [StreamFlavor; 4] = [
     StreamFlavor {
         name: "spsc",
         min_depth: 1,
@@ -700,6 +707,12 @@ const STREAM_FLAVORS: [StreamFlavor; 3] = [
         min_depth: 1,
         one_t: spsc1_ring_one_msg_1t,
         two_t: spsc1_ring_one_msg_2t,
+    },
+    StreamFlavor {
+        name: "spsc-v2",
+        min_depth: 1,
+        one_t: spsc2_ring_one_msg_1t,
+        two_t: spsc2_ring_one_msg_2t,
     },
     StreamFlavor {
         name: "mpsc",
@@ -798,6 +811,10 @@ fn main() {
         spsc1_ring_one_msg_1t(DEPTH),
     );
     report(
+        "spsc2_ring_one_msg_1t (core 0):",
+        spsc2_ring_one_msg_1t(DEPTH),
+    );
+    report(
         "mpsc_ring_one_msg_1t (core 0):",
         mpsc_ring_one_msg_1t(DEPTH),
     );
@@ -819,6 +836,10 @@ fn main() {
     report(
         "spsc1_ring_one_msg_2t (unpinned):",
         spsc1_ring_one_msg_2t(None, DEPTH),
+    );
+    report(
+        "spsc2_ring_one_msg_2t (unpinned):",
+        spsc2_ring_one_msg_2t(None, DEPTH),
     );
     report(
         "mpsc_ring_one_msg_2t (unpinned):",
@@ -853,6 +874,10 @@ fn main() {
                 spsc1_ring_one_msg_2t(far, DEPTH),
             );
             report(
+                &format!("spsc2_ring_one_msg_2t (diff cores {p}+{c}):"),
+                spsc2_ring_one_msg_2t(far, DEPTH),
+            );
+            report(
                 &format!("mpsc_ring_one_msg_2t (diff cores {p}+{c}):"),
                 mpsc_ring_one_msg_2t(far, DEPTH),
             );
@@ -882,6 +907,10 @@ fn main() {
             report(
                 &format!("spsc1_ring_one_msg_2t (same core {p}+{c}):"),
                 spsc1_ring_one_msg_2t(smt, DEPTH),
+            );
+            report(
+                &format!("spsc2_ring_one_msg_2t (same core {p}+{c}):"),
+                spsc2_ring_one_msg_2t(smt, DEPTH),
             );
             report(
                 &format!("mpsc_ring_one_msg_2t (same core {p}+{c}):"),

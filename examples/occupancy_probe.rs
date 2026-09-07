@@ -31,7 +31,8 @@ struct Msg {
     val: u64,
 }
 
-/// Region for the v0 ring: 4-line header + DEPTH one-line slots.
+/// Region for the v0 or v2 ring: 4-line header + DEPTH one-line
+/// slots.
 #[repr(C, align(64))]
 struct Region([u8; 4 * CACHE_LINE_SIZE + DEPTH as usize * CACHE_LINE_SIZE]);
 
@@ -125,6 +126,7 @@ macro_rules! stream_probe {
 
 stream_probe!(stream_v0, spsc::v0::Ring, Region);
 stream_probe!(stream_v1, spsc::v1::Ring, SeqRegion);
+stream_probe!(stream_v2, spsc::v2::Ring, Region);
 
 /// Print one ring's line: throughput, then how often and how
 /// hard each side waited.
@@ -151,4 +153,5 @@ fn main() {
     );
     report("v0", stream_v0(p_cpu, c_cpu));
     report("v1", stream_v1(p_cpu, c_cpu));
+    report("v2", stream_v2(p_cpu, c_cpu));
 }
