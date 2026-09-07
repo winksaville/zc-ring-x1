@@ -19,11 +19,19 @@
 //!   reserve success) and the attempt count, recorded only for
 //!   reserves that actually waited.
 //!
+//! A **streaming cell** is the other shape: the producer sends
+//! a counter as fast as the ring admits for a fixed duration
+//! and the consumer drains it, the depth in play as slack, and
+//! the fill counters divided by the messages moved say how
+//! many lines crossed per message while streaming, the number
+//! the round-trip cell cannot give.
+//!
 //! The binaries: `tp-cell` runs one cell and prints the probe
 //! reports; `tp-matrix` runs every flavor × placement cell and
-//! emits markdown tables.
+//! emits markdown tables; `tp-stream` runs the streaming cell
+//! over the same matrix.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tp_runner::{LINE_BYTES, LineBuf, STOP, drive, pin_to_cpu, spin, unpin_current};
 use tprobe::TProbe;
@@ -469,4 +477,190 @@ fn run_mpsc(dur: Duration, worker_cpu: Option<usize>, depth: u32) -> [TProbe; 8]
             recv.attempts,
         ]
     })
+}
+
+/// One streaming cell's outcome.
+pub struct StreamResult {
+    /// Messages the consumer received, the stop sentinel not
+    /// counted.
+    pub msgs: u64,
+    /// Wall-clock seconds from the first send to the consumer
+    /// seeing the stop sentinel.
+    pub secs: f64,
+    /// Fill counters over the whole stream, when the platform
+    /// provides them.
+    pub fills: Option<FillCounts>,
+}
+
+/// Messages between the producer's wall-clock checks, as
+/// `drive` spaces its checks.
+const STREAM_CHECK_EVERY: u64 = 4096;
+
+/// Run one streaming cell: open the fill counters, stream a
+/// counter for `dur` at `flavor` and ring `depth` from a
+/// producer thread on `pin.0` to a consumer thread on `pin.1`,
+/// and return the count, the elapsed time, and the counters.
+///
+/// - Both ends are spawned threads that pin themselves, as the
+///   demo's streams do, so the calling thread's affinity is
+///   untouched and the two sides start alike.
+/// - The producer sends as fast as the ring admits under the
+///   [`spin`] policy, so the ring sits full whenever the
+///   consumer is the slower side, and the consumer asserts the
+///   counter's order.
+/// - The elapsed time ends when the consumer has seen the stop
+///   sentinel, so the last message's drain is inside it.
+pub fn run_stream(
+    flavor: Flavor,
+    dur: Duration,
+    pin: Option<(usize, usize)>,
+    depth: u32,
+) -> StreamResult {
+    unpin_current();
+    #[cfg(target_os = "linux")]
+    let fills = Fills::open();
+    let (msgs, secs) = match flavor {
+        Flavor::Spsc => stream_spsc(dur, pin, depth),
+        Flavor::SpscV1 => stream_spsc_v1(dur, pin, depth),
+        Flavor::SpscV2 => stream_spsc_v2(dur, pin, depth),
+        Flavor::Mpsc => stream_mpsc(dur, pin, depth),
+    };
+    #[cfg(target_os = "linux")]
+    let fills = fills.and_then(Fills::finish);
+    #[cfg(not(target_os = "linux"))]
+    let fills = None;
+    StreamResult { msgs, secs, fills }
+}
+
+/// The consumer side of a streaming cell: drain `recv` until
+/// the stop sentinel, asserting the counter's order, and
+/// return the count received.
+fn drain_stream(mut recv: impl FnMut() -> u64) -> u64 {
+    let mut expected: u64 = 0;
+    loop {
+        let v = recv();
+        if v == STOP {
+            return expected;
+        }
+        assert_eq!(v, expected, "stream order broken");
+        expected += 1;
+    }
+}
+
+/// Define an SPSC streaming cell body over the ring at `$ring`,
+/// its region sized by `$size(slot_size, depth)`: one ring,
+/// the producer spawned on `pin.0`, the consumer on `pin.1`.
+/// Returns the messages moved and the seconds.
+macro_rules! spsc_stream {
+    ($name:ident, $ring:path, $size:path) => {
+        fn $name(dur: Duration, pin: Option<(usize, usize)>, depth: u32) -> (u64, f64) {
+            use $ring as Ring;
+            let slot = CACHE_LINE_SIZE as u32;
+            let mut region = LineBuf::new($size(slot, depth));
+            let (mut tx, mut rx) = Ring::init(region.as_mut_bytes(), slot, depth)
+                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
+                .split();
+            let start = Instant::now();
+            let msgs = std::thread::scope(|s| {
+                s.spawn(move || {
+                    if let Some((p, _)) = pin {
+                        pin_to_cpu(p);
+                    }
+                    let mut counter: u64 = 0;
+                    loop {
+                        for _ in 0..STREAM_CHECK_EVERY {
+                            let mut slot = tx
+                                .reserve_slot_with::<u64>(zc_ring_x1::policy::spin)
+                                .expect("spin never gives up");
+                            *slot = counter;
+                            slot.commit();
+                            counter += 1;
+                        }
+                        if start.elapsed() >= dur {
+                            break;
+                        }
+                    }
+                    let mut slot = tx
+                        .reserve_slot_with::<u64>(zc_ring_x1::policy::spin)
+                        .expect("spin never gives up");
+                    *slot = STOP;
+                    slot.commit();
+                });
+                let consumer = s.spawn(move || {
+                    if let Some((_, c)) = pin {
+                        pin_to_cpu(c);
+                    }
+                    drain_stream(|| {
+                        let slot = rx
+                            .reserve_slot_with::<u64>(zc_ring_x1::policy::spin)
+                            .expect("spin never gives up");
+                        let v = *slot;
+                        slot.release();
+                        v
+                    })
+                });
+                consumer.join().expect("consumer panicked")
+            });
+            (msgs, start.elapsed().as_secs_f64())
+        }
+    };
+}
+
+spsc_stream!(stream_spsc, zc_ring_x1::spsc::v0::Ring, v0_region_size);
+spsc_stream!(
+    stream_spsc_v1,
+    zc_ring_x1::spsc::v1::Ring,
+    zc_ring_x1::spsc::v1::region_size
+);
+spsc_stream!(
+    stream_spsc_v2,
+    zc_ring_x1::spsc::v2::Ring,
+    zc_ring_x1::spsc::v2::region_size
+);
+
+/// MPSC streaming cell body: one `MpscRing` at 1p/1c, the
+/// producer `send_with` spawned on `pin.0`, the consumer on
+/// `pin.1`. Returns the messages moved and the seconds.
+fn stream_mpsc(dur: Duration, pin: Option<(usize, usize)>, depth: u32) -> (u64, f64) {
+    let slot = CACHE_LINE_SIZE as u32;
+    let mut region = LineBuf::new(mpsc_region_size(slot, depth));
+    let (tx, mut rx) = MpscRing::init(region.as_mut_bytes(), slot, depth)
+        .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
+        .split();
+    let start = Instant::now();
+    let msgs = std::thread::scope(|s| {
+        s.spawn(move || {
+            if let Some((p, _)) = pin {
+                pin_to_cpu(p);
+            }
+            let mut counter: u64 = 0;
+            loop {
+                for _ in 0..STREAM_CHECK_EVERY {
+                    tx.send_with::<u64>(zc_ring_x1::policy::spin, |m| *m = counter)
+                        .expect("spin never gives up");
+                    counter += 1;
+                }
+                if start.elapsed() >= dur {
+                    break;
+                }
+            }
+            tx.send_with::<u64>(zc_ring_x1::policy::spin, |m| *m = STOP)
+                .expect("spin never gives up");
+        });
+        let consumer = s.spawn(move || {
+            if let Some((_, c)) = pin {
+                pin_to_cpu(c);
+            }
+            drain_stream(|| {
+                let slot = rx
+                    .reserve_slot_with::<u64>(zc_ring_x1::policy::spin)
+                    .expect("spin never gives up");
+                let v = *slot;
+                slot.release();
+                v
+            })
+        });
+        consumer.join().expect("consumer panicked")
+    });
+    (msgs, start.elapsed().as_secs_f64())
 }

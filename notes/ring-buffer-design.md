@@ -975,8 +975,63 @@ travel on one line.
     streams within 1 ns pinned). u32 stays, the v1 width and
     the smaller word, and the layout version is fixed at it.
   - Open: the 7600X run, which is the other machine's to
-    paste in, and the streaming fill count, which the next
-    rung adds to test the line-independence reading directly.
+    paste in.
+- **Measured (2026-09-07, 3900X, the rung `feat: a streaming
+  cell with fill counts`, `tp-stream` 5 s cells)**: the
+  streaming cell, a producer thread streaming a counter for the
+  duration to a consumer thread over one ring, with the fill
+  counters open. ns per message and fills per message:
+
+    | placement | flavor  | d=1          | d=2          | d=8          | d=64         |
+    |-----------|---------|-------------:|-------------:|-------------:|-------------:|
+    | 0,1 CCX   | spsc    |  79.7 (6.27) |  57.8 (5.54) |  21.6 (2.71) |   9.6 (0.71) |
+    | 0,1 CCX   | spsc-v1 |  92.0 (4.56) |  54.1 (3.69) |  25.6 (1.60) |  22.7 (1.03) |
+    | 0,1 CCX   | spsc-v2 |  62.9 (2.00) |  31.6 (2.00) |   8.8 (0.87) |   4.9 (0.14) |
+    | 0,1 CCX   | mpsc    | -            |  54.3 (3.68) |  28.8 (1.85) |  21.8 (0.87) |
+    | 0,3 x-CCX | spsc    | 340.1 (6.31) | 207.3 (6.01) | 166.7 (4.71) | 193.3 (3.98) |
+    | 0,3 x-CCX | spsc-v1 | 404.6 (5.08) | 206.0 (3.94) |  85.7 (1.86) |  37.8 (0.51) |
+    | 0,3 x-CCX | spsc-v2 | 198.8 (2.00) | 103.6 (2.00) |  37.0 (1.44) |  13.9 (0.13) |
+    | 0,3 x-CCX | mpsc    | -            | 210.1 (3.91) | 113.4 (2.16) |  90.5 (1.57) |
+    | 0,12 SMT  | spsc    |  29.5        |  16.5        |   7.4        |   6.8        |
+    | 0,12 SMT  | spsc-v1 |  37.9        |  26.3        |  15.9        |  15.5        |
+    | 0,12 SMT  | spsc-v2 |  34.6        |  21.1        |  12.8        |  17.2        |
+    | 0,12 SMT  | mpsc    | -            |  23.3        |  15.2        |  15.0        |
+
+  - The line count while streaming, the number the round-trip
+    cell could not give: at depth 1 and 2 v2 moves exactly
+    2.00 lines per message, the slot line each way, the
+    prediction's figure. At depth 64 across the CCX it moves
+    0.13, and v1 0.51, both below one line per message, so
+    most slot lines are not demand-fetched at all. We think
+    the consumer's prefetcher pulls consecutive slot lines
+    ahead of demand, since consecutive slots are consecutive
+    lines, and v2 gains most because the slot line is the only
+    line it touches, while v1's seq line and v0's index lines
+    are written by both sides and cannot be prefetched into a
+    useful state.
+  - The demo's streams and this cell disagree on v0 and v1,
+    and the disagreement is a finding. Across the CCX at depth
+    64, v1 streams at 104 ns per message with 1.80 fills in a
+    plain counted loop (the demo's shape, and this cell's
+    with its clock check removed) and at 38 with 0.51 when the
+    producer reads the clock every 4096 sends. The same
+    hiccup leaves v0 at 130 to 190 and v2 at 14 either way. We
+    think v1 is bistable there: the two sides either write its
+    packed seq line in lockstep, one transfer each way per
+    message, or the producer runs ahead and the line moves in
+    bursts, and a periodic pause on the producer tips it into
+    the second regime. Every earlier v1 streaming figure in
+    this note is the lockstep regime.
+  - The poll's cost matters too: an out-of-line spin policy
+    (the runner's, called from another crate) put v2's
+    cross-CCX stream at 31 against 14 with the crate's inline
+    `policy::spin`, which the cell now uses. Run length, the
+    thread shape, the fill counters, the payload width, and a
+    fat-LTO build were each tried and moved nothing of that
+    size.
+  - Within an L3 v2 at depth 64 streams at 4.9 ns per message
+    with 0.14 fills, twice v0's rate. At the SMT pair, where
+    no line crosses, v0 keeps its 2x over every seq protocol.
 
 ## Messaging layer: pools and descriptor queues
 

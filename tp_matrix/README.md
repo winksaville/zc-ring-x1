@@ -2,8 +2,8 @@
 
 Measure what a cross-thread message handoff over the
 zc-ring-x1 ring queues actually costs — and where the cost
-lives — with two installable binaries: `tp-cell` and
-`tp-matrix`.
+lives — with three installable binaries: `tp-cell`,
+`tp-matrix`, and `tp-stream`.
 
 ## The measurement, in one paragraph
 
@@ -65,6 +65,44 @@ and why": e.g. on a Zen 2 the SPSC ring moves ~10 cache lines
 per round trip to the MPSC ring's ~6.7 and loses cross-core —
 but wins on SMT siblings where no lines cross (see
 `notes/chores/chores-02.md` for the full analysis).
+
+## tp-stream — the streaming matrix
+
+The round-trip cell keeps one message in flight, so it cannot
+say what a ring costs per message when the producer runs ahead
+and the ring holds many. `tp-stream` runs the other shape over
+the same flavors, placements, and depths: a producer thread
+streams a counter as fast as the ring admits for the duration,
+a consumer thread drains and checks the order, and the fill
+counters divided by the messages moved give the cross-core
+line fills per message while streaming.
+
+```sh
+$ tp-stream -d 5 --depth 1,2,8,64
+tp-stream 0.1.0 - run the streaming matrix, one markdown table out
+...
+| placement | flavor  | depth | ns/msg |   msgs | fills/msg |
+|-----------|---------|------:|-------:|-------:|----------:|
+| 0,3 x-CCX | spsc-v1 |    64 |   37.4 | 133.8M |     0.491 |
+| 0,3 x-CCX | spsc-v2 |    64 |   14.3 | 350.1M |     0.132 |
+```
+
+Two things the streaming number is sensitive to, found while
+building the cell and worth knowing before comparing runs:
+
+- The wait policy's inlining: the cell uses the ring crate's
+  `policy::spin`, which is `#[inline]`, and an out-of-line
+  spin from another crate moved the v2 cross-CCX line from 14
+  to 31 ns per message. A poll's cost sets how soon a side
+  re-reads a line the other side is writing.
+- The producer's loop shape: the cell checks the clock every
+  4096 sends, and that check alone moves the v1 cross-CCX line
+  from 104 ns per message (1.8 fills) in a plain counted loop
+  to about 40 (0.6 fills). v1 is bistable there: the two sides
+  either write its packed seq line in lockstep or the producer
+  runs ahead in bursts, and a periodic hiccup on the producer
+  tips it into the second. v0 and v2 read the same in both
+  loop shapes. The demo's stream lines are the plain loop.
 
 ## tp-cell — one cell, under the microscope
 

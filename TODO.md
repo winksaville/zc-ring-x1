@@ -58,7 +58,7 @@ with a why paragraph per placement, the fence probe's result, and the seq width 
 - [feat: spsc v2 as a fourth flavor][4] (done)
 - [perf: probe a fence after the v1 commit][5] (done)
 - [perf: measure spsc v2 across depths][6] (done)
-- [feat: a streaming cell with fill counts][7]
+- [feat: a streaming cell with fill counts][7] (done)
 - [docs: sweep punctuation in the touched files][8]
 - [feat: in-slot seq SPSC v2 closing][9]
 
@@ -205,6 +205,28 @@ seq width, and records the tables and their why in the design note.
 
 The streaming lines carry no fill counts. The rung adds a `tp-matrix` streaming cell that counts
 fills per message, and records what it shows.
+
+* The demo's streams had no fill counter and the round-trip cell has no streaming.
+  - `run_stream` in `tp_matrix` streams a counter from a spawned producer to a spawned consumer for
+    the duration over one ring, both pinned as the placement says, with the fill counters open
+    around the run, and `tp-stream` tables it over every flavor, placement, and depth as ns per
+    message, messages moved, and fills per message.
+* The cell's first numbers disagreed with the demo's, v2 slower and v1 faster, and the rung had to
+  find out why before recording anything.
+  - Run length, the thread shape, the fill counters, the payload width, and the crate boundary
+    (fat LTO) were each tried and struck. Two variables remained, both measured.
+  - The wait policy's inlining: the runner's `spin` is not `#[inline]` and is called from another
+    crate, and that alone put v2's cross-CCX stream at 31 ns against 14 with the crate's inline
+    `policy::spin`. The cell now uses the crate's.
+  - The producer's loop shape: the cell's clock check every 4096 sends moves v1's cross-CCX
+    stream from 104 ns per message at 1.8 fills, the demo's plain loop, to about 40 at 0.6. v1 is
+    bistable there, lockstep on its packed seq line or the producer running ahead in bursts, and
+    a periodic hiccup tips it. v0 and v2 read the same in both shapes.
+* The streaming fill counts answer the measurement rung's open question.
+  - v2 across the CCX moves 0.13 lines per message at depth 64, far below the two the prediction
+    feared and below one, so the slot lines are not demand-fetched at all for most messages. We
+    think the consumer's prefetcher pulls consecutive slot lines ahead of demand, since consecutive
+    slots are consecutive lines, and that is the line independence the measurement rung named.
 
 ##### docs: sweep punctuation in the touched files
 
