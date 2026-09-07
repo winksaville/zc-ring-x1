@@ -1,5 +1,5 @@
 # Local dev crate: the phase-probed ring round-trip cells and
-# their two binaries — tp-cell (one cell, human-readable
+# their two binaries: tp-cell (one cell, human-readable
 # reports) and tp-matrix (every cell, markdown tables).
 # Installable: cargo install --path tp_matrix
 [package]

@@ -1,8 +1,8 @@
 # tp_matrix
 
 Measure what a cross-thread message handoff over the
-zc-ring-x1 ring queues actually costs — and where the cost
-lives — with three installable binaries: `tp-cell`,
+zc-ring-x1 ring queues actually costs (and where the cost
+lives), with three installable binaries: `tp-cell`,
 `tp-matrix`, and `tp-stream`.
 
 ## The measurement, in one paragraph
@@ -13,32 +13,32 @@ it back over a second ring, as fast as the two threads can go
 for a fixed duration (one message in flight, so every trip is
 a fresh handoff). Every protocol phase is bracketed by two
 hardware tick-counter reads and recorded into its own
-histogram: the sends (`reserve + fill + commit` — the
+histogram: the sends (`reserve + fill + commit`, the
 producer's cost of placing a message), the recvs (spin wait
 for arrival + read + release), and inside each recv the spin
 wait itself plus how many polls it took. On Linux the process
 also counts its own cross-core cache-line fills via
 `perf_event_open` (per-process, worker threads inherited,
-user-mode only — no perf(1), root, bash, or scraping), which
+user-mode only, no perf(1), root, bash, or scraping), which
 is the hardware's answer to "how many cache lines crossed
 between the cores per round trip". A cell varies along two
 axes: **flavor** (the SPSC v0 ring, the SPSC v1 seam-word
 ring, the SPSC v2 in-slot seq ring, and the MPSC sibling at
 1p/1c)
-and **placement** (which CPUs the two threads sit on — same
+and **placement** (which CPUs the two threads sit on, same
 L3, different L3, SMT siblings, or unpinned).
 
-## tp-matrix — the whole picture, one command
+## tp-matrix: the whole picture, one command
 
 Runs *every* flavor × placement cell (placements discovered
 from `/sys` CPU topology) and prints two markdown tables
 ready to paste into notes:
 
-- **Phase costs** — per cell: `m.send`, `w.recv`, `w.send`,
+- **Phase costs**, per cell: `m.send`, `w.recv`, `w.send`,
   `m.recv` (each `mean/stdev` of the trimmed min-p99 band),
   round trips completed, and `fills/RT`.
-- **Spin decomposition** — the wait inside each recv:
-  `spin` (first failed poll → message visible) and `att`
+- **Spin decomposition**, the wait inside each recv:
+  `spin` (first failed poll -> message visible) and `att`
   (polls per waiting reserve), per side, plus `fills/RT`.
 
 ```sh
@@ -62,11 +62,11 @@ skipped with a note.
 
 This is the tool that answers "which flavor is faster here,
 and why": e.g. on a Zen 2 the SPSC ring moves ~10 cache lines
-per round trip to the MPSC ring's ~6.7 and loses cross-core —
+per round trip to the MPSC ring's ~6.7 and loses cross-core,
 but wins on SMT siblings where no lines cross (see
 `notes/chores/chores-02.md` for the full analysis).
 
-## tp-stream — the streaming matrix
+## tp-stream: the streaming matrix
 
 The round-trip cell keeps one message in flight, so it cannot
 say what a ring costs per message when the producer runs ahead
@@ -104,13 +104,13 @@ building the cell and worth knowing before comparing runs:
   tips it into the second. v0 and v2 read the same in both
   loop shapes. The demo's stream lines are the plain loop.
 
-## tp-cell — one cell, under the microscope
+## tp-cell: one cell, under the microscope
 
 Runs a single placement (your `--pin` choice, or unpinned)
 and prints the *full* per-probe percentile band tables that
-the matrix summarizes to `mean/stdev` — min/p1/…/p99/max rows
-with first/last/range/count/mean columns — plus the raw fill
-counters:
+the matrix summarizes to `mean/stdev` (min/p1/.../p99/max
+rows with first/last/range/count/mean columns), plus the raw
+fill counters:
 
 ```sh
 $ tp-cell spsc -d 5 --pin 0,1
@@ -134,7 +134,7 @@ cargo test --workspace
 cargo install --path tp_matrix   # installs tp-cell + tp-matrix
 ```
 
-`-h` for a summary of the flags, `--help` for details; both
+`-h` for a summary of the flags, `--help` for details. Both
 print the `name version - tagline` banner first, as does
 every run (so saved output identifies the build it came
 from).
@@ -142,13 +142,13 @@ from).
 ## Requirements and caveats
 
 - Fill counters need `kernel.perf_event_paranoid ≤ 2` (the
-  usual default — self-profiling only). Without them the
-  tools still run; `fills` reports unavailable.
+  usual default, self-profiling only). Without them the
+  tools still run, and `fills` reports unavailable.
 - The fill events are AMD Zen 2 raw encodings, A/B-verified
-  against `perf stat`; other microarchitectures need their
+  against `perf stat`. Other microarchitectures need their
   own encodings in `tp_runner::perf`.
 - Non-Linux builds run unpinned without counters.
 - The crates: probes are `tprobe`, generic runner machinery
-  (CLI, pinning, drive loop, perf, topology) is `tp_runner`;
-  this crate holds only the ring-aware cells and the two
+  (CLI, pinning, drive loop, perf, topology) is `tp_runner`.
+  This crate holds only the ring-aware cells and the two
   binaries.

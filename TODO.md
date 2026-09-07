@@ -59,7 +59,7 @@ with a why paragraph per placement, the fence probe's result, and the seq width 
 - [perf: probe a fence after the v1 commit][5] (done)
 - [perf: measure spsc v2 across depths][6] (done)
 - [feat: a streaming cell with fill counts][7] (done)
-- [docs: sweep punctuation in the touched files][8]
+- [docs: sweep punctuation in the touched files][8] (done)
 - [feat: in-slot seq SPSC v2 closing][9]
 
 #### Deliberation
@@ -82,6 +82,9 @@ with a why paragraph per placement, the fence probe's result, and the seq width 
   same matrix.
 - Punctuation: the demo, the `tp_matrix` sources, and the v1 sources carry banned characters, so
   touching them owes the conversion, paid in the penultimate rung as the prose rule says.
+- The design note is left out of the punctuation sweep: some 190 banned characters is a rewrite,
+  which the prose rule makes its own cycle, so a `## Todo` entry carries it and the rung converts
+  the sources and the tool README, which are repunctuation.
 - Waiver: the user's delegation of 2026-09-07, "you have permission to complete this cycle,
   including commits and pushes, but leave it on the branch", covers every push from the bookmark
   through the closing and the per-rung review stops, and does not cover Land, which waits on the
@@ -232,6 +235,14 @@ fills per message, and records what it shows.
 
 The files the cycle touched carry banned characters and prose semicolons. The rung converts them.
 
+* The touched sources, the runner and cell crates, the tool README, and the manifests carried
+  dashes, arrows, and prose semicolons in their comments and prose.
+  - Each is converted by the prose rule's joins, a colon for a term and its definition, a comma or
+    two sentences for an aside, `->` for an arrow, and the code and transcribed tool output are
+    untouched. Two headings in the tool README lose their dash and take the colon form.
+* The design note's count is a rewrite.
+  - It goes to `## Todo` as its own cycle, as the rule says, and stays as it is here.
+
 ##### feat: in-slot seq SPSC v2 closing
 
 Closing out the cycle.
@@ -272,6 +283,14 @@ The demo's "diff cores" pair is the first cpu outside cpu0's L3, cross-L3 on the
 on the 7600X, so the two machines' lines with the same label were different experiments. The picker
 wants a same-L3 placement and a cross-L3 one, each labelled by what it is, and the same for
 `tp-matrix`'s placements.
+
+### Sweep punctuation in the design note
+
+`notes/ring-buffer-design.md` carries some 190 banned characters and its share of prose
+semicolons, and the in-slot seq cycle touched it without paying them, since a count that size is a
+rewrite rather than a repunctuation and the prose rule makes that its own cycle ([Typeable
+punctuation only](agent-data/prose.md#typeable-punctuation-only)). Convert the file whole, re-point
+the inbound links of any heading whose anchor moves, and touch nothing else.
 
 ### Descriptor queue endpoints
 

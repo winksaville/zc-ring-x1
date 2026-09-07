@@ -19,14 +19,14 @@ pub struct Producer<'a> {
     slots: *mut u8,
     /// Geometry snapshot (see [`Ring`](super::Ring)).
     slot_size: u32,
-    /// Geometry snapshot; commit stores `pos + capacity + 1`.
+    /// Geometry snapshot: commit stores `pos + capacity + 1`.
     capacity: u32,
     /// Slot-position mask (`capacity - 1`).
     mask: u32,
     _region: PhantomData<&'a [u8]>,
 }
 
-// SAFETY: the handle owns the producer role; the shared state it
+// SAFETY: the handle owns the producer role. The shared state it
 // touches (the slot seqs, its index) is atomic, and slot writes
 // are handed off with Release/Acquire ordering.
 unsafe impl Send for Producer<'_> {}
@@ -74,7 +74,7 @@ impl<'a> Producer<'a> {
     ///   [`WriteSlot`](crate::WriteSlot): one reservation at a
     ///   time, drop without commit abandons it.
     /// - `on_full` is called after each failed attempt with
-    ///   the attempt count (0-based, saturating); returning
+    ///   the attempt count (0-based, saturating). Returning
     ///   `false` gives up. Pass `|_| false` for a single
     ///   non-blocking probe.
     pub fn reserve_slot_with<T>(
@@ -148,7 +148,7 @@ impl<T> Deref for WriteSlot<'_, T> {
 impl<T> DerefMut for WriteSlot<'_, T> {
     /// Write access to the in-slot message.
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as in deref; &mut self gives exclusivity of
+        // SAFETY: as in deref. &mut self gives exclusivity of
         // the minted reference.
         unsafe { &mut *self.msg }
     }

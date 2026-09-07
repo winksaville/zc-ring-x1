@@ -974,8 +974,36 @@ travel on one line.
     beyond run noise (trips within 5%, sends within 1 ns,
     streams within 1 ns pinned). u32 stays, the v1 width and
     the smaller word, and the layout version is fixed at it.
-  - Open: the 7600X run, which is the other machine's to
-    paste in.
+  - The 7600X (Zen 4, one CCD, six cores under one L3), the
+    demo at the same build, pasted in by the user 2026-09-07.
+    The lines at depth 64, ns per message: single thread v0
+    2.1, v1 6.1, v2 5.7, MPSC 7.2. Diff cores 0+1 (same L3)
+    v0 6.9, v1 19.1, v2 3.3, MPSC 17.5. Same core 0+6 v0 6.3,
+    v1 13.7, v2 4.7, MPSC 13.3. The sweep:
+
+    | placement          | flavor  |   d=1 |   d=2 |   d=8 |  d=64 |
+    |--------------------|---------|------:|------:|------:|------:|
+    | 1t core 0          | spsc    |   2.1 |   2.1 |   2.1 |   2.1 |
+    | 1t core 0          | spsc-v1 |   6.4 |   6.2 |   6.0 |   6.0 |
+    | 1t core 0          | spsc-v2 |   5.5 |   5.6 |   5.6 |   5.4 |
+    | 1t core 0          | mpsc    |     - |   6.4 |   6.7 |   6.8 |
+    | 2t diff cores 0+1  | spsc    |  63.5 |  39.0 |  11.6 |   6.3 |
+    | 2t diff cores 0+1  | spsc-v1 |  75.9 |  43.6 |  17.8 |  17.0 |
+    | 2t diff cores 0+1  | spsc-v2 |  40.8 |  24.1 |   7.0 |   3.4 |
+    | 2t diff cores 0+1  | mpsc    |     - |  37.6 |  17.9 |  15.7 |
+    | 2t same core 0+6   | spsc    |  27.8 |  14.7 |   5.3 |   5.8 |
+    | 2t same core 0+6   | spsc-v1 |  43.6 |  24.2 |  13.3 |  12.3 |
+    | 2t same core 0+6   | spsc-v2 |  26.1 |  10.7 |   4.7 |   4.3 |
+    | 2t same core 0+6   | mpsc    |     - |  22.6 |  12.7 |  12.0 |
+
+    So the picture that reversed between the machines for v1
+    does not reverse for v2: within the 7600X's one L3, where
+    v0 beat v1 by 2.5x, v2 beats v0 at every depth from 2 up,
+    3.4 against 6.3 ns at 64, and at the SMT pair it matches
+    or beats v0 from depth 2 up, the one place the 3900X gave
+    v0 a tie. Single-threaded v0 keeps its lead on both, and
+    at depth 1 the two are within run noise of each other on
+    the 7600X and v2 is ahead on the 3900X.
 - **Measured (2026-09-07, 3900X, the rung `feat: a streaming
   cell with fill counts`, `tp-stream` 5 s cells)**: the
   streaming cell, a producer thread streaming a counter for the

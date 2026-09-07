@@ -1,12 +1,12 @@
 //! tp-matrix: run every flavor × placement round-trip cell and
-//! emit the two markdown tables (phase costs; spin
-//! decomposition) ready to paste — the one-command replacement
+//! emit the two markdown tables (phase costs, spin
+//! decomposition) ready to paste, the one-command replacement
 //! for the perf(1)-and-scrape recipe.
 //!
 //! Placements are discovered from the CPU topology
 //! ([`tp_runner::topo`]): same cache domain, cross cache
-//! domain, SMT siblings, unpinned — whichever the machine has.
-//! Cells run sequentially in this process; each cell re-pins
+//! domain, SMT siblings, unpinned, whichever the machine has.
+//! Cells run sequentially in this process. Each cell re-pins
 //! (or unpins) the threads and collects its own fill counters.
 
 use clap::Parser;
@@ -16,7 +16,7 @@ use tp_runner::topo::{Placement, discover_placements};
 use tp_runner::{Cfg, CommonArgs};
 use tprobe::{TProbe, ticks};
 
-/// Banner: name, version, and tagline on one line — the first
+/// Banner: name, version, and tagline on one line, the first
 /// line of every run and of `-h`/`--help`.
 const TOP_ABOUT: &str = concat!(
     "tp-matrix ",
@@ -43,7 +43,7 @@ const M_SPIN: usize = 6;
 const M_ATT: usize = 7;
 
 /// One table cell: `mean/stdev` of the probe's trimmed min-p99
-/// band — ns by default, raw ticks under `-t`, raw counts for
+/// band, ns by default, raw ticks under `-t`, raw counts for
 /// an attempts probe.
 fn stat_cell(p: &TProbe, cfg: &Cfg) -> String {
     let Some((mean, stdev)) = p.trimmed_stats() else {
@@ -59,7 +59,7 @@ fn stat_cell(p: &TProbe, cfg: &Cfg) -> String {
 }
 
 /// `fills/RT` cell: 3 decimals, or 4 when the value is tiny
-/// (the SMT cells); `-` when counters were unavailable.
+/// (the SMT cells), `-` when counters were unavailable.
 fn fills_cell(res: &CellResult) -> String {
     match &res.fills {
         Some(f) => {
@@ -79,8 +79,8 @@ fn rts_cell(res: &CellResult) -> String {
     format!("{:.1}M", res.rts as f64 / 1e6)
 }
 
-/// Print `rows` as an aligned markdown table under `headers`;
-/// the first two columns left-aligned, the rest right-aligned.
+/// Print `rows` as an aligned markdown table under `headers`.
+/// The first two columns left-aligned, the rest right-aligned.
 /// The depth column is numeric, so it takes the right side.
 fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     let mut w: Vec<usize> = headers.iter().map(|h| h.len()).collect();

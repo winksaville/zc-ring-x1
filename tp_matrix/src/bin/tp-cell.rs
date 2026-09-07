@@ -1,5 +1,5 @@
 //! tp-cell: run one phase-probed round-trip cell and print the
-//! probe reports — the single-cell tool (the matrix's sibling,
+//! probe reports, the single-cell tool (the matrix's sibling,
 //! see `tp-matrix`).
 //!
 //! Successor of the repo's earlier `tp_roundtrip` example, plus
@@ -13,7 +13,7 @@ use tp_matrix::{FLAVORS, Flavor, run_cell};
 use tp_runner::{CommonArgs, parse_pin, report};
 use tprobe::fmt::fmt_commas;
 
-/// Banner: name, version, and tagline on one line — the first
+/// Banner: name, version, and tagline on one line, the first
 /// line of every run and of `-h`/`--help`.
 const TOP_ABOUT: &str = concat!(
     "tp-cell ",

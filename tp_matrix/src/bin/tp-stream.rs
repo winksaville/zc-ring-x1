@@ -28,7 +28,7 @@ struct Cli {
 }
 
 /// `fills/msg` cell: 3 decimals, or 4 when the value is tiny
-/// (the SMT cells); `-` when counters were unavailable.
+/// (the SMT cells), `-` when counters were unavailable.
 fn fills_cell(res: &StreamResult) -> String {
     match &res.fills {
         Some(f) => {
@@ -43,8 +43,8 @@ fn fills_cell(res: &StreamResult) -> String {
     }
 }
 
-/// Print `rows` as an aligned markdown table under `headers`;
-/// the first two columns left-aligned, the rest right-aligned.
+/// Print `rows` as an aligned markdown table under `headers`.
+/// The first two columns left-aligned, the rest right-aligned.
 fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     let mut w: Vec<usize> = headers.iter().map(|h| h.len()).collect();
     for row in rows {

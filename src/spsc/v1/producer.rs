@@ -43,14 +43,14 @@ pub struct Producer<'a> {
     slots: *mut u8,
     /// Geometry snapshot (see [`Ring`](super::Ring)).
     slot_size: u32,
-    /// Geometry snapshot; commit stores `pos + capacity + 1`.
+    /// Geometry snapshot: commit stores `pos + capacity + 1`.
     capacity: u32,
     /// Slot-position mask (`capacity - 1`).
     mask: u32,
     _region: PhantomData<&'a [u8]>,
 }
 
-// SAFETY: the handle owns the producer role; the shared state it
+// SAFETY: the handle owns the producer role. The shared state it
 // touches (seqs, its index) is atomic, and slot writes are
 // handed off with Release/Acquire ordering.
 unsafe impl Send for Producer<'_> {}
@@ -77,7 +77,7 @@ impl<'a> Producer<'a> {
         }
     }
 
-    /// The header's app-owned scratch line — same contract as
+    /// The header's app-owned scratch line: same contract as
     /// the v0 endpoints' `user()`.
     pub fn user(&self) -> &[AtomicU32; USER_WORDS] {
         &self.header.user
@@ -96,7 +96,7 @@ impl<'a> Producer<'a> {
 
     /// Reserve the next free slot as a `&mut T`, applying an
     /// injected wait policy: retry until the slot frees up or
-    /// the policy gives up → [`Full`].
+    /// the policy gives up -> [`Full`].
     ///
     /// - The slot at `p` is free when `seq == p`: the consumer
     ///   released the previous lap by storing `pos + M`, which
@@ -110,8 +110,8 @@ impl<'a> Producer<'a> {
     ///   [`WriteSlot`](crate::WriteSlot): one reservation at a
     ///   time, drop without commit abandons it.
     /// - `on_full` is called after each failed attempt with
-    ///   the attempt count (0-based, saturating); returning
-    ///   `false` gives up → `Err(Full)`. Pass `|_| false`
+    ///   the attempt count (0-based, saturating). Returning
+    ///   `false` gives up -> `Err(Full)`. Pass `|_| false`
     ///   for a single non-blocking probe.
     pub fn reserve_slot_with<T>(
         &mut self,
@@ -136,7 +136,7 @@ impl<'a> Producer<'a> {
             }
             attempt = attempt.saturating_add(1);
         }
-        // Raw pointer, not `&mut T` — same argument-protector
+        // Raw pointer, not `&mut T`: same argument-protector
         // rationale as v0's WriteSlot.
         let msg = slot_ptr(self.slots, p, self.mask, self.slot_size) as *mut T;
         Ok(WriteSlot {
@@ -157,7 +157,7 @@ pub struct WriteSlot<'p, T> {
     header: &'p Header,
     /// The reserved slot's seq word (for the commit store).
     seq: &'p AtomicU32,
-    /// The slot, viewed as the message type. Raw on purpose —
+    /// The slot, viewed as the message type. Raw on purpose:
     /// see v0's `WriteSlot`.
     msg: *mut T,
     /// Value `producer_idx` takes on commit.
@@ -187,7 +187,7 @@ impl<T> Deref for WriteSlot<'_, T> {
 impl<T> DerefMut for WriteSlot<'_, T> {
     /// Write access to the in-slot message.
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as in deref; &mut self gives exclusivity of
+        // SAFETY: as in deref. &mut self gives exclusivity of
         // the minted reference.
         unsafe { &mut *self.msg }
     }
@@ -196,8 +196,8 @@ impl<T> DerefMut for WriteSlot<'_, T> {
 impl<T> WriteSlot<'_, T> {
     /// Publish the slot to the consumer.
     ///
-    /// - `producer_idx` first (`Relaxed` — producer-private
-    ///   resume state), the seq store last (`Release` — the
+    /// - `producer_idx` first (`Relaxed`: producer-private
+    ///   resume state), the seq store last (`Release`: the
     ///   protocol-visible handoff the consumer acquires).
     pub fn commit(self) {
         self.header

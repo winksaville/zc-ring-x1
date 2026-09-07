@@ -45,7 +45,7 @@ struct SeqRegion(
 
 /// Pin the calling thread to `cpu`, as the demo does.
 fn pin_to_cpu(cpu: usize) {
-    // SAFETY: cpu_set_t is a plain bitmask; CPU_ZERO/CPU_SET
+    // SAFETY: cpu_set_t is a plain bitmask. CPU_ZERO/CPU_SET
     // initialize it fully before sched_setaffinity reads it.
     unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();

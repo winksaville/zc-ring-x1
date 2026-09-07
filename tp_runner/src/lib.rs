@@ -2,27 +2,27 @@
 //! config, thread pinning, and a fixed-duration round-trip
 //! drive loop over injected send/recv closures.
 //!
-//! - [`Cfg`] / [`CommonArgs`] — the runtime configuration and
+//! - [`Cfg`] / [`CommonArgs`]: the runtime configuration and
 //!   the shared clap flags (`-d`/`--duration`, `-t`/`--ticks`,
 //!   `--decimals <n>`, `--depth <list>`) the binaries flatten
-//!   into their own `Parser` structs; [`parse_pin`] for a
+//!   into their own `Parser` structs. [`parse_pin`] parses a
 //!   `--pin MAIN,WORKER` value.
-//! - [`LineBuf`] — a cache-line-aligned heap region sized at
+//! - [`LineBuf`]: a cache-line-aligned heap region sized at
 //!   runtime, so a cell's ring depth is a parameter rather
 //!   than a const.
-//! - [`pin_to_cpu`] — sched_setaffinity pinning (Linux; no-op
+//! - [`pin_to_cpu`]: sched_setaffinity pinning (Linux, no-op
 //!   stub elsewhere).
-//! - [`drive`] — the round-trip loop: send a counter, receive
-//!   the echo; probing lives in the caller's closures.
-//! - [`report`] — flavor header + the phase reports in trip
+//! - [`drive`]: the round-trip loop: send a counter, receive
+//!   the echo. Probing lives in the caller's closures.
+//! - [`report`]: flavor header + the phase reports in trip
 //!   order.
-//! - [`perf`] (Linux) — per-process hardware event counters
+//! - [`perf`] (Linux): per-process hardware event counters
 //!   via `perf_event_open`, for cache-fill counting inside
 //!   measurement cells.
 //!
 //! Deliberately not a benchmark harness: no adaptive loop
-//! sizing, overhead calibration, or bench registry — for that
-//! scale of machinery use iiac-perf.
+//! sizing, overhead calibration, or bench registry. For that
+//! scale of machinery, use iiac-perf.
 
 #[cfg(target_os = "linux")]
 pub mod perf;
@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use tprobe::TProbe;
 
-/// Sentinel available to callers as a shutdown message;
+/// Sentinel available to callers as a shutdown message.
 /// [`drive`]'s counter skips it so payload values never
 /// collide with it.
 pub const STOP: u64 = u64::MAX;
@@ -102,8 +102,9 @@ pub struct Cfg {
     pub decimals: usize,
 }
 
-/// The CLI flags shared by the probed measurement binaries;
-/// `#[command(flatten)]` into each binary's `Parser` struct.
+/// The CLI flags shared by the probed measurement binaries,
+/// flattened via `#[command(flatten)]` into each binary's
+/// `Parser` struct.
 #[derive(clap::Args, Debug)]
 pub struct CommonArgs {
     /// Wall-clock seconds per cell (each flavor × placement
@@ -118,7 +119,7 @@ pub struct CommonArgs {
 
     /// Report raw TSC ticks instead of nanoseconds
     ///
-    /// Probes store hardware tick deltas; by default reports
+    /// Probes store hardware tick deltas. By default, reports
     /// convert them to ns via the calibrated ticks-per-ns
     /// ratio. This flag shows the stored ticks unconverted.
     #[arg(short = 't', long)]
@@ -129,7 +130,7 @@ pub struct CommonArgs {
     pub decimals: usize,
 
     /// Ring depths (slots per ring) to run, comma-separated
-    /// powers of two; every cell repeats per depth
+    /// powers of two. Every cell repeats per depth
     ///
     /// One message is ever in flight in a round-trip cell, so
     /// the depth changes how many seq words share a line and,
@@ -188,12 +189,12 @@ pub fn parse_pin(s: &str) -> Result<(usize, usize), String> {
     Ok((m, w))
 }
 
-/// Pin the calling thread to `cpu` via sched_setaffinity;
-/// panics on failure (a run with a silently ignored pin would
+/// Pin the calling thread to `cpu` via sched_setaffinity.
+/// Panics on failure (a run with a silently ignored pin would
 /// report a mislabeled number).
 #[cfg(target_os = "linux")]
 pub fn pin_to_cpu(cpu: usize) {
-    // SAFETY: cpu_set_t is a plain bitmask; CPU_ZERO/CPU_SET
+    // SAFETY: cpu_set_t is a plain bitmask. CPU_ZERO/CPU_SET
     // initialize it fully before sched_setaffinity reads it.
     unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
@@ -208,12 +209,12 @@ pub fn pin_to_cpu(cpu: usize) {
 #[cfg(not(target_os = "linux"))]
 pub fn pin_to_cpu(_cpu: usize) {}
 
-/// Reset the calling thread's affinity to every online CPU —
+/// Reset the calling thread's affinity to every online CPU:
 /// the undo for [`pin_to_cpu`], needed when one process runs
 /// pinned and unpinned cells in sequence.
 #[cfg(target_os = "linux")]
 pub fn unpin_current() {
-    // SAFETY: cpu_set_t is a plain bitmask; CPU_ZERO/CPU_SET
+    // SAFETY: cpu_set_t is a plain bitmask. CPU_ZERO/CPU_SET
     // initialize it fully before sched_setaffinity reads it.
     unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
@@ -244,7 +245,7 @@ pub fn spin(_attempt: u32) -> bool {
 /// iterations). The counter skips [`STOP`] so callers can use
 /// it as a shutdown sentinel afterwards.
 ///
-/// All probing lives in the closures — the loop itself
+/// All probing lives in the closures. The loop itself
 /// measures nothing, so callers control exactly what each
 /// probe brackets (and record into their histograms *after*
 /// their phase-end tick reads, off the measured path).
@@ -268,8 +269,8 @@ pub fn drive(dur: Duration, mut send: impl FnMut(u64), mut recv: impl FnMut() ->
 }
 
 /// Print one flavor's header, then its phase reports in the
-/// order given (conventionally trip order: main send → worker
-/// recv → worker send → main recv).
+/// order given (conventionally trip order: main send -> worker
+/// recv -> worker send -> main recv).
 pub fn report(flavor: &str, cfg: &Cfg, depth: u32, probes: impl IntoIterator<Item = TProbe>) {
     let pin = match cfg.pin {
         Some((m, w)) => format!("main={m},worker={w}"),

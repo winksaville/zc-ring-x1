@@ -20,14 +20,14 @@ pub struct Consumer<'a> {
     slots: *mut u8,
     /// Geometry snapshot (see [`Ring`](super::Ring)).
     slot_size: u32,
-    /// Geometry snapshot; release stores `pos + capacity`.
+    /// Geometry snapshot: release stores `pos + capacity`.
     capacity: u32,
     /// Slot-position mask (`capacity - 1`).
     mask: u32,
     _region: PhantomData<&'a [u8]>,
 }
 
-// SAFETY: the handle owns the consumer role; see the Producer
+// SAFETY: the handle owns the consumer role. See the Producer
 // Send rationale.
 unsafe impl Send for Consumer<'_> {}
 
@@ -70,7 +70,7 @@ impl<'a> Consumer<'a> {
     ///   one reservation at a time, drop without release
     ///   re-delivers the same slot.
     /// - `on_empty` is called after each failed attempt with
-    ///   the attempt count (0-based, saturating); returning
+    ///   the attempt count (0-based, saturating). Returning
     ///   `false` gives up. Pass `|_| false` for a single
     ///   non-blocking probe.
     pub fn reserve_slot_with<T>(

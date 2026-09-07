@@ -1,21 +1,21 @@
 //! Phase-probed 1p/1c round-trip measurement cells over the
 //! zc-ring-x1 primitives.
 //!
-//! One **cell** is a main → worker → main round trip at a given
-//! ring flavor and thread placement, driven for a fixed
-//! duration; each protocol phase is measured by its own
+//! One **cell** is a main -> worker -> main round trip at a
+//! given ring flavor and thread placement, driven for a fixed
+//! duration. Each protocol phase is measured by its own
 //! [`TProbe`] and, on Linux, the cross-core cache-fill counters
 //! are collected in-process (no perf(1) needed):
 //!
-//! - `main send` / `worker send` — the producer's reserve +
+//! - `main send` / `worker send`: the producer's reserve +
 //!   fill + commit, including any stall acquiring peer-written
 //!   cache lines. The ring is never full here (one message in
 //!   flight, at any depth from 1 up), so no send ever waits
 //!   for space.
-//! - `worker recv` / `main recv` — the consumer's spin wait +
-//!   read + release; these absorb the in-flight half trip.
-//! - `… recv spin` / `… recv attempts` — the wait inside the
-//!   recv phase, decomposed: spin time (first failed attempt →
+//! - `worker recv` / `main recv`: the consumer's spin wait +
+//!   read + release. These absorb the in-flight half trip.
+//! - `... recv spin` / `... recv attempts`: the wait inside the
+//!   recv phase, decomposed: spin time (first failed attempt ->
 //!   reserve success) and the attempt count, recorded only for
 //!   reserves that actually waited.
 //!
@@ -26,10 +26,12 @@
 //! many lines crossed per message while streaming, the number
 //! the round-trip cell cannot give.
 //!
-//! The binaries: `tp-cell` runs one cell and prints the probe
-//! reports; `tp-matrix` runs every flavor × placement cell and
-//! emits markdown tables; `tp-stream` runs the streaming cell
-//! over the same matrix.
+//! The binaries:
+//!
+//! - `tp-cell` runs one cell and prints the probe reports.
+//! - `tp-matrix` runs every flavor × placement cell and emits
+//!   markdown tables.
+//! - `tp-stream` runs the streaming cell over the same matrix.
 
 use std::time::{Duration, Instant};
 
@@ -88,10 +90,10 @@ impl Flavor {
     }
 }
 
-/// The cache-fill counter totals for one cell (Linux; `None`
+/// The cache-fill counter totals for one cell (Linux, `None`
 /// in [`CellResult`] when unavailable).
 pub struct FillCounts {
-    /// Demand fills served from another core's cache — the
+    /// Demand fills served from another core's cache: the
     /// cross-core line-transfer signal.
     pub lcl_cache: u64,
     /// Demand fills served from the core's own L2.
@@ -124,8 +126,8 @@ struct Fills {
 
 #[cfg(target_os = "linux")]
 impl Fills {
-    /// Open + enable all three; `None` (with a one-line note)
-    /// where perf_event_open is unavailable.
+    /// Open + enable all three, returning `None` (with a
+    /// one-line note) where perf_event_open is unavailable.
     fn open() -> Option<Fills> {
         use tp_runner::perf::{
             ProcessCounter, ZEN2_FILLS_LCL_CACHE, ZEN2_FILLS_LCL_DRAM, ZEN2_FILLS_LCL_L2,
@@ -172,7 +174,7 @@ impl Fills {
 struct RecvProbes {
     /// The whole recv phase (spin wait + read + release).
     phase: TProbe,
-    /// Wait only: first failed attempt → reserve success;
+    /// Wait only: first failed attempt -> reserve success,
     /// recorded only when the reserve actually waited.
     spin: TProbe,
     /// Attempt count per waiting reserve (counts probe).
@@ -197,7 +199,7 @@ impl RecvProbes {
 /// `spin_start` on its first failed attempt and keep `attempts`
 /// current, then returns the received value. Records the phase
 /// (and, when a wait happened, spin time + attempts) into
-/// `probes` — unless the value is [`STOP`], which passes
+/// `probes`, unless the value is [`STOP`], which passes
 /// through unrecorded.
 fn instrumented_recv(
     probes: &mut RecvProbes,
@@ -384,7 +386,7 @@ spsc_cell!(
     Flavor::SpscV2
 );
 
-/// MPSC cell body: two `MpscRing`s at 1p/1c — producers
+/// MPSC cell body: two `MpscRing`s at 1p/1c: producers
 /// `send_with` (closure fill), the consumer `reserve_slot_with`,
 /// both under the [`spin`] policy (recv sites instrumented).
 fn run_mpsc(dur: Duration, worker_cpu: Option<usize>, depth: u32) -> [TProbe; 8] {
