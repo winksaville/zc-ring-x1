@@ -1,5 +1,5 @@
 //! tp-cell: run one phase-probed round-trip cell and print the
-//! probe reports — the single-cell tool (the matrix's sibling,
+//! probe reports, the single-cell tool (the matrix's sibling,
 //! see `tp-matrix`).
 //!
 //! Successor of the repo's earlier `tp_roundtrip` example, plus
@@ -13,7 +13,7 @@ use tp_matrix::{FLAVORS, Flavor, run_cell};
 use tp_runner::{CommonArgs, parse_pin, report};
 use tprobe::fmt::fmt_commas;
 
-/// Banner: name, version, and tagline on one line — the first
+/// Banner: name, version, and tagline on one line, the first
 /// line of every run and of `-h`/`--help`.
 const TOP_ABOUT: &str = concat!(
     "tp-cell ",
@@ -28,9 +28,12 @@ enum FlavorArg {
     Spsc,
     /// The SPSC v1 seam-word ring (same surface, per-slot seq)
     SpscV1,
+    /// The SPSC v2 in-slot seq ring (same surface, the seq in
+    /// its slot)
+    SpscV2,
     /// The MPSC ring at 1p/1c (`send_with` producers)
     Mpsc,
-    /// All three, in that order
+    /// All four, in that order
     All,
 }
 
@@ -73,22 +76,32 @@ fn main() {
     let flavors: &[Flavor] = match cli.flavor {
         FlavorArg::Spsc => &[Flavor::Spsc],
         FlavorArg::SpscV1 => &[Flavor::SpscV1],
+        FlavorArg::SpscV2 => &[Flavor::SpscV2],
         FlavorArg::Mpsc => &[Flavor::Mpsc],
         FlavorArg::All => &FLAVORS,
     };
     for &flavor in flavors {
-        let res = run_cell(flavor, cfg.duration, cfg.pin);
-        report(flavor.as_str(), &cfg, res.probes);
-        match &res.fills {
-            Some(f) => println!(
-                "  fills: lcl_cache={} ({:.3}/RT)  lcl_l2={}  lcl_dram={}  [RTs={}]\n",
-                fmt_commas(f.lcl_cache),
-                f.lcl_cache as f64 / res.rts.max(1) as f64,
-                fmt_commas(f.lcl_l2),
-                fmt_commas(f.lcl_dram),
-                fmt_commas(res.rts),
-            ),
-            None => println!("  fills: unavailable\n"),
+        for &depth in &cfg.depths {
+            if depth < flavor.min_depth() {
+                println!(
+                    "{} round trip [depth={depth}]: skipped, below the flavor's floor\n",
+                    flavor.as_str()
+                );
+                continue;
+            }
+            let res = run_cell(flavor, cfg.duration, cfg.pin, depth);
+            report(flavor.as_str(), &cfg, depth, res.probes);
+            match &res.fills {
+                Some(f) => println!(
+                    "  fills: lcl_cache={} ({:.3}/RT)  lcl_l2={}  lcl_dram={}  [RTs={}]\n",
+                    fmt_commas(f.lcl_cache),
+                    f.lcl_cache as f64 / res.rts.max(1) as f64,
+                    fmt_commas(f.lcl_l2),
+                    fmt_commas(f.lcl_dram),
+                    fmt_commas(res.rts),
+                ),
+                None => println!("  fills: unavailable\n"),
+            }
         }
     }
 }

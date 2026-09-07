@@ -4,11 +4,33 @@
 
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering, fence};
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
 use super::Header;
 use crate::{Full, USER_WORDS, check_type, slot_ptr};
+
+/// What follows the commit's seq store, the store-buffer probe.
+///
+/// - `None`: the plain `Release` store, the form v1 shipped.
+/// - `Mfence`: a `SeqCst` fence after the store, `mfence` on
+///   x86, so the store buffer drains before the producer's
+///   next load, as the MPSC claim CAS forces.
+/// - `Xchg`: the seq store itself `SeqCst`, an `xchg` on x86,
+///   the locked-instruction shape of the CAS without the
+///   compare.
+#[allow(dead_code)]
+enum CommitFence {
+    None,
+    Mfence,
+    Xchg,
+}
+
+/// The probe's setting. We think v1's per-send loss to the
+/// MPSC producer may be the store buffer, since the CAS drains
+/// it and v1 has nothing that does, and this is the one-line
+/// test of that reading.
+const COMMIT_FENCE: CommitFence = CommitFence::None;
 
 /// The producing endpoint: `reserve_slot_with`, write in
 /// place, `commit`.
@@ -21,14 +43,14 @@ pub struct Producer<'a> {
     slots: *mut u8,
     /// Geometry snapshot (see [`Ring`](super::Ring)).
     slot_size: u32,
-    /// Geometry snapshot; commit stores `pos + capacity + 1`.
+    /// Geometry snapshot: commit stores `pos + capacity + 1`.
     capacity: u32,
     /// Slot-position mask (`capacity - 1`).
     mask: u32,
     _region: PhantomData<&'a [u8]>,
 }
 
-// SAFETY: the handle owns the producer role; the shared state it
+// SAFETY: the handle owns the producer role. The shared state it
 // touches (seqs, its index) is atomic, and slot writes are
 // handed off with Release/Acquire ordering.
 unsafe impl Send for Producer<'_> {}
@@ -55,7 +77,7 @@ impl<'a> Producer<'a> {
         }
     }
 
-    /// The header's app-owned scratch line — same contract as
+    /// The header's app-owned scratch line: same contract as
     /// the v0 endpoints' `user()`.
     pub fn user(&self) -> &[AtomicU32; USER_WORDS] {
         &self.header.user
@@ -74,7 +96,7 @@ impl<'a> Producer<'a> {
 
     /// Reserve the next free slot as a `&mut T`, applying an
     /// injected wait policy: retry until the slot frees up or
-    /// the policy gives up → [`Full`].
+    /// the policy gives up -> [`Full`].
     ///
     /// - The slot at `p` is free when `seq == p`: the consumer
     ///   released the previous lap by storing `pos + M`, which
@@ -88,8 +110,8 @@ impl<'a> Producer<'a> {
     ///   [`WriteSlot`](crate::WriteSlot): one reservation at a
     ///   time, drop without commit abandons it.
     /// - `on_full` is called after each failed attempt with
-    ///   the attempt count (0-based, saturating); returning
-    ///   `false` gives up → `Err(Full)`. Pass `|_| false`
+    ///   the attempt count (0-based, saturating). Returning
+    ///   `false` gives up -> `Err(Full)`. Pass `|_| false`
     ///   for a single non-blocking probe.
     pub fn reserve_slot_with<T>(
         &mut self,
@@ -114,7 +136,7 @@ impl<'a> Producer<'a> {
             }
             attempt = attempt.saturating_add(1);
         }
-        // Raw pointer, not `&mut T` — same argument-protector
+        // Raw pointer, not `&mut T`: same argument-protector
         // rationale as v0's WriteSlot.
         let msg = slot_ptr(self.slots, p, self.mask, self.slot_size) as *mut T;
         Ok(WriteSlot {
@@ -135,7 +157,7 @@ pub struct WriteSlot<'p, T> {
     header: &'p Header,
     /// The reserved slot's seq word (for the commit store).
     seq: &'p AtomicU32,
-    /// The slot, viewed as the message type. Raw on purpose —
+    /// The slot, viewed as the message type. Raw on purpose:
     /// see v0's `WriteSlot`.
     msg: *mut T,
     /// Value `producer_idx` takes on commit.
@@ -165,7 +187,7 @@ impl<T> Deref for WriteSlot<'_, T> {
 impl<T> DerefMut for WriteSlot<'_, T> {
     /// Write access to the in-slot message.
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as in deref; &mut self gives exclusivity of
+        // SAFETY: as in deref. &mut self gives exclusivity of
         // the minted reference.
         unsafe { &mut *self.msg }
     }
@@ -174,13 +196,20 @@ impl<T> DerefMut for WriteSlot<'_, T> {
 impl<T> WriteSlot<'_, T> {
     /// Publish the slot to the consumer.
     ///
-    /// - `producer_idx` first (`Relaxed` — producer-private
-    ///   resume state), the seq store last (`Release` — the
+    /// - `producer_idx` first (`Relaxed`: producer-private
+    ///   resume state), the seq store last (`Release`: the
     ///   protocol-visible handoff the consumer acquires).
     pub fn commit(self) {
         self.header
             .producer_idx
             .store(self.next_idx, Ordering::Relaxed);
-        self.seq.store(self.committed_seq, Ordering::Release);
+        match COMMIT_FENCE {
+            CommitFence::None => self.seq.store(self.committed_seq, Ordering::Release),
+            CommitFence::Mfence => {
+                self.seq.store(self.committed_seq, Ordering::Release);
+                fence(Ordering::SeqCst);
+            }
+            CommitFence::Xchg => self.seq.store(self.committed_seq, Ordering::SeqCst),
+        }
     }
 }
