@@ -56,7 +56,7 @@ with a why paragraph per placement, the fence probe's result, and the seq width 
 - [feat: runtime depth in the demo and tp-matrix][2] (done)
 - [feat: add the spsc v2 in-slot seq ring][3] (done)
 - [feat: spsc v2 as a fourth flavor][4] (done)
-- [perf: probe a fence after the v1 commit][5]
+- [perf: probe a fence after the v1 commit][5] (done)
 - [perf: measure spsc v2 across depths][6]
 - [feat: a streaming cell with fill counts][7]
 - [docs: sweep punctuation in the touched files][8]
@@ -162,6 +162,17 @@ The tools know three flavors. The rung adds v2 to `tp-matrix`, `tp-cell`, and th
 
 The v1 per-send loss has a store-buffer candidate on record. The rung measures v1 with a fence
 after its commit store and records the answer.
+
+* The candidate needed a one-line test rather than an argument.
+  - A `CommitFence` switch in v1's producer, `None`, `Mfence` (a `SeqCst` fence after the commit
+    store), or `Xchg` (the store itself `SeqCst`), built three times and run through `tp-cell` at
+    the three pinned placements and the demo's v1 stream lines.
+* The answer is no: the round-trip send costs, trip counts, and fills per trip did not move at any
+  placement, and both fence forms slowed the SMT-pair stream by 30 to 70%.
+  - The store buffer is struck from the candidates, leaving the private index store ahead of the
+    seq store and the guard's code shape. The switch stays in the source at `None`, as the seq
+    stride switch did, so the probe can be rerun.
+  - So v2's commit takes no fence either: it has the same store shape, and the answer carries.
 
 ##### perf: measure spsc v2 across depths
 

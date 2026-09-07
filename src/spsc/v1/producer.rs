@@ -4,11 +4,33 @@
 
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering, fence};
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
 use super::Header;
 use crate::{Full, USER_WORDS, check_type, slot_ptr};
+
+/// What follows the commit's seq store, the store-buffer probe.
+///
+/// - `None`: the plain `Release` store, the form v1 shipped.
+/// - `Mfence`: a `SeqCst` fence after the store, `mfence` on
+///   x86, so the store buffer drains before the producer's
+///   next load, as the MPSC claim CAS forces.
+/// - `Xchg`: the seq store itself `SeqCst`, an `xchg` on x86,
+///   the locked-instruction shape of the CAS without the
+///   compare.
+#[allow(dead_code)]
+enum CommitFence {
+    None,
+    Mfence,
+    Xchg,
+}
+
+/// The probe's setting. We think v1's per-send loss to the
+/// MPSC producer may be the store buffer, since the CAS drains
+/// it and v1 has nothing that does, and this is the one-line
+/// test of that reading.
+const COMMIT_FENCE: CommitFence = CommitFence::None;
 
 /// The producing endpoint: `reserve_slot_with`, write in
 /// place, `commit`.
@@ -181,6 +203,13 @@ impl<T> WriteSlot<'_, T> {
         self.header
             .producer_idx
             .store(self.next_idx, Ordering::Relaxed);
-        self.seq.store(self.committed_seq, Ordering::Release);
+        match COMMIT_FENCE {
+            CommitFence::None => self.seq.store(self.committed_seq, Ordering::Release),
+            CommitFence::Mfence => {
+                self.seq.store(self.committed_seq, Ordering::Release);
+                fence(Ordering::SeqCst);
+            }
+            CommitFence::Xchg => self.seq.store(self.committed_seq, Ordering::SeqCst),
+        }
     }
 }

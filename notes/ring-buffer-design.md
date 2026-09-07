@@ -792,6 +792,29 @@ its own index.
   the slot header fixes it. The demo's pin-pair picker wants
   a same-L3 placement and honest labels.
 
+- **Measured (2026-09-07, 3900X, the rung `perf: probe a
+  fence after the v1 commit`)**: the store-buffer candidate is
+  refuted. A `CommitFence` switch in `spsc::v1`'s producer puts
+  a `SeqCst` fence after the commit store (`mfence`) or makes
+  the store itself `SeqCst` (`xchg`), and `tp-cell` at depth 8
+  for 3 s per placement plus the demo's v1 stream lines ran
+  all three forms:
+  - Round trip, main send / worker send in ns (mean of the
+    min-p99 band) and trips per 3 s: 0,1 CCX none 8.7 / 11.1,
+    17.5M, mfence 9.5 / 9.6, 18.2M, xchg 8.6 / 10.9, 17.1M. 0,3
+    x-CCX none 8.5 / 10.7, 5.67M, mfence 8.4 / 11.2, 5.66M,
+    xchg 8.5 / 11.4, 5.62M. 0,12 SMT none 8.9 / 13.0, 21.2M,
+    mfence 8.9 / 13.2, 21.2M, xchg 8.9 / 13.1, 20.2M. Fills per
+    trip 6.47 to 6.50 in every cell. Nothing moved beyond run
+    noise.
+  - Streaming, the demo's v1 line: across the CCX 105.9 none,
+    107.1 mfence, 106.1 xchg. At the SMT pair 12.2 none, 15.7
+    mfence, 21.2 xchg, so a drained store buffer costs the
+    sibling-pair stream 30 to 70%.
+  - So v1's per-send gap to the MPSC producer is not the store
+    buffer, and the remaining candidates are the private index
+    store ahead of the seq store and the guard's code shape.
+    The switch stays at `None`.
 - **Landed as-is (2026-09-07, the cycle `feat: seam-word
   SPSC v1`)**: the ring landed on `main` with its bar unmet,
   so the later experiments compare against a landmark rather
