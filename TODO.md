@@ -17,7 +17,119 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### feat: in-slot seq SPSC v2
+
+#### Problem
+
+The seam-word ring's seq words live in their own line, and v1 is slower per send than the MPSC
+producer at every placement, the puzzle [SPSC v1: seam-word
+ring](notes/ring-buffer-design.md#spsc-v1-seam-word-ring) leaves open. Every streaming number on
+record is at one depth per tool, 64 in the demo and 8 in `tp-matrix`, so depth and protocol have
+never been separated, and the streaming lines carry no fill counts, so the line traffic behind
+them is inferred rather than measured.
+
+#### Solution
+
+A `spsc::v2` sibling ring with the seq in the slot's own line, a crate-owned slot header ahead of
+the user-owned body, measured beside v0, v1, and MPSC at depths 1, 2, 8, and 64 in both tools, the
+demo first and then a `tp-matrix` streaming cell that counts fills per message, with the findings
+recorded in the design note:
+- starts from the probe rung's baseline: packed seq array, neither side waiting, v0 ahead within an
+  L3 and v1 ahead across one
+- the prediction on record: it helps the round trip and may hurt streaming, since the slot line
+  would then travel both ways every message where today the seq line amortises
+- the cheap probe goes first: a fence after v1's commit, one line, to test the store-buffer reading
+- the seq's width is measured (u32 against the native width) before the slot header fixes it
+- the slot contract changes (the body sits behind the crate-sized header), so its shape is part of
+  the finding.
+
+#### Acceptance check
+
+`vc-x1 validate` passes, including v2 ring tests at `M = 1`, `2`, and a larger power of two.
+`tp-matrix` and the demo run all four flavors at depths 1, 2, 8, and 64 on the 3900X, the
+streaming cell reports fills per message, and `notes/ring-buffer-design.md` carries the tables
+with a why paragraph per placement, the fence probe's result, and the seq width chosen.
+
+#### Ladder
+
+- [feat: in-slot seq SPSC v2 opening][1] (done)
+- [feat: runtime depth in the demo and tp-matrix][2]
+- [feat: add the spsc v2 in-slot seq ring][3]
+- [feat: spsc v2 as a fourth flavor][4]
+- [perf: probe a fence after the v1 commit][5]
+- [perf: measure spsc v2 across depths][6]
+- [feat: a streaming cell with fill counts][7]
+- [docs: sweep punctuation in the touched files][8]
+- [feat: in-slot seq SPSC v2 closing][9]
+
+#### Deliberation
+
+- v2 is a sibling module, not an edit of v1: the module layout exists for the A/B, and the user
+  wants every version comparable at once, so v0, v1, v2, and MPSC all stay reachable by path and
+  the crate's default re-export moves only if the numbers earn it.
+- The seq sits in a 16-byte crate header at the front of the slot's first line, the body behind
+  it, rather than a whole header line ahead of the body: the second is padded v1 at a different
+  address, and padded v1 already measured worse. Sixteen bytes so the u32 against u64 flip fits
+  without a layout change, and the header is the seq alone, the rest reserved, so the cycle
+  carries one design change.
+- Depth becomes a runtime parameter in both tools, the regions heap-allocated and sized by each
+  ring's own `region_size`, since the const stack arrays fix one depth per build. The demo takes
+  the sweep first, a table of flavor by depth per placement, and the `tp-matrix` streaming cell
+  with fill counts follows, on the user's call (2026-09-07): more information is better until it
+  interferes with the measuring, so the simple form goes first.
+- The fence probe keeps its own rung ahead of the measurement, as the Todo entry ordered it: its
+  answer says whether v2's commit wants a fence too, and it is a one-line flip measured in the
+  same matrix.
+- Punctuation: the demo, the `tp_matrix` sources, and the v1 sources carry banned characters, so
+  touching them owes the conversion, paid in the penultimate rung as the prose rule says.
+- Waiver: the user's delegation of 2026-09-07, "you have permission to complete this cycle,
+  including commits and pushes, but leave it on the branch", covers every push from the bookmark
+  through the closing and the per-rung review stops, and does not cover Land, which waits on the
+  user's review.
+
+#### Ladder details
+
+##### feat: in-slot seq SPSC v2 opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
+Todo entry into this block, bump the version-of-record, and rename the demo binary to `-dev`.
+
+##### feat: runtime depth in the demo and tp-matrix
+
+Both tools fix the ring depth at build time, so no run can compare depths. The rung makes depth a
+runtime parameter and adds the demo's depth sweep table.
+
+##### feat: add the spsc v2 in-slot seq ring
+
+The seq and the slot it publishes live on different lines in v1. The rung adds the sibling ring
+whose slot carries its own seq, with the tests v1 grew.
+
+##### feat: spsc v2 as a fourth flavor
+
+The tools know three flavors. The rung adds v2 to `tp-matrix`, `tp-cell`, and the demo.
+
+##### perf: probe a fence after the v1 commit
+
+The v1 per-send loss has a store-buffer candidate on record. The rung measures v1 with a fence
+after its commit store and records the answer.
+
+##### perf: measure spsc v2 across depths
+
+The v2 ring exists with no numbers. The rung runs both tools at every depth on the 3900X, flips the
+seq width, and records the tables and their why in the design note.
+
+##### feat: a streaming cell with fill counts
+
+The streaming lines carry no fill counts. The rung adds a `tp-matrix` streaming cell that counts
+fills per message, and records what it shows.
+
+##### docs: sweep punctuation in the touched files
+
+The files the cycle touched carry banned characters and prose semicolons. The rung converts them.
+
+##### feat: in-slot seq SPSC v2 closing
+
+Closing out the cycle.
 
 ## Waiting
 
@@ -33,22 +145,6 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 `###` heading, so a citation is a link to its anchor. Long-tail entries live in
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
-
-### In-slot seq for spsc v1
-
-The seam-word ring's seq words live in their own line, and v1 is slower per send than the MPSC
-producer at every placement, the puzzle [SPSC v1: seam-word
-ring](notes/ring-buffer-design.md#spsc-v1-seam-word-ring) leaves open. Put the seq in the slot's
-own line, a crate-owned slot header ahead of the user-owned body, and measure again on both
-machines, `tp-matrix` and the demo's streams against v0 and MPSC:
-- starts from the probe rung's baseline: packed seq array, neither side waiting, v0 ahead within an
-  L3 and v1 ahead across one
-- the prediction on record: it helps the round trip and may hurt streaming, since the slot line
-  would then travel both ways every message where today the seq line amortises
-- the cheap probe goes first: a fence after v1's commit, one line, to test the store-buffer reading
-- the seq's width is measured (u32 against the native width) before the slot header fixes it
-- the slot contract changes (the body sits behind the crate-sized header), so its shape is part of
-  the finding.
 
 ### Segmented queue over spsc v1
 
@@ -179,56 +275,17 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### agent-files(adoption): v0.2.3
-
-#### Problem
-
-The family's agreed agent-files are `v0.2.3` and we carry the pre-versioning set of 2026-08-28,
-the copy iiac-perf took as the base of `v0.1.0`. Every set cycle since is unadopted here: set
-versioning, the declared commit types, the Todo section order, the agent-dir lookup, and
-`v0.2.3`'s eight corrections. `agent-data/messaging.md` is still carried although the accepted
-messages rules moved it out of the set.
-
-#### Solution
-
-Copy iiac-perf's set at `d5d5e77a3bb1` byte for byte with `vc-x1 agent-files copy ../iiac-perf
--c`: `AGENTS.md`, `agent-data/*`, and `custom.md`, the marker `agent-files-v0.2.3` arriving and
-`messaging.md` going. `TODO.md` is reordered to the Todo format the set now states, `## Closed`
-below `## Bugs`. Nothing in the set is bumped: an adoption copies the source's version file.
-
-#### Acceptance check
-
-`vc-x1 agent-files diff ../iiac-perf -c` reports 0 differing, `ls agent-data` shows
-`agent-files-v0.2.3` and no `messaging.md`, `vc-x1 agent-files version` prints `v0.2.3`,
-`TODO.md`'s sections stand in the Todo format's order, and `vc-x1 validate` passes.
-
-#### Ladder
-
-- agent-files(adoption): v0.2.3 (done)
-
-#### Deliberation
-
-- Single-step: an adoption is a copy, and the diff is the family's work, reviewed twice by vc-x1
-  before it landed.
-- `v0.2.2` is skipped: its record asked for it, and `v0.2.3` supersedes it, so one copy takes both.
-- `custom.md` is copied with `-c` on the user's instruction. It was already identical, the one
-  messaging pointer line the family shares.
-- The cycle's pushes, the bookmark and the commit, run under the user's delegation of 2026-09-07,
-  "do the single-step cycle ... leave in the branch until I review", and Land waits on that
-  review. That delegation is the waiver for the per-push approvals.
-- No restart between the SPSC v1 landing and this cycle, on the user's call, so the session runs
-  the flow under the set it started in and enacts one new rule in the file itself, the Todo
-  section order, since an adopter's `TODO.md` must have the shape the adopted set states.
-- Acceptance check: pass. `vc-x1 agent-files diff ../iiac-perf -c` reports 0 of 11 differing, the
-  marker is the only non-`.md` file in `agent-data`, the set is 2315 lines, iiac-perf's own count
-  for `v0.2.3`, and validation passes.
+_None._
 
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[21]: notes/chores/chores-02.md#findings-the-gap-is-line-transfer-economics
-[1]: #feat-segmented-seam-word-spsc-v1-opening
-[2]: #feat-add-the-spsc-v1-seam-word-ring
-[3]: #perf-measure-spsc-v1-against-v0-and-mpsc
-[7]: #feat-seam-word-spsc-v1-closing
-[9]: #perf-probe-the-v1-streaming-loss
+[1]: #feat-in-slot-seq-spsc-v2-opening
+[2]: #feat-runtime-depth-in-the-demo-and-tp-matrix
+[3]: #feat-add-the-spsc-v2-in-slot-seq-ring
+[4]: #feat-spsc-v2-as-a-fourth-flavor
+[5]: #perf-probe-a-fence-after-the-v1-commit
+[6]: #perf-measure-spsc-v2-across-depths
+[7]: #feat-a-streaming-cell-with-fill-counts
+[8]: #docs-sweep-punctuation-in-the-touched-files
+[9]: #feat-in-slot-seq-spsc-v2-closing
