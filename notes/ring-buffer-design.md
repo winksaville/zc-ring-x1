@@ -892,6 +892,91 @@ travel on one line.
   way and its packed seq line amortises sixteen commits. At
   depth 1, v2 is a single line ping-ponging between the cores,
   the cheapest handoff the hardware can express.
+- **Measured (2026-09-07, 3900X, the rung `perf: measure spsc
+  v2 across depths`, `tp-matrix` 5 s cells and the demo's 1M
+  message streams, both at depths 1, 2, 8, and 64)**. The
+  round trip confirms the prediction and the streaming
+  refutes it, and v2 is the first SPSC form to clear the bar
+  the v1 cycle set: faster than MPSC v0 at every cross-core
+  placement.
+  - Round trips per 5 s and fills per trip, one cell per
+    flavor and depth (the MPSC ring cannot run at depth 1,
+    `notes/bugs.md`):
+
+    | placement | flavor  | d=1          | d=2          | d=8          | d=64         |
+    |-----------|---------|-------------:|-------------:|-------------:|-------------:|
+    | 0,1 CCX   | spsc    | 24.6M (11.1) | 25.6M (10.7) | 25.5M (10.0) | 25.7M (9.98) |
+    | 0,1 CCX   | spsc-v1 | 30.4M (8.13) | 25.4M (8.49) | 31.4M (6.35) | 31.3M (6.02) |
+    | 0,1 CCX   | spsc-v2 | 33.7M (4.00) | 34.5M (4.05) | 28.9M (3.08) | 28.7M (3.72) |
+    | 0,1 CCX   | mpsc    | -            | 27.9M (8.30) | 32.7M (6.36) | 32.2M (6.04) |
+    | 0,3 x-CCX | spsc    |  6.8M (11.3) |  6.8M (10.8) |  7.0M (10.1) |  6.8M (10.0) |
+    | 0,3 x-CCX | spsc-v1 | 10.1M (8.07) |  7.7M (8.39) | 10.2M (6.36) |  9.2M (6.00) |
+    | 0,3 x-CCX | spsc-v2 | 11.4M (4.00) | 11.3M (4.04) | 10.3M (3.08) | 10.4M (3.12) |
+    | 0,3 x-CCX | mpsc    | -            |  8.2M (8.24) | 10.4M (6.35) |  9.1M (6.05) |
+    | 0,12 SMT  | spsc    | 43.4M        | 43.5M        | 43.7M        | 43.5M        |
+    | 0,12 SMT  | spsc-v1 | 35.4M        | 35.4M        | 35.1M        | 35.4M        |
+    | 0,12 SMT  | spsc-v2 | 37.9M        | 37.9M        | 37.3M        | 37.9M        |
+    | 0,12 SMT  | mpsc    | -            | 36.4M        | 36.3M        | 36.1M        |
+
+  - Streaming, the demo's sweep, ns per message:
+
+    | placement          | flavor  |   d=1 |   d=2 |   d=8 |  d=64 |
+    |--------------------|---------|------:|------:|------:|------:|
+    | 1t core 0          | spsc    |   2.4 |   2.4 |   2.4 |   2.4 |
+    | 1t core 0          | spsc-v1 |   6.9 |   6.8 |   6.7 |   6.7 |
+    | 1t core 0          | spsc-v2 |   6.5 |   6.4 |   6.4 |   6.4 |
+    | 1t core 0          | mpsc    |     - |  11.0 |  11.0 |  11.0 |
+    | 2t diff cores 0+3  | spsc    | 326.6 | 203.3 | 154.2 | 208.8 |
+    | 2t diff cores 0+3  | spsc-v1 | 378.3 | 213.8 | 120.7 | 102.5 |
+    | 2t diff cores 0+3  | spsc-v2 | 198.4 | 103.1 |  35.1 |  12.1 |
+    | 2t diff cores 0+3  | mpsc    |     - | 206.5 | 104.6 |  76.8 |
+    | 2t same core 0+12  | spsc    |  30.0 |  14.1 |   7.2 |   6.7 |
+    | 2t same core 0+12  | spsc-v1 |  50.1 |  26.1 |  15.1 |  11.9 |
+    | 2t same core 0+12  | spsc-v2 |  39.5 |  20.5 |   7.1 |   7.2 |
+    | 2t same core 0+12  | mpsc    |     - |  23.8 |  15.3 |  15.2 |
+
+    The unpinned rows are omitted: the scheduler's placement
+    varies run to run and the numbers with it.
+  - Round trip, the why: a v2 trip moves four lines at depth
+    1 and 2, the request slot each way and the response slot
+    each way, and nothing else, where v1 and the MPSC ring
+    move the seq line beside each slot line, eight. At depth
+    8 and 64 the seq protocols fall to six, since the seq line
+    then holds several slots' words and a lap amortises it,
+    and v2 falls to three, the fourth line's share amortised
+    the same way now that consecutive trips use consecutive
+    slots. The trips per 5 s follow the fills, and the send
+    costs are flat at 8.4 to 10 ns for the three seq
+    protocols at every cross-core placement, so the trip is
+    line transfers and nothing else.
+  - Streaming, the why, and the refuted prediction: the slot
+    line does travel both ways per message, and it does not
+    matter, because it is the only line that travels. We
+    think the gain is line independence rather than line
+    count: consecutive messages in v2 are consecutive lines
+    with no shared word between them, so the producer's
+    commits and the consumer's reads and releases of
+    different lines overlap in the memory system, where v0
+    serialises every message on its two index lines and v1
+    on its packed seq line, both written by both sides every
+    message. At depth 1 v2 has one line and no overlap, and
+    the stream costs a round trip per message, 198 ns, the
+    floor the prediction named. Each doubling of depth from
+    there buys overlap, to 12 ns at 64.
+  - Within an L3 and at the SMT pair v2 matches v0 to the
+    nanosecond at depth 8 and 64, 7 ns, and v1 sits at 12 to
+    15. The one place v2 trails is the single-thread loop and
+    the shallow SMT stream, where v0's index protocol is
+    cheaper than any seq word, 2.4 against 6.4 ns.
+  - Seq width: `Seq` as `AtomicU64` against `AtomicU32` in
+    `tp-cell` at the three pinned placements and depths 1, 8,
+    and 64, and in the demo's stream lines, moved nothing
+    beyond run noise (trips within 5%, sends within 1 ns,
+    streams within 1 ns pinned). u32 stays, the v1 width and
+    the smaller word, and the layout version is fixed at it.
+  - Open: the 7600X run, which is the other machine's to
+    paste in, and the streaming fill count, which the next
+    rung adds to test the line-independence reading directly.
 
 ## Messaging layer: pools and descriptor queues
 

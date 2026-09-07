@@ -57,7 +57,7 @@ with a why paragraph per placement, the fence probe's result, and the seq width 
 - [feat: add the spsc v2 in-slot seq ring][3] (done)
 - [feat: spsc v2 as a fourth flavor][4] (done)
 - [perf: probe a fence after the v1 commit][5] (done)
-- [perf: measure spsc v2 across depths][6]
+- [perf: measure spsc v2 across depths][6] (done)
 - [feat: a streaming cell with fill counts][7]
 - [docs: sweep punctuation in the touched files][8]
 - [feat: in-slot seq SPSC v2 closing][9]
@@ -178,6 +178,28 @@ after its commit store and records the answer.
 
 The v2 ring exists with no numbers. The rung runs both tools at every depth on the 3900X, flips the
 seq width, and records the tables and their why in the design note.
+
+* The four flavors had never been measured together at one depth, let alone four.
+  - `tp-matrix` at 5 s cells and the demo with its sweep ran at depths 1, 2, 8, and 64, and the
+    design note's v2 section carries the tables: round trips and fills per trip per cell, the
+    streaming ns per message per placement, and a why paragraph per placement.
+* The round trip confirms the prediction and the streaming refutes it.
+  - v2 moves 3.1 to 4.0 lines per round trip against v1's 6.0 to 8.1 and MPSC's 6.0 to 8.3, and
+    completes the most trips at every cross-core placement and depth. Streaming across the CCX
+    boundary at depth 64, v2 moves a message in 12 ns against v1's 103 and v0's 209, and matches
+    v0 within an L3 and at the SMT pair, where v1 lost 2x.
+  - We think the streaming win is line independence rather than line count: the only line both
+    sides write per message is the slot, consecutive slots are consecutive lines, and so the
+    transfers overlap where v0's index lines and v1's packed seq line serialised them. The
+    streaming cell with fill counts is the test of that reading.
+* The seq's width had to be measured before the layout fixed it.
+  - u32 against u64 in the same cells and stream lines: no difference beyond run noise at any
+    placement or depth, so u32 stays, the v1 width and the smaller word.
+* Depth 1 and 2 are where the protocols separate in the round trip, and 8 against 64 is where v1
+  and MPSC pay for a seq line spanning more slots.
+  - At depth 1 and 2 v2 does its 4.0 fills and v1 and MPSC 8.1 to 8.5, since their seq line and
+    the slot line both cross twice. At depth 8 and 64 both fall to 6.0 to 6.4 while v2 falls to
+    3.1 to 3.7, and the trips per 5 s track the fills.
 
 ##### feat: a streaming cell with fill counts
 
