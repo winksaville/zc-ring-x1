@@ -9,10 +9,7 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- The cycle "feat: in-slot seq SPSC v2" landed on `main` as a trapezoid on 2026-09-07, its
-  record in `## Closed`, the default `Ring` now v2.
-- One decision is the user's next: whether the MPSC capacity-1 bug (`notes/bugs.md`) gets a fix
-  cycle before the segmented queue work starts on v2.
+_None._
 
 ## In Progress
 
@@ -20,7 +17,91 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### fix: mpsc handling of capacity 1
+
+#### Problem
+
+The MPSC ring accepts capacity 1 and its protocol collapses there: the producer commits `pos + 1`
+and the consumer releases `pos + capacity`, the same value at `M = 1`, so after the first release
+each side reads the other's state and both spin forever. Bug 2 in [bugs.md](notes/bugs.md), found
+by the demo's depth sweep, and the measurement tools skip the MPSC cell at depth 1 until it is
+fixed.
+
+#### Solution
+
+The MPSC ring keeps its layout and takes the spsc v1 seq values: claimable at `pos`, committed at
+`pos + M + 1`, released at `pos + M`, tested by equality rather than a signed diff, so `M` is any
+power of two down to 1 with `M` usable slots. The layout version bumps, since the seq values a
+region carries change. The tools drop the MPSC depth floor, and the ring is measured at depths 1,
+2, 8, and 64 beside its recorded numbers to check the prediction.
+
+#### Acceptance check
+
+`vc-x1 validate` passes, including MPSC tests at `M = 1`, `2`, and a larger power of two, two
+threaded producers and a tombstone at `M = 1` among them. The demo sweep and `tp-matrix` run the
+`mpsc` flavor at depth 1 with no skipped cell. `notes/ring-buffer-design.md` carries the fixed ring
+at depths 1, 2, 8, and 64 on the 3900X, matching the recorded numbers within run noise from depth
+2 up.
+
+Prediction, on record: within noise the fixed ring is the old one at every depth from 2 up, since
+the layout and the line traffic are unchanged and only the constant the seq is compared against
+moves. At depth 1 it runs lockstep, at about the round-trip cost.
+
+#### Ladder
+
+- [fix: mpsc handling of capacity 1 opening][1] (done)
+- [fix: commit at pos + M + 1 in the mpsc ring][2]
+- [perf: measure the fixed mpsc ring across depths][3]
+- [fix: mpsc handling of capacity 1 closing][4]
+
+#### Deliberation
+
+- A fix in v0, not a sibling v1, the user's call at the opening review (2026-09-09), reversing the
+  first draft: the layout, the line traffic, and the atomic ops are unchanged and only the constants
+  the seq is compared against move, so a sibling would be a second copy of the code with nothing to
+  A/B.
+- Equality instead of the signed diff is forced, not chosen: with committed at `pos + M + 1`, a
+  full slot's previous-lap value is `pos + 1`, which the diff reads as a lost race rather than
+  Full. Equality with `pos` decides claimable, and a re-read of `producer_idx` separates stale from
+  full, as the negative branch already does.
+- The layout version bumps though the layout is unchanged: a region written by the old build and
+  attached by the new would misread its seq words, so the bump makes that attach fail toward the
+  layout error rather than misbehave. Only mixed builds across processes could reach it.
+- The flavor label stays `mpsc`: the v0 flavor is the bare name in the tools, `spsc` beside
+  `spsc-v1` and `spsc-v2`, so an eventual MPSC v1 is `mpsc-v1` and the recorded tables keep their
+  column.
+- The tools' depth floor drops in the fix rung rather than its own: `min_depth` to 1 is two lines,
+  and the fix is what makes it true.
+- The measurement rung stays, fix or not: the prediction is on record, and the design note's
+  `mpsc` columns were measured on the old values, so depth 1 needs a number and the rest a
+  confirmation.
+
+#### Ladder details
+
+##### fix: mpsc handling of capacity 1 opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write this
+block from the bugs entry, bump the version-of-record, and rename the package to its dev name. The
+continuation notes held the draft of the segmented-queue cycle, so the opening folds it into that
+Todo entry, retitled for v2 segments, and resets the notes. The first draft opened as a sibling
+`mpsc::v1` and was reshaped to a fix at the review, the bookmark renamed with it, before any commit.
+
+##### fix: commit at pos + M + 1 in the mpsc ring
+
+The ring hangs at capacity 1 and the tools work around it. The seq values become claimable `pos`,
+committed `pos + M + 1`, released `pos + M`, the checks equality, the layout version bumps, the
+tests cover `M = 1` at every protocol point, the tombstone and the u32 wrap included, the tools'
+depth floor drops to 1, and the bugs entry retires.
+
+##### perf: measure the fixed mpsc ring across depths
+
+The prediction is on record and nothing tests it. The sweep at depths 1, 2, 8, and 64 across the
+pinned placements, the numbers into the design note beside the recorded `mpsc` columns, the 7600X
+pasted in by the user.
+
+##### fix: mpsc handling of capacity 1 closing
+
+Closing out the cycle.
 
 ## Waiting
 
@@ -37,20 +118,62 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
 
-### Segmented queue over spsc v1
+### Segmented queue SPSC v3
 
-The rings are fixed-length and a Full ring fails the send. A chain of v1 ring segments allocated
-from a `Pool`, designed in [SPSC v1: seam-word
-ring](notes/ring-buffer-design.md#spsc-v1-seam-word-ring) and deferred when the ring's numbers
-missed the bar:
-- pool segments: take a pool buffer as the byte region a v1 `Ring::init` wants, sized by
-  `region_size(slot_size, M)`, and nothing else the pool does not already have
-- the chain: producer and consumer endpoints, the link word, the segment switch on Full and on
-  Empty, freeing the drained segment, and a boundary-crossing test that returns every segment
-- the size sweep: `M` from 1 to 256 in the cell, the seam cost as the slope, recorded with the
-  default the crate picks
-- supersedes Overflow FIFO if it lands
-- goes ahead once a v1 form clears the bar, faster than MPSC v0 cross-core.
+Every ring is fixed-length and Full fails the send. The segment chain was designed for v1 in [SPSC
+v1: seam-word ring](notes/ring-buffer-design.md#spsc-v1-seam-word-ring) and held until a ring
+cleared the bar, v2 cleared it on 2026-09-07, so the layer goes on v2. The cycle, drafted on
+2026-09-08 and not yet agreed, runs as `feat: segmented queue SPSC v3`:
+- Solution: a `spsc::v3` sibling module whose queue is a chain of v2 ring segments, each one pool
+  buffer holding a v2 region.
+  - Geometry: `Queue::init(region, slot_size, seg_capacity, seg_count)` builds a `Pool` over the
+    caller's region with buffer size `v2::region_size(slot_size, seg_capacity)` and `seg_count`
+    buffers, takes the first segment, and splits into `Producer` and `Consumer`. Total capacity is
+    the product, and the pool bound is the queue bound, so Full means the pool is exhausted.
+  - Endpoints: the producer holds the `Pool` plus a v2 producer over its current segment, the
+    consumer a `PoolResolver` plus a v2 consumer over its segment. The guards are v2's `WriteSlot`
+    and `ReadSlot` re-exported, so the hot path inside a segment is v2's untouched.
+  - Link word: word 0 of the segment header's `user` line holds the next segment's pool buffer
+    index, sentinel `u32::MAX` for none. Not the free-stack word, which is buffer word 0 and
+    doubles as the v2 magic, so a free scribbling it costs nothing.
+  - Producer on Full: try the current segment once, on Full allocate a segment, `v2::Ring::init`
+    it, store its index in the old segment's link with Release, move. Pool exhausted is the queue's
+    Full, and the wait policy runs over both retries, the current segment first.
+  - Consumer on Empty: try the current segment once, on Empty load the link with Acquire. A set
+    link means the old segment is drained, since every commit in it happened before the link store
+    and Empty says the slot at the consumer's position is uncommitted, so the consumer moves and
+    frees the old segment. An unset link means the producer is still here, and the wait policy
+    runs.
+  - Pool change, the one the design note allowed: `alloc::<()>` already hands out a whole buffer,
+    so add `BufSlot::as_mut_bytes` for the init and a crate-private buffer pointer on the resolver
+    for the consumer's attach and free.
+  - Held out: no `attach` this cycle. The endpoints are in-process, since resuming needs a queue
+    control block holding both sides' current segment, a later entry if a consumer for it appears.
+- Acceptance check: a test streaming across many segment boundaries with a pool smaller than the
+  message count, at `M = 1` and larger, that afterwards finds every segment but the live one back
+  in the pool, and the size sweep on the 3900X in the design note with v3 at `M = depth` matching
+  v2 within run noise.
+- Prediction, on record: within a segment v3 is v2. Each seam costs the producer an alloc CAS, the
+  init's header and seq lines, and a link store, and the consumer a header line for the link, a
+  free CAS on the shared pool line, and a cold prefetcher on the new buffer. At `M = 1` roughly
+  three times v2's two lines per message, and the slope from `M = 64` down shows where the seam
+  stops mattering. We think it is flat by `M = 8`.
+- Ladder, multi-step on one topic bookmark:
+  - `feat: segmented queue SPSC v3 opening`
+  - `feat: bytes and a buffer pointer from a pool buffer`, the pool accessors with tests
+  - `feat: spsc v3 segment chain`, the module, both endpoints, the link protocol, the tests above
+    plus `M = 1`, u32 wrap, and a threaded stress with a two-buffer pool that forces the exhausted
+    wait and the unset-link retry
+  - `feat: spsc v3 in the measurement tools`, a flavor in `tp-cell`, `tp-matrix`, `tp-stream`, and
+    the demo's sweep, with a segment-capacity knob. Depth stays the total capacity and the segment
+    count is depth over `M`, so `M = depth` is the v2 baseline inside v3
+  - `perf: sweep the segment size`, `M` from 1 to depth at depths 64 and 256 across the three
+    pinned placements, the numbers into a new design-note section and the crate's default `M`
+    chosen from them, the 7600X pasted in by the user
+  - `feat: segmented queue SPSC v3 closing`, which deletes the Overflow FIFO entry this supersedes
+- Decisions the user has not yet given: `Ring` stays v2 and v3 is reached by path as
+  `spsc::v3::Queue`, attach deferred, trapezoid at close-out.
+- supersedes Overflow FIFO if it lands.
 
 ### Demo pin-pair picker
 
@@ -174,266 +297,12 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### feat: in-slot seq SPSC v2
-
-#### Problem
-
-The seam-word ring's seq words live in their own line, and v1 is slower per send than the MPSC
-producer at every placement, the puzzle [SPSC v1: seam-word
-ring](notes/ring-buffer-design.md#spsc-v1-seam-word-ring) leaves open. Every streaming number on
-record is at one depth per tool, 64 in the demo and 8 in `tp-matrix`, so depth and protocol have
-never been separated, and the streaming lines carry no fill counts, so the line traffic behind
-them is inferred rather than measured.
-
-#### Solution
-
-A `spsc::v2` sibling ring with the seq in the slot's own line, a 16-byte crate-owned slot header
-ahead of the user-owned body, measured beside v0, v1, and MPSC at depths 1, 2, 8, and 64 in the
-round-trip matrix, the demo's sweep, and a new streaming cell that counts fills per message, on the
-3900X and, for the demo, the 7600X. Done, and the findings in `notes/ring-buffer-design.md`:
-- v2 clears the bar the v1 cycle set: the most round trips at every cross-core placement and depth
-  on 3 to 4 lines per trip against v1's 6 to 8, and across the CCX boundary a message streams in
-  14 ns against v1's 38 to 104 and v0's 130 to 209, with 0.13 lines per message at depth 64.
-- The prediction on record was half right: the slot line does travel both ways, and it does not
-  matter, since it is the only line both sides touch. We think the streaming win is line
-  independence, consecutive slots on consecutive lines with no shared word between them, so the
-  prefetcher runs ahead of demand.
-- The fence probe struck the store buffer from v1's per-send candidates. The seq width made no
-  difference, so u32 stays. The streaming cell found v1 bistable across the CCX, lockstep on its
-  packed seq line or bursting ahead, with every earlier v1 streaming figure in the lockstep regime.
-- The slot contract change stands: a v2 slot of N bytes carries `N - 16` bytes of message at an
-  alignment of at most 16.
-- Found on the way: the MPSC ring collapses at capacity 1, filed in `notes/bugs.md`, and the
-  measurement tools honor a per-flavor depth floor.
-- The crate's default `Ring` is v2, on the user's call at the review (2026-09-07): the fastest
-  form at every placement but the single-thread loop, where v0 keeps its lead and stays reachable
-  by path.
-
-#### Acceptance check
-
-`vc-x1 validate` passes, including v2 ring tests at `M = 1`, `2`, and a larger power of two.
-`tp-matrix` and the demo run all four flavors at depths 1, 2, 8, and 64 on the 3900X, the
-streaming cell reports fills per message, and `notes/ring-buffer-design.md` carries the tables
-with a why paragraph per placement, the fence probe's result, and the seq width chosen.
-
-#### Ladder
-
-- [feat: in-slot seq SPSC v2 opening][1] (done)
-- [feat: runtime depth in the demo and tp-matrix][2] (done)
-- [feat: add the spsc v2 in-slot seq ring][3] (done)
-- [feat: spsc v2 as a fourth flavor][4] (done)
-- [perf: probe a fence after the v1 commit][5] (done)
-- [perf: measure spsc v2 across depths][6] (done)
-- [feat: a streaming cell with fill counts][7] (done)
-- [docs: sweep punctuation in the touched files][8] (done)
-- [feat: in-slot seq SPSC v2 closing][9] (done)
-
-#### Deliberation
-
-- v2 is a sibling module, not an edit of v1: the module layout exists for the A/B, and the user
-  wants every version comparable at once, so v0, v1, v2, and MPSC all stay reachable by path and
-  the crate's default re-export moves only if the numbers earn it.
-- The seq sits in a 16-byte crate header at the front of the slot's first line, the body behind
-  it, rather than a whole header line ahead of the body: the second is padded v1 at a different
-  address, and padded v1 already measured worse. Sixteen bytes so the u32 against u64 flip fits
-  without a layout change, and the header is the seq alone, the rest reserved, so the cycle
-  carries one design change.
-- Depth becomes a runtime parameter in both tools, the regions heap-allocated and sized by each
-  ring's own `region_size`, since the const stack arrays fix one depth per build. The demo takes
-  the sweep first, a table of flavor by depth per placement, and the `tp-matrix` streaming cell
-  with fill counts follows, on the user's call (2026-09-07): more information is better until it
-  interferes with the measuring, so the simple form goes first.
-- The fence probe keeps its own rung ahead of the measurement, as the Todo entry ordered it: its
-  answer says whether v2's commit wants a fence too, and it is a one-line flip measured in the
-  same matrix.
-- Punctuation: the demo, the `tp_matrix` sources, and the v1 sources carry banned characters, so
-  touching them owes the conversion, paid in the penultimate rung as the prose rule says.
-- The design note is left out of the punctuation sweep: some 190 banned characters is a rewrite,
-  which the prose rule makes its own cycle, so a `## Todo` entry carries it and the rung converts
-  the sources and the tool README, which are repunctuation.
-- Waiver: the user's delegation of 2026-09-07, "you have permission to complete this cycle,
-  including commits and pushes, but leave it on the branch", covers every push from the bookmark
-  through the closing and the per-rung review stops, and does not cover Land, which waits on the
-  user's review.
-
-#### Ladder details
-
-##### feat: in-slot seq SPSC v2 opening
-
-The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
-Todo entry into this block, bump the version-of-record, and rename the demo binary to `-dev`.
-
-##### feat: runtime depth in the demo and tp-matrix
-
-Both tools fix the ring depth at build time, so no run can compare depths. The rung makes depth a
-runtime parameter and adds the demo's depth sweep table.
-
-* The regions were const stack arrays sized by a `DEPTH` const, one per build.
-  - The runner gains a line-aligned heap region sized at runtime by each ring's own size function,
-    and the demo carries the same helper over zerocopy. Heap against stack changes nothing the
-    loops measure, since the region is touched once at init.
-  - v0 exports no region size function, its header being a fixed shape, so both tools compute it
-    from the header's size. A v0 export is a deferral, not a need.
-* Nothing let a run ask for a depth.
-  - `--depth` on the shared args takes a comma list of powers of two, default 8, and every
-    `tp-matrix` and `tp-cell` cell repeats per depth, the matrix tables gaining a depth column.
-  - The demo's lines stay at depth 64 and a sweep follows them: the ring flavors at every placement
-    and at depths 1, 2, 8, and 64, one markdown table per placement in ns per message.
-* The MPSC ring accepts capacity 1 and its protocol collapses there, found when the sweep's first
-  mpsc cell at depth 1 spun forever.
-  - Filed in `notes/bugs.md`: committed `pos + 1` and released `pos + M` coincide at `M = 1`, the
-    collapse v1's `M = 1` tests caught in its own first cut. Each flavor now names its floor, and
-    the tools skip a cell below it with a note, the demo printing `-`.
-  - The fix is unplanned work and stays out of this cycle, on the rule that unplanned work is the
-    user's to place.
-
-##### feat: add the spsc v2 in-slot seq ring
-
-The seq and the slot it publishes live on different lines in v1. The rung adds the sibling ring
-whose slot carries its own seq, with the tests v1 grew.
-
-* The protocol needed a home for the seq inside the slot without a second design change.
-  - `spsc::v2` is v1's protocol over a region of header then slots, every slot opening with a
-    16-byte crate header, the seq at offset 0 and the rest reserved. The endpoint surface is v1's,
-    so a caller or a bench flips between versions by path alone.
-  - The seq's width is one type alias, `Seq`, the indices staying u32 so the word holds the same
-    values at either width. The measurement rung flips it.
-* The slot contract had to change, since the body no longer starts at the slot.
-  - v2 checks `T` against the body, `slot_size - 16` at an alignment of at most 16, its own check
-    beside the crate's, and a test pins the body's address to slot base plus the header.
-* The tests v1 grew carry over whole, the `M = 1` alternation and the threaded stream at 1, 2, 4,
-  and 16 among them, plus the cross-kind attach against a v1 region.
-* The design note gains "SPSC v2: in-slot seq ring" with the prediction written down before the
-  numbers: the round trip should gain and streaming may lose, since the slot line then travels
-  both ways per message.
-
-##### feat: spsc v2 as a fourth flavor
-
-The tools know three flavors. The rung adds v2 to `tp-matrix`, `tp-cell`, and the demo.
-
-* Every tool spelled the flavor list out in its own way.
-  - `tp-matrix` and `tp-cell` gain `spsc-v2` from the one `FLAVORS` list, a cell instantiated
-    from the shared SPSC macro over v2's `region_size`, so the round-trip A/B is the protocol
-    alone.
-  - The demo gains `spsc2_` lines beside the `spsc1_` ones at every placement and a `spsc-v2` row
-    in each sweep table, and the occupancy probe a `v2` line, all from the macros the v1 rung
-    wrote.
-* The first numbers, on the 3900X, are a finding the measurement rung must confirm.
-  - Streaming across the CCX boundary at depth 64, v2 moves a message in 12 ns against v1's 104
-    and v0's 207, and holds that within an L3 and at the SMT pair, where v1 lost to v0 by 2x. In
-    the round-trip cell v2 moves 3.5 to 4.0 lines per trip against v1's 6.85.
-  - We think the streaming gain is not the line count but the line independence: v2 has no line
-    both sides write per message except the slot itself, and consecutive slots are consecutive
-    lines, so the transfers pipeline where v1's packed seq line and v0's index lines serialised
-    them. The prediction on record, that streaming may lose, is refuted on this machine.
-
-##### perf: probe a fence after the v1 commit
-
-The v1 per-send loss has a store-buffer candidate on record. The rung measures v1 with a fence
-after its commit store and records the answer.
-
-* The candidate needed a one-line test rather than an argument.
-  - A `CommitFence` switch in v1's producer, `None`, `Mfence` (a `SeqCst` fence after the commit
-    store), or `Xchg` (the store itself `SeqCst`), built three times and run through `tp-cell` at
-    the three pinned placements and the demo's v1 stream lines.
-* The answer is no: the round-trip send costs, trip counts, and fills per trip did not move at any
-  placement, and both fence forms slowed the SMT-pair stream by 30 to 70%.
-  - The store buffer is struck from the candidates, leaving the private index store ahead of the
-    seq store and the guard's code shape. The switch stays in the source at `None`, as the seq
-    stride switch did, so the probe can be rerun.
-  - So v2's commit takes no fence either: it has the same store shape, and the answer carries.
-
-##### perf: measure spsc v2 across depths
-
-The v2 ring exists with no numbers. The rung runs both tools at every depth on the 3900X, flips the
-seq width, and records the tables and their why in the design note.
-
-* The four flavors had never been measured together at one depth, let alone four.
-  - `tp-matrix` at 5 s cells and the demo with its sweep ran at depths 1, 2, 8, and 64, and the
-    design note's v2 section carries the tables: round trips and fills per trip per cell, the
-    streaming ns per message per placement, and a why paragraph per placement.
-* The round trip confirms the prediction and the streaming refutes it.
-  - v2 moves 3.1 to 4.0 lines per round trip against v1's 6.0 to 8.1 and MPSC's 6.0 to 8.3, and
-    completes the most trips at every cross-core placement and depth. Streaming across the CCX
-    boundary at depth 64, v2 moves a message in 12 ns against v1's 103 and v0's 209, and matches
-    v0 within an L3 and at the SMT pair, where v1 lost 2x.
-  - We think the streaming win is line independence rather than line count: the only line both
-    sides write per message is the slot, consecutive slots are consecutive lines, and so the
-    transfers overlap where v0's index lines and v1's packed seq line serialised them. The
-    streaming cell with fill counts is the test of that reading.
-* The seq's width had to be measured before the layout fixed it.
-  - u32 against u64 in the same cells and stream lines: no difference beyond run noise at any
-    placement or depth, so u32 stays, the v1 width and the smaller word.
-* Depth 1 and 2 are where the protocols separate in the round trip, and 8 against 64 is where v1
-  and MPSC pay for a seq line spanning more slots.
-  - At depth 1 and 2 v2 does its 4.0 fills and v1 and MPSC 8.1 to 8.5, since their seq line and
-    the slot line both cross twice. At depth 8 and 64 both fall to 6.0 to 6.4 while v2 falls to
-    3.1 to 3.7, and the trips per 5 s track the fills.
-
-##### feat: a streaming cell with fill counts
-
-The streaming lines carry no fill counts. The rung adds a `tp-matrix` streaming cell that counts
-fills per message, and records what it shows.
-
-* The demo's streams had no fill counter and the round-trip cell has no streaming.
-  - `run_stream` in `tp_matrix` streams a counter from a spawned producer to a spawned consumer for
-    the duration over one ring, both pinned as the placement says, with the fill counters open
-    around the run, and `tp-stream` tables it over every flavor, placement, and depth as ns per
-    message, messages moved, and fills per message.
-* The cell's first numbers disagreed with the demo's, v2 slower and v1 faster, and the rung had to
-  find out why before recording anything.
-  - Run length, the thread shape, the fill counters, the payload width, and the crate boundary
-    (fat LTO) were each tried and struck. Two variables remained, both measured.
-  - The wait policy's inlining: the runner's `spin` is not `#[inline]` and is called from another
-    crate, and that alone put v2's cross-CCX stream at 31 ns against 14 with the crate's inline
-    `policy::spin`. The cell now uses the crate's.
-  - The producer's loop shape: the cell's clock check every 4096 sends moves v1's cross-CCX
-    stream from 104 ns per message at 1.8 fills, the demo's plain loop, to about 40 at 0.6. v1 is
-    bistable there, lockstep on its packed seq line or the producer running ahead in bursts, and
-    a periodic hiccup tips it. v0 and v2 read the same in both shapes.
-* The streaming fill counts answer the measurement rung's open question.
-  - v2 across the CCX moves 0.13 lines per message at depth 64, far below the two the prediction
-    feared and below one, so the slot lines are not demand-fetched at all for most messages. We
-    think the consumer's prefetcher pulls consecutive slot lines ahead of demand, since consecutive
-    slots are consecutive lines, and that is the line independence the measurement rung named.
-
-##### docs: sweep punctuation in the touched files
-
-The files the cycle touched carry banned characters and prose semicolons. The rung converts them.
-
-* The touched sources, the runner and cell crates, the tool README, and the manifests carried
-  dashes, arrows, and prose semicolons in their comments and prose.
-  - Each is converted by the prose rule's joins, a colon for a term and its definition, a comma or
-    two sentences for an aside, `->` for an arrow, and the code and transcribed tool output are
-    untouched. Two headings in the tool README lose their dash and take the colon form.
-* The design note's count is a rewrite.
-  - It goes to `## Todo` as its own cycle, as the rule says, and stays as it is here.
-
-##### feat: in-slot seq SPSC v2 closing
-
-Closing out the cycle.
-
-* Acceptance check: pass. `vc-x1 validate` passes with the v2 tests at `M` of 1, 2, 4, and 16.
-  `tp-matrix`, `tp-stream`, and the demo ran all four flavors at depths 1, 2, 8, and 64 on the
-  3900X, the streaming cell reports fills per message, and the design note's v2 section carries
-  the three tables, a why paragraph per placement, the fence probe's result in the v1 section, and
-  the seq width chosen. The 7600X demo run is recorded beside them.
-* Close-out shape: trapezoid, chosen by the user at the review (2026-09-07), whose "land it on
-  main" is the approval for the Land pushes. The review also moved the default `Ring` to v2, an
-  amend of the closing's content beside the name restore, its description untouched.
-* What closing taught: a measurement cycle's own tooling is a finding surface. Three of the
-  cycle's results, the MPSC capacity-1 collapse, the spin policy's inlining, and v1's bistability,
-  came from the tools disagreeing with each other, and each was worth a rung's attention.
+_None._
 
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[1]: #feat-in-slot-seq-spsc-v2-opening
-[2]: #feat-runtime-depth-in-the-demo-and-tp-matrix
-[3]: #feat-add-the-spsc-v2-in-slot-seq-ring
-[4]: #feat-spsc-v2-as-a-fourth-flavor
-[5]: #perf-probe-a-fence-after-the-v1-commit
-[6]: #perf-measure-spsc-v2-across-depths
-[7]: #feat-a-streaming-cell-with-fill-counts
-[8]: #docs-sweep-punctuation-in-the-touched-files
-[9]: #feat-in-slot-seq-spsc-v2-closing
+[1]: #fix-mpsc-handling-of-capacity-1-opening
+[2]: #fix-commit-at-pos--m--1-in-the-mpsc-ring
+[3]: #perf-measure-the-fixed-mpsc-ring-across-depths
+[4]: #fix-mpsc-handling-of-capacity-1-closing
