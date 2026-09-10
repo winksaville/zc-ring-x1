@@ -1,6 +1,7 @@
-//! MPSC ring: multi-producer single-consumer sibling of the
-//! SPSC ring, per the design doc's "MPSC ring (sibling
-//! primitive)" section:
+//! MPSC v1 ring: the v0 ring with the seq values of spsc v1,
+//! so `capacity` runs down to 1, per the design doc's "MPSC v1:
+//! equality-seq ring" section. A sibling of v0 under the same
+//! module layout, so the two measure side by side:
 //!
 //! - Same region shape as the SPSC ring — a four-line
 //!   [`MpscHeader`] then slots — plus a per-slot sequence
@@ -10,10 +11,11 @@
 //! - Producers CAS-claim `producer_idx`; the consumer stays
 //!   CAS-free. Fullness is read from the slot seq, so
 //!   producers never load `consumer_idx`.
-//! - `capacity` is at least 2: committed is Vyukov's `pos + 1`
-//!   and released `pos + M`, the same value at `M = 1`, where
-//!   both sides misread the slot and spin forever. `init` and
-//!   `attach` reject it, and `mpsc::v1` runs down to 1.
+//! - `capacity` may be any power of two down to 1, the change
+//!   from v0: a slot is claimable at `seq == pos`, committed at
+//!   `pos + M + 1`, released at `pos + M`, checked by equality.
+//!   v0's Vyukov `pos + 1` for committed equals released at
+//!   `M = 1` and wedges both sides there.
 //! - Own magic and layout version: a region is one kind or
 //!   the other, and cross-attaching fails toward
 //!   [`Error::BadMagic`].
@@ -34,12 +36,13 @@ pub use consumer::{MpscConsumer, MpscReadSlot};
 pub use producer::MpscProducer;
 
 /// Layout marker written by [`MpscRing::init`]; distinct from
-/// the SPSC magic so cross-kind attach fails toward
-/// [`Error::BadMagic`].
-const MPSC_MAGIC: u32 = 0x5A43_4D31; // "ZCM1"
+/// the SPSC and MPSC v0 magics so a cross-kind or cross-version
+/// attach fails toward [`Error::BadMagic`]: a v0 region carries
+/// v0's seq values, which this ring would misread.
+const MPSC_MAGIC: u32 = 0x5A43_4D32; // "ZCM2"
 
-/// Bumped on any change to the MPSC region layout;
-/// independent of the SPSC layout version.
+/// Bumped on any change to the MPSC v1 region layout;
+/// independent of the v0 and SPSC layout versions.
 const MPSC_LAYOUT_VERSION: u32 = 1;
 
 /// Capacity bound: `2^30`, not the SPSC `2^31` — the seq
@@ -47,20 +50,16 @@ const MPSC_LAYOUT_VERSION: u32 = 1;
 /// the design doc's "MPSC open questions").
 const MPSC_MAX_CAPACITY: u32 = 1 << 30;
 
-/// Capacity floor: at 1 the committed and released seq values
-/// coincide and the ring wedges (see the module doc), so v0
-/// refuses it rather than hang.
-const MPSC_MIN_CAPACITY: u32 = 2;
-
 /// Tombstone offset: an unwound `send_with` commits
-/// `pos + 1 + TOMBSTONE` instead of `pos + 1`, marking a
-/// claimed slot the consumer must release without delivering.
+/// `pos + M + 1 + TOMBSTONE` instead of `pos + M + 1`, marking
+/// a claimed slot the consumer must release without
+/// delivering.
 ///
 /// - Unambiguous at both wait points: the consumer at `c`
-///   legitimately sees only `seq - (c+1)` of `-1` (not yet
-///   committed) or `0` (committed), so exactly `2^31` means
-///   tombstone; a producer's wrapping-signed diff reads a
-///   tombstoned previous lap as negative — "full" — until the
+///   legitimately sees only `c` (not yet committed),
+///   `c + M + 1` (committed), or that plus `2^31` (tombstone),
+///   distinct while `M <= 2^30`; a producer reads a tombstoned
+///   previous lap as anything but `pos`, so "full", until the
 ///   consumer skips it, which is the correct backpressure.
 pub(crate) const TOMBSTONE: u32 = 1 << 31;
 
@@ -136,7 +135,7 @@ impl<'a> MpscRing<'a> {
     ///
     /// - `slot_size` — N bytes per slot, a [`CACHE_LINE_SIZE`]
     ///   multiple.
-    /// - `capacity` — M slots, a power of two from 2 to `2^30`.
+    /// - `capacity` — M slots, a power of two from 1 to `2^30`.
     /// - The region must be [`CACHE_LINE_SIZE`]-aligned and at
     ///   least [`mpsc_region_size`] bytes.
     pub fn init(region: &'a mut [u8], slot_size: u32, capacity: u32) -> Result<Self, Error> {
@@ -256,6 +255,7 @@ impl<'a> MpscRing<'a> {
                 self.seqs,
                 self.slots,
                 self.slot_size,
+                self.capacity,
                 self.mask,
             ),
             MpscConsumer::new(
@@ -316,13 +316,12 @@ pub fn mpsc_region_size(slot_size: u32, capacity: u32) -> u64 {
 /// Geometry checks for [`MpscRing::init`] / [`MpscRing::attach`].
 ///
 /// - Slot size as the SPSC ring; capacity additionally capped
-///   at [`MPSC_MAX_CAPACITY`] for tombstone headroom and floored
-///   at [`MPSC_MIN_CAPACITY`], where the protocol holds.
+///   at [`MPSC_MAX_CAPACITY`] for tombstone headroom.
 fn validate_mpsc_geometry(slot_size: u32, capacity: u32) -> Result<(), Error> {
     if slot_size == 0 || !(slot_size as usize).is_multiple_of(CACHE_LINE_SIZE) {
         return Err(Error::BadSlotSize);
     }
-    if !capacity.is_power_of_two() || !(MPSC_MIN_CAPACITY..=MPSC_MAX_CAPACITY).contains(&capacity) {
+    if capacity == 0 || !capacity.is_power_of_two() || capacity > MPSC_MAX_CAPACITY {
         return Err(Error::BadCapacity);
     }
     Ok(())
@@ -382,12 +381,6 @@ mod tests {
             MpscRing::init(&mut r.0, 64, 1 << 31).err().unwrap(),
             Error::BadCapacity
         );
-        // Under the v0 floor (fine for v1): the protocol wedges
-        // at capacity 1.
-        assert_eq!(
-            MpscRing::init(&mut r.0, 64, 1).err().unwrap(),
-            Error::BadCapacity
-        );
         assert_eq!(
             MpscRing::init(&mut r.0, 64, 8).err().unwrap(),
             Error::TooSmall
@@ -444,16 +437,6 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err, Error::BadCacheLine);
-        // A recorded capacity under the floor is rejected too,
-        // so a region another build wrote at 1 is not attached.
-        ring.header
-            .cache_line_size
-            .store(CACHE_LINE_SIZE as u32, Ordering::Relaxed);
-        ring.header.capacity.store(1, Ordering::Relaxed);
-        let err = unsafe { MpscRing::attach(r.0.as_mut_ptr(), r.0.len()) }
-            .err()
-            .unwrap();
-        assert_eq!(err, Error::BadCapacity);
     }
 
     #[test]
@@ -469,6 +452,24 @@ mod tests {
         let mut r = Region::new();
         MpscRing::init(&mut r.0, 64, 4).unwrap();
         let err = unsafe { Ring::attach(r.0.as_mut_ptr(), r.0.len()) }
+            .err()
+            .unwrap();
+        assert_eq!(err, Error::BadMagic);
+    }
+
+    #[test]
+    fn cross_version_attach_fails_bad_magic() {
+        // A v0 region carries v0's seq values, so v1 must not
+        // attach to it, nor v0 to a v1 region.
+        let mut r = Region::new();
+        crate::mpsc::v0::MpscRing::init(&mut r.0, 64, 4).unwrap();
+        let err = unsafe { MpscRing::attach(r.0.as_mut_ptr(), r.0.len()) }
+            .err()
+            .unwrap();
+        assert_eq!(err, Error::BadMagic);
+        let mut r = Region::new();
+        MpscRing::init(&mut r.0, 64, 4).unwrap();
+        let err = unsafe { crate::mpsc::v0::MpscRing::attach(r.0.as_mut_ptr(), r.0.len()) }
             .err()
             .unwrap();
         assert_eq!(err, Error::BadMagic);
@@ -684,12 +685,97 @@ mod tests {
     }
 
     #[test]
-    fn threaded_mpsc_two_producers() {
+    fn mpsc_seq_values_are_distinct_at_capacity_1() {
+        // The capacity-1 bug: committed pos + 1 equalled
+        // released pos + M. Now one seq word cycles through
+        // claimable 0, committed 2, released 1, and the next
+        // lap's claimable is that 1.
+        let mut r = Region::new();
+        let ring = MpscRing::init(&mut r.0, 64, 1).unwrap();
+        let seqs = ring.seqs;
+        // SAFETY: capacity 1, slot 0 is the seq array.
+        let seq = unsafe { &*seqs };
+        let (prod, mut cons) = ring.split();
+        assert_eq!(seq.load(Ordering::Relaxed), 0);
+        prod.send_with::<Msg>(|_| false, |m| m.seq = 7).unwrap();
+        assert_eq!(seq.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            prod.send_with::<Msg>(|_| false, |_| {}).err().unwrap(),
+            Full
+        );
+        let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+        assert_eq!(msg.seq, 7);
+        msg.release();
+        assert_eq!(seq.load(Ordering::Relaxed), 1);
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+    }
+
+    #[test]
+    fn mpsc_capacity_1_streams_laps() {
+        // Many laps through the one slot, lockstep: each send
+        // fills the ring and each receive empties it.
+        let mut r = Region::new();
+        let (prod, mut cons) = MpscRing::init(&mut r.0, 64, 1).unwrap().split();
+        for i in 0..1000u64 {
+            prod.send_with::<Msg>(|_| false, |m| m.seq = i).unwrap();
+            assert!(prod.send_with::<Msg>(|_| false, |_| {}).is_err());
+            let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+            assert_eq!(msg.seq, i);
+            msg.release();
+            assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+        }
+    }
+
+    #[test]
+    fn mpsc_capacity_1_tombstone_skips() {
+        // A tombstone in the only slot must not wedge either
+        // side: the consumer skips it and the next send lands.
+        let mut r = Region::new();
+        let (prod, mut cons) = MpscRing::init(&mut r.0, 64, 1).unwrap().split();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            prod.send_with::<Msg>(|_| false, |_: &mut Msg| panic!("fill panics"))
+        }));
+        assert!(unwound.is_err());
+        // Full until the consumer skips the tombstone.
+        assert!(prod.send_with::<Msg>(|_| false, |_| {}).is_err());
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+        prod.send_with::<Msg>(|_| false, |m| m.seq = 1).unwrap();
+        let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+        assert_eq!(msg.seq, 1);
+        msg.release();
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+    }
+
+    #[test]
+    fn mpsc_capacity_1_survives_u32_wrap() {
+        // As the 4-slot wrap test, with one slot: its seq is
+        // the free-running position that next claims it.
+        let mut r = Region::new();
+        let ring = MpscRing::init(&mut r.0, 64, 1).unwrap();
+        let start = u32::MAX - 1;
+        ring.header.producer_idx.store(start, Ordering::Relaxed);
+        ring.header.consumer_idx.store(start, Ordering::Relaxed);
+        // SAFETY: capacity 1, slot 0 is the seq array.
+        unsafe { &*ring.seqs }.store(start, Ordering::Relaxed);
+        let (prod, mut cons) = ring.split();
+        for i in 0..4u64 {
+            prod.send_with::<Msg>(|_| false, |m| m.seq = i).unwrap();
+            assert!(prod.send_with::<Msg>(|_| false, |_| {}).is_err());
+            let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+            assert_eq!(msg.seq, i);
+            msg.release();
+        }
+        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+    }
+
+    /// Two producers over `capacity` slots: per-producer FIFO
+    /// holds and nothing is lost.
+    fn two_producers(capacity: u32) {
         // Reduced under Miri: interpreted spin loops are slow.
         const COUNT: u64 = if cfg!(miri) { 100 } else { 50_000 };
         const PRODUCERS: u64 = 2;
         let mut r = Region::new();
-        let (prod, mut cons) = MpscRing::init(&mut r.0, 64, 4).unwrap().split();
+        let (prod, mut cons) = MpscRing::init(&mut r.0, 64, capacity).unwrap().split();
 
         std::thread::scope(|s| {
             for p in 0..PRODUCERS {
@@ -718,6 +804,16 @@ mod tests {
                 assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
             });
         });
+    }
+
+    #[test]
+    fn threaded_mpsc_two_producers() {
+        two_producers(4);
+    }
+
+    #[test]
+    fn threaded_mpsc_two_producers_capacity_1() {
+        two_producers(1);
     }
 
     #[test]

@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use tp_runner::{LINE_BYTES, LineBuf, STOP, drive, pin_to_cpu, spin, unpin_current};
 use tprobe::TProbe;
 use tprobe::ticks;
-use zc_ring_x1::{CACHE_LINE_SIZE, MpscRing, mpsc_region_size};
+use zc_ring_x1::CACHE_LINE_SIZE;
 
 // The runner's line-aligned regions must be aligned the way
 // the rings want them.
@@ -51,40 +51,52 @@ fn v0_region_size(slot_size: u32, capacity: u32) -> u64 {
     size_of::<zc_ring_x1::spsc::v0::Header>() as u64 + slot_size as u64 * capacity as u64
 }
 
-/// The ring flavor a cell measures.
+/// The ring flavor a cell measures, named `xpsc-vN` after its
+/// module path, every version included so the A/B is one run.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Flavor {
     /// The SPSC v0 ring (`reserve_slot_with` both ends).
-    Spsc,
+    SpscV0,
     /// The SPSC v1 seam-word ring (same surface, per-slot seq).
     SpscV1,
     /// The SPSC v2 in-slot seq ring (same surface, the seq at
     /// the front of its slot).
     SpscV2,
-    /// The MPSC ring at 1p/1c (`send_with` producers).
-    Mpsc,
+    /// The MPSC v0 ring at 1p/1c (`send_with` producers).
+    MpscV0,
+    /// The MPSC v1 equality-seq ring at 1p/1c (same surface,
+    /// runs at depth 1).
+    MpscV1,
 }
 
 /// Every flavor, in report order.
-pub const FLAVORS: [Flavor; 4] = [Flavor::Spsc, Flavor::SpscV1, Flavor::SpscV2, Flavor::Mpsc];
+pub const FLAVORS: [Flavor; 5] = [
+    Flavor::SpscV0,
+    Flavor::SpscV1,
+    Flavor::SpscV2,
+    Flavor::MpscV0,
+    Flavor::MpscV1,
+];
 
 impl Flavor {
     /// Lowercase name for labels and CLI parsing.
     pub fn as_str(self) -> &'static str {
         match self {
-            Flavor::Spsc => "spsc",
+            Flavor::SpscV0 => "spsc-v0",
             Flavor::SpscV1 => "spsc-v1",
             Flavor::SpscV2 => "spsc-v2",
-            Flavor::Mpsc => "mpsc",
+            Flavor::MpscV0 => "mpsc-v0",
+            Flavor::MpscV1 => "mpsc-v1",
         }
     }
 
     /// The smallest depth the flavor's protocol runs at. The
-    /// MPSC ring's committed and released seq values coincide
-    /// at capacity 1 (`notes/bugs.md`), so its cells start at 2.
+    /// MPSC v0 ring's committed and released seq values coincide
+    /// at capacity 1 and its `init` rejects it, so its cells
+    /// start at 2. v1 fixed that and runs from 1.
     pub fn min_depth(self) -> u32 {
         match self {
-            Flavor::Mpsc => 2,
+            Flavor::MpscV0 => 2,
             _ => 1,
         }
     }
@@ -241,10 +253,11 @@ pub fn run_cell(
     let fills = Fills::open();
     let worker = pin.map(|(_, w)| w);
     let probes = match flavor {
-        Flavor::Spsc => run_spsc(dur, worker, depth),
+        Flavor::SpscV0 => run_spsc_v0(dur, worker, depth),
         Flavor::SpscV1 => run_spsc_v1(dur, worker, depth),
         Flavor::SpscV2 => run_spsc_v2(dur, worker, depth),
-        Flavor::Mpsc => run_mpsc(dur, worker, depth),
+        Flavor::MpscV0 => run_mpsc_v0(dur, worker, depth),
+        Flavor::MpscV1 => run_mpsc_v1(dur, worker, depth),
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(Fills::finish);
@@ -368,10 +381,10 @@ macro_rules! spsc_cell {
 }
 
 spsc_cell!(
-    run_spsc,
+    run_spsc_v0,
     zc_ring_x1::spsc::v0::Ring,
     v0_region_size,
-    Flavor::Spsc
+    Flavor::SpscV0
 );
 spsc_cell!(
     run_spsc_v1,
@@ -386,100 +399,124 @@ spsc_cell!(
     Flavor::SpscV2
 );
 
-/// MPSC cell body: two `MpscRing`s at 1p/1c: producers
-/// `send_with` (closure fill), the consumer `reserve_slot_with`,
-/// both under the [`spin`] policy (recv sites instrumented).
-fn run_mpsc(dur: Duration, worker_cpu: Option<usize>, depth: u32) -> [TProbe; 8] {
-    let slot = CACHE_LINE_SIZE as u32;
-    let mut req_region = LineBuf::new(mpsc_region_size(slot, depth));
-    let mut resp_region = LineBuf::new(mpsc_region_size(slot, depth));
-    let (req_tx, mut req_rx) = MpscRing::init(req_region.as_mut_bytes(), slot, depth)
-        .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
-        .split();
-    let (resp_tx, mut resp_rx) = MpscRing::init(resp_region.as_mut_bytes(), slot, depth)
-        .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
-        .split();
+/// Define an MPSC cell body over the ring at `$ring`, its
+/// regions sized by `$size(slot_size, depth)`: two rings at
+/// 1p/1c, producers `send_with` (closure fill), the consumer
+/// `reserve_slot_with`, both under the [`spin`] policy (recv
+/// sites instrumented). The MPSC versions share the endpoint
+/// surface and differ by path, as the SPSC ones do, so one body
+/// serves both and the A/B measures the protocol alone.
+macro_rules! mpsc_cell {
+    ($name:ident, $ring:path, $size:path, $flavor:expr) => {
+        fn $name(dur: Duration, worker_cpu: Option<usize>, depth: u32) -> [TProbe; 8] {
+            use $ring as MpscRing;
+            let slot = CACHE_LINE_SIZE as u32;
+            let mut req_region = LineBuf::new($size(slot, depth));
+            let mut resp_region = LineBuf::new($size(slot, depth));
+            let (req_tx, mut req_rx) = MpscRing::init(req_region.as_mut_bytes(), slot, depth)
+                .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
+                .split();
+            let (resp_tx, mut resp_rx) = MpscRing::init(resp_region.as_mut_bytes(), slot, depth)
+                .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
+                .split();
 
-    std::thread::scope(|s| {
-        let worker = s.spawn(move || {
-            if let Some(cpu) = worker_cpu {
-                pin_to_cpu(cpu);
-            }
-            let mut recv = RecvProbes::new(Flavor::Mpsc, "worker");
-            let mut send_probe = TProbe::new("mpsc worker send (send_with)");
-            loop {
-                let v = instrumented_recv(&mut recv, |attempts, spin_start| {
-                    let slot = req_rx
-                        .reserve_slot_with::<u64>(|a| {
-                            if a == 0 {
-                                *spin_start = ticks::read_ticks();
-                            }
-                            *attempts = a + 1;
-                            core::hint::spin_loop();
-                            true
-                        })
-                        .expect("spin never gives up");
-                    let v = *slot;
-                    slot.release();
-                    v
+            std::thread::scope(|s| {
+                let worker = s.spawn(move || {
+                    if let Some(cpu) = worker_cpu {
+                        pin_to_cpu(cpu);
+                    }
+                    let mut recv = RecvProbes::new($flavor, "worker");
+                    let mut send_probe =
+                        TProbe::new(&format!("{} worker send (send_with)", $flavor.as_str()));
+                    loop {
+                        let v = instrumented_recv(&mut recv, |attempts, spin_start| {
+                            let slot = req_rx
+                                .reserve_slot_with::<u64>(|a| {
+                                    if a == 0 {
+                                        *spin_start = ticks::read_ticks();
+                                    }
+                                    *attempts = a + 1;
+                                    core::hint::spin_loop();
+                                    true
+                                })
+                                .expect("spin never gives up");
+                            let v = *slot;
+                            slot.release();
+                            v
+                        });
+                        if v == STOP {
+                            break;
+                        }
+                        let s = ticks::read_ticks();
+                        resp_tx
+                            .send_with::<u64>(spin, |m| *m = v)
+                            .expect("spin never gives up");
+                        send_probe.record(ticks::read_ticks().wrapping_sub(s));
+                    }
+                    (recv, send_probe)
                 });
-                if v == STOP {
-                    break;
-                }
-                let s = ticks::read_ticks();
-                resp_tx
-                    .send_with::<u64>(spin, |m| *m = v)
-                    .expect("spin never gives up");
-                send_probe.record(ticks::read_ticks().wrapping_sub(s));
-            }
-            (recv, send_probe)
-        });
 
-        let mut send_probe = TProbe::new("mpsc main send (send_with)");
-        let mut recv = RecvProbes::new(Flavor::Mpsc, "main");
-        drive(
-            dur,
-            |v| {
-                let s = ticks::read_ticks();
-                req_tx
-                    .send_with::<u64>(spin, |m| *m = v)
-                    .expect("spin never gives up");
-                send_probe.record(ticks::read_ticks().wrapping_sub(s));
-            },
-            || {
-                instrumented_recv(&mut recv, |attempts, spin_start| {
-                    let slot = resp_rx
-                        .reserve_slot_with::<u64>(|a| {
-                            if a == 0 {
-                                *spin_start = ticks::read_ticks();
-                            }
-                            *attempts = a + 1;
-                            core::hint::spin_loop();
-                            true
+                let mut send_probe =
+                    TProbe::new(&format!("{} main send (send_with)", $flavor.as_str()));
+                let mut recv = RecvProbes::new($flavor, "main");
+                drive(
+                    dur,
+                    |v| {
+                        let s = ticks::read_ticks();
+                        req_tx
+                            .send_with::<u64>(spin, |m| *m = v)
+                            .expect("spin never gives up");
+                        send_probe.record(ticks::read_ticks().wrapping_sub(s));
+                    },
+                    || {
+                        instrumented_recv(&mut recv, |attempts, spin_start| {
+                            let slot = resp_rx
+                                .reserve_slot_with::<u64>(|a| {
+                                    if a == 0 {
+                                        *spin_start = ticks::read_ticks();
+                                    }
+                                    *attempts = a + 1;
+                                    core::hint::spin_loop();
+                                    true
+                                })
+                                .expect("spin never gives up");
+                            let v = *slot;
+                            slot.release();
+                            v
                         })
-                        .expect("spin never gives up");
-                    let v = *slot;
-                    slot.release();
-                    v
-                })
-            },
-        );
-        req_tx
-            .send_with::<u64>(spin, |m| *m = STOP)
-            .expect("spin never gives up");
-        let (worker_recv, worker_send) = worker.join().expect("worker panicked");
-        [
-            send_probe,
-            worker_recv.phase,
-            worker_recv.spin,
-            worker_recv.attempts,
-            worker_send,
-            recv.phase,
-            recv.spin,
-            recv.attempts,
-        ]
-    })
+                    },
+                );
+                req_tx
+                    .send_with::<u64>(spin, |m| *m = STOP)
+                    .expect("spin never gives up");
+                let (worker_recv, worker_send) = worker.join().expect("worker panicked");
+                [
+                    send_probe,
+                    worker_recv.phase,
+                    worker_recv.spin,
+                    worker_recv.attempts,
+                    worker_send,
+                    recv.phase,
+                    recv.spin,
+                    recv.attempts,
+                ]
+            })
+        }
+    };
 }
+
+mpsc_cell!(
+    run_mpsc_v0,
+    zc_ring_x1::mpsc::v0::MpscRing,
+    zc_ring_x1::mpsc::v0::mpsc_region_size,
+    Flavor::MpscV0
+);
+mpsc_cell!(
+    run_mpsc_v1,
+    zc_ring_x1::mpsc::v1::MpscRing,
+    zc_ring_x1::mpsc::v1::mpsc_region_size,
+    Flavor::MpscV1
+);
 
 /// One streaming cell's outcome.
 pub struct StreamResult {
@@ -522,10 +559,11 @@ pub fn run_stream(
     #[cfg(target_os = "linux")]
     let fills = Fills::open();
     let (msgs, secs) = match flavor {
-        Flavor::Spsc => stream_spsc(dur, pin, depth),
+        Flavor::SpscV0 => stream_spsc_v0(dur, pin, depth),
         Flavor::SpscV1 => stream_spsc_v1(dur, pin, depth),
         Flavor::SpscV2 => stream_spsc_v2(dur, pin, depth),
-        Flavor::Mpsc => stream_mpsc(dur, pin, depth),
+        Flavor::MpscV0 => stream_mpsc_v0(dur, pin, depth),
+        Flavor::MpscV1 => stream_mpsc_v1(dur, pin, depth),
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(Fills::finish);
@@ -608,7 +646,7 @@ macro_rules! spsc_stream {
     };
 }
 
-spsc_stream!(stream_spsc, zc_ring_x1::spsc::v0::Ring, v0_region_size);
+spsc_stream!(stream_spsc_v0, zc_ring_x1::spsc::v0::Ring, v0_region_size);
 spsc_stream!(
     stream_spsc_v1,
     zc_ring_x1::spsc::v1::Ring,
@@ -620,49 +658,67 @@ spsc_stream!(
     zc_ring_x1::spsc::v2::region_size
 );
 
-/// MPSC streaming cell body: one `MpscRing` at 1p/1c, the
-/// producer `send_with` spawned on `pin.0`, the consumer on
-/// `pin.1`. Returns the messages moved and the seconds.
-fn stream_mpsc(dur: Duration, pin: Option<(usize, usize)>, depth: u32) -> (u64, f64) {
-    let slot = CACHE_LINE_SIZE as u32;
-    let mut region = LineBuf::new(mpsc_region_size(slot, depth));
-    let (tx, mut rx) = MpscRing::init(region.as_mut_bytes(), slot, depth)
-        .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
-        .split();
-    let start = Instant::now();
-    let msgs = std::thread::scope(|s| {
-        s.spawn(move || {
-            if let Some((p, _)) = pin {
-                pin_to_cpu(p);
-            }
-            let mut counter: u64 = 0;
-            loop {
-                for _ in 0..STREAM_CHECK_EVERY {
-                    tx.send_with::<u64>(zc_ring_x1::policy::spin, |m| *m = counter)
+/// Define an MPSC streaming cell body over the ring at `$ring`,
+/// its region sized by `$size(slot_size, depth)`: one ring at
+/// 1p/1c, the producer `send_with` spawned on `pin.0`, the
+/// consumer on `pin.1`. Returns the messages moved and the
+/// seconds.
+macro_rules! mpsc_stream {
+    ($name:ident, $ring:path, $size:path) => {
+        fn $name(dur: Duration, pin: Option<(usize, usize)>, depth: u32) -> (u64, f64) {
+            use $ring as MpscRing;
+            let slot = CACHE_LINE_SIZE as u32;
+            let mut region = LineBuf::new($size(slot, depth));
+            let (tx, mut rx) = MpscRing::init(region.as_mut_bytes(), slot, depth)
+                .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
+                .split();
+            let start = Instant::now();
+            let msgs = std::thread::scope(|s| {
+                s.spawn(move || {
+                    if let Some((p, _)) = pin {
+                        pin_to_cpu(p);
+                    }
+                    let mut counter: u64 = 0;
+                    loop {
+                        for _ in 0..STREAM_CHECK_EVERY {
+                            tx.send_with::<u64>(zc_ring_x1::policy::spin, |m| *m = counter)
+                                .expect("spin never gives up");
+                            counter += 1;
+                        }
+                        if start.elapsed() >= dur {
+                            break;
+                        }
+                    }
+                    tx.send_with::<u64>(zc_ring_x1::policy::spin, |m| *m = STOP)
                         .expect("spin never gives up");
-                    counter += 1;
-                }
-                if start.elapsed() >= dur {
-                    break;
-                }
-            }
-            tx.send_with::<u64>(zc_ring_x1::policy::spin, |m| *m = STOP)
-                .expect("spin never gives up");
-        });
-        let consumer = s.spawn(move || {
-            if let Some((_, c)) = pin {
-                pin_to_cpu(c);
-            }
-            drain_stream(|| {
-                let slot = rx
-                    .reserve_slot_with::<u64>(zc_ring_x1::policy::spin)
-                    .expect("spin never gives up");
-                let v = *slot;
-                slot.release();
-                v
-            })
-        });
-        consumer.join().expect("consumer panicked")
-    });
-    (msgs, start.elapsed().as_secs_f64())
+                });
+                let consumer = s.spawn(move || {
+                    if let Some((_, c)) = pin {
+                        pin_to_cpu(c);
+                    }
+                    drain_stream(|| {
+                        let slot = rx
+                            .reserve_slot_with::<u64>(zc_ring_x1::policy::spin)
+                            .expect("spin never gives up");
+                        let v = *slot;
+                        slot.release();
+                        v
+                    })
+                });
+                consumer.join().expect("consumer panicked")
+            });
+            (msgs, start.elapsed().as_secs_f64())
+        }
+    };
 }
+
+mpsc_stream!(
+    stream_mpsc_v0,
+    zc_ring_x1::mpsc::v0::MpscRing,
+    zc_ring_x1::mpsc::v0::mpsc_region_size
+);
+mpsc_stream!(
+    stream_mpsc_v1,
+    zc_ring_x1::mpsc::v1::MpscRing,
+    zc_ring_x1::mpsc::v1::mpsc_region_size
+);

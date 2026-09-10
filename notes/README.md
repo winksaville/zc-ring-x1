@@ -12,9 +12,10 @@ Project design docs:
 
 - [ring-buffer-design.md](ring-buffer-design.md): the
   zero-copy ring buffer, its MPSC sibling, the seam-word
-  SPSC v1, and the in-slot seq SPSC v2 with their
-  measurements at four depths (terminology, requirements,
-  layout, API, validation), kept in sync with `src/`.
+  SPSC v1, the in-slot seq SPSC v2, and the equality-seq
+  MPSC v1 with their measurements at four depths
+  (terminology, requirements, layout, API, validation), kept
+  in sync with `src/`.
 - [../tp_matrix/README.md](../tp_matrix/README.md): the
   measurement tools, `tp-cell`, `tp-matrix`, and the
   streaming `tp-stream`, and what their numbers are sensitive

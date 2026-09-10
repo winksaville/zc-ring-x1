@@ -900,40 +900,40 @@ travel on one line.
   the v1 cycle set: faster than MPSC v0 at every cross-core
   placement.
   - Round trips per 5 s and fills per trip, one cell per
-    flavor and depth (the MPSC ring cannot run at depth 1,
-    `notes/bugs.md`):
+    flavor and depth (the MPSC v0 ring cannot run at depth 1,
+    see [MPSC v1: equality-seq ring](#mpsc-v1-equality-seq-ring)):
 
     | placement | flavor  | d=1          | d=2          | d=8          | d=64         |
     |-----------|---------|-------------:|-------------:|-------------:|-------------:|
-    | 0,1 CCX   | spsc    | 24.6M (11.1) | 25.6M (10.7) | 25.5M (10.0) | 25.7M (9.98) |
+    | 0,1 CCX   | spsc-v0 | 24.6M (11.1) | 25.6M (10.7) | 25.5M (10.0) | 25.7M (9.98) |
     | 0,1 CCX   | spsc-v1 | 30.4M (8.13) | 25.4M (8.49) | 31.4M (6.35) | 31.3M (6.02) |
     | 0,1 CCX   | spsc-v2 | 33.7M (4.00) | 34.5M (4.05) | 28.9M (3.08) | 28.7M (3.72) |
-    | 0,1 CCX   | mpsc    | -            | 27.9M (8.30) | 32.7M (6.36) | 32.2M (6.04) |
-    | 0,3 x-CCX | spsc    |  6.8M (11.3) |  6.8M (10.8) |  7.0M (10.1) |  6.8M (10.0) |
+    | 0,1 CCX   | mpsc-v0 | -            | 27.9M (8.30) | 32.7M (6.36) | 32.2M (6.04) |
+    | 0,3 x-CCX | spsc-v0 |  6.8M (11.3) |  6.8M (10.8) |  7.0M (10.1) |  6.8M (10.0) |
     | 0,3 x-CCX | spsc-v1 | 10.1M (8.07) |  7.7M (8.39) | 10.2M (6.36) |  9.2M (6.00) |
     | 0,3 x-CCX | spsc-v2 | 11.4M (4.00) | 11.3M (4.04) | 10.3M (3.08) | 10.4M (3.12) |
-    | 0,3 x-CCX | mpsc    | -            |  8.2M (8.24) | 10.4M (6.35) |  9.1M (6.05) |
-    | 0,12 SMT  | spsc    | 43.4M        | 43.5M        | 43.7M        | 43.5M        |
+    | 0,3 x-CCX | mpsc-v0 | -            |  8.2M (8.24) | 10.4M (6.35) |  9.1M (6.05) |
+    | 0,12 SMT  | spsc-v0 | 43.4M        | 43.5M        | 43.7M        | 43.5M        |
     | 0,12 SMT  | spsc-v1 | 35.4M        | 35.4M        | 35.1M        | 35.4M        |
     | 0,12 SMT  | spsc-v2 | 37.9M        | 37.9M        | 37.3M        | 37.9M        |
-    | 0,12 SMT  | mpsc    | -            | 36.4M        | 36.3M        | 36.1M        |
+    | 0,12 SMT  | mpsc-v0 | -            | 36.4M        | 36.3M        | 36.1M        |
 
   - Streaming, the demo's sweep, ns per message:
 
     | placement          | flavor  |   d=1 |   d=2 |   d=8 |  d=64 |
     |--------------------|---------|------:|------:|------:|------:|
-    | 1t core 0          | spsc    |   2.4 |   2.4 |   2.4 |   2.4 |
+    | 1t core 0          | spsc-v0 |   2.4 |   2.4 |   2.4 |   2.4 |
     | 1t core 0          | spsc-v1 |   6.9 |   6.8 |   6.7 |   6.7 |
     | 1t core 0          | spsc-v2 |   6.5 |   6.4 |   6.4 |   6.4 |
-    | 1t core 0          | mpsc    |     - |  11.0 |  11.0 |  11.0 |
-    | 2t diff cores 0+3  | spsc    | 326.6 | 203.3 | 154.2 | 208.8 |
+    | 1t core 0          | mpsc-v0 |     - |  11.0 |  11.0 |  11.0 |
+    | 2t diff cores 0+3  | spsc-v0 | 326.6 | 203.3 | 154.2 | 208.8 |
     | 2t diff cores 0+3  | spsc-v1 | 378.3 | 213.8 | 120.7 | 102.5 |
     | 2t diff cores 0+3  | spsc-v2 | 198.4 | 103.1 |  35.1 |  12.1 |
-    | 2t diff cores 0+3  | mpsc    |     - | 206.5 | 104.6 |  76.8 |
-    | 2t same core 0+12  | spsc    |  30.0 |  14.1 |   7.2 |   6.7 |
+    | 2t diff cores 0+3  | mpsc-v0 |     - | 206.5 | 104.6 |  76.8 |
+    | 2t same core 0+12  | spsc-v0 |  30.0 |  14.1 |   7.2 |   6.7 |
     | 2t same core 0+12  | spsc-v1 |  50.1 |  26.1 |  15.1 |  11.9 |
     | 2t same core 0+12  | spsc-v2 |  39.5 |  20.5 |   7.1 |   7.2 |
-    | 2t same core 0+12  | mpsc    |     - |  23.8 |  15.3 |  15.2 |
+    | 2t same core 0+12  | mpsc-v0 |     - |  23.8 |  15.3 |  15.2 |
 
     The unpinned rows are omitted: the scheduler's placement
     varies run to run and the numbers with it.
@@ -983,18 +983,18 @@ travel on one line.
 
     | placement          | flavor  |   d=1 |   d=2 |   d=8 |  d=64 |
     |--------------------|---------|------:|------:|------:|------:|
-    | 1t core 0          | spsc    |   2.1 |   2.1 |   2.1 |   2.1 |
+    | 1t core 0          | spsc-v0 |   2.1 |   2.1 |   2.1 |   2.1 |
     | 1t core 0          | spsc-v1 |   6.4 |   6.2 |   6.0 |   6.0 |
     | 1t core 0          | spsc-v2 |   5.5 |   5.6 |   5.6 |   5.4 |
-    | 1t core 0          | mpsc    |     - |   6.4 |   6.7 |   6.8 |
-    | 2t diff cores 0+1  | spsc    |  63.5 |  39.0 |  11.6 |   6.3 |
+    | 1t core 0          | mpsc-v0 |     - |   6.4 |   6.7 |   6.8 |
+    | 2t diff cores 0+1  | spsc-v0 |  63.5 |  39.0 |  11.6 |   6.3 |
     | 2t diff cores 0+1  | spsc-v1 |  75.9 |  43.6 |  17.8 |  17.0 |
     | 2t diff cores 0+1  | spsc-v2 |  40.8 |  24.1 |   7.0 |   3.4 |
-    | 2t diff cores 0+1  | mpsc    |     - |  37.6 |  17.9 |  15.7 |
-    | 2t same core 0+6   | spsc    |  27.8 |  14.7 |   5.3 |   5.8 |
+    | 2t diff cores 0+1  | mpsc-v0 |     - |  37.6 |  17.9 |  15.7 |
+    | 2t same core 0+6   | spsc-v0 |  27.8 |  14.7 |   5.3 |   5.8 |
     | 2t same core 0+6   | spsc-v1 |  43.6 |  24.2 |  13.3 |  12.3 |
     | 2t same core 0+6   | spsc-v2 |  26.1 |  10.7 |   4.7 |   4.3 |
-    | 2t same core 0+6   | mpsc    |     - |  22.6 |  12.7 |  12.0 |
+    | 2t same core 0+6   | mpsc-v0 |     - |  22.6 |  12.7 |  12.0 |
 
     So the picture that reversed between the machines for v1
     does not reverse for v2: within the 7600X's one L3, where
@@ -1019,18 +1019,18 @@ travel on one line.
 
     | placement | flavor  | d=1          | d=2          | d=8          | d=64         |
     |-----------|---------|-------------:|-------------:|-------------:|-------------:|
-    | 0,1 CCX   | spsc    |  79.7 (6.27) |  57.8 (5.54) |  21.6 (2.71) |   9.6 (0.71) |
+    | 0,1 CCX   | spsc-v0 |  79.7 (6.27) |  57.8 (5.54) |  21.6 (2.71) |   9.6 (0.71) |
     | 0,1 CCX   | spsc-v1 |  92.0 (4.56) |  54.1 (3.69) |  25.6 (1.60) |  22.7 (1.03) |
     | 0,1 CCX   | spsc-v2 |  62.9 (2.00) |  31.6 (2.00) |   8.8 (0.87) |   4.9 (0.14) |
-    | 0,1 CCX   | mpsc    | -            |  54.3 (3.68) |  28.8 (1.85) |  21.8 (0.87) |
-    | 0,3 x-CCX | spsc    | 340.1 (6.31) | 207.3 (6.01) | 166.7 (4.71) | 193.3 (3.98) |
+    | 0,1 CCX   | mpsc-v0 | -            |  54.3 (3.68) |  28.8 (1.85) |  21.8 (0.87) |
+    | 0,3 x-CCX | spsc-v0 | 340.1 (6.31) | 207.3 (6.01) | 166.7 (4.71) | 193.3 (3.98) |
     | 0,3 x-CCX | spsc-v1 | 404.6 (5.08) | 206.0 (3.94) |  85.7 (1.86) |  37.8 (0.51) |
     | 0,3 x-CCX | spsc-v2 | 198.8 (2.00) | 103.6 (2.00) |  37.0 (1.44) |  13.9 (0.13) |
-    | 0,3 x-CCX | mpsc    | -            | 210.1 (3.91) | 113.4 (2.16) |  90.5 (1.57) |
-    | 0,12 SMT  | spsc    |  29.5        |  16.5        |   7.4        |   6.8        |
+    | 0,3 x-CCX | mpsc-v0 | -            | 210.1 (3.91) | 113.4 (2.16) |  90.5 (1.57) |
+    | 0,12 SMT  | spsc-v0 |  29.5        |  16.5        |   7.4        |   6.8        |
     | 0,12 SMT  | spsc-v1 |  37.9        |  26.3        |  15.9        |  15.5        |
     | 0,12 SMT  | spsc-v2 |  34.6        |  21.1        |  12.8        |  17.2        |
-    | 0,12 SMT  | mpsc    | -            |  23.3        |  15.2        |  15.0        |
+    | 0,12 SMT  | mpsc-v0 | -            |  23.3        |  15.2        |  15.0        |
 
   - The line count while streaming, the number the round-trip
     cell could not give: at depth 1 and 2 v2 moves exactly
@@ -1067,6 +1067,155 @@ travel on one line.
   - Within an L3 v2 at depth 64 streams at 4.9 ns per message
     with 0.14 fills, twice v0's rate. At the SMT pair, where
     no line crosses, v0 keeps its 2x over every seq protocol.
+
+## MPSC v1: equality-seq ring
+
+The second MPSC protocol, `mpsc::v1`, a sibling of v0 under
+the same module layout, so the two measure side by side. v0
+is Vyukov's queue as [MPSC protocol](#mpsc-protocol) states
+it, and its committed value `pos + 1` equals its released
+value `pos + M` at `M = 1`, so a capacity-1 ring wedges both
+sides after the first release, found by the demo's depth
+sweep on 2026-09-07. v0 now rejects capacity 1 rather than
+hang, and v1 takes the seq values spsc v1 chose for the same
+reason, with nothing else changed.
+
+- **Region**: v0's, the four-line header, the seq array, then
+  the slots, with its own magic `ZCM2` and its own layout
+  version, since a v0 region carries v0's seq values and a
+  cross-version attach must fail toward `BadMagic`.
+- **Seq values**: claimable at `seq == pos`, committed at
+  `pos + M + 1`, released at `pos + M`. At `M = 1` the one
+  word cycles through 0, 2, 1, and the released 1 is the next
+  lap's claimable. `M` is any power of two from 1 to `2^30`,
+  with `M` usable slots: the state is in the word, not in an
+  index distance, so no sacrificial slot.
+- **Equality, not a signed diff**: with committed at
+  `pos + M + 1` a full slot's previous-lap value is `pos + 1`,
+  which v0's diff reads as a lost race. So a producer compares
+  the seq with `pos` for claimable, and anything else is stale
+  or full, told apart by re-reading `producer_idx`: moved
+  means another producer claimed `pos`, so reload and retry
+  with no policy call, and unmoved means the previous occupant
+  is not yet released, so the `on_full` policy runs.
+  - A consequence: a tombstoned previous lap reaches the
+    policy as Full, where v0's diff read it as a lost race and
+    spun with no policy call until the consumer skipped it.
+- **Tombstone**: committed plus `2^31`, as v0, and the `2^30`
+  cap keeps the three values a side can see distinct.
+- **Hot path**: the same loads, stores, and lines as v0. Each
+  endpoint carries `capacity + 1` precomputed, so the commit
+  value and the consumer's check stay one add. The prediction
+  on record: within run noise v1 is v0 at every depth from 2
+  up, and at depth 1 it runs lockstep at about the round-trip
+  cost.
+- **Measured (2026-09-10, 3900X, the rung `perf: measure mpsc
+  v1 beside v0`, at the flavor rung's build: `tp-matrix` and
+  `tp-stream` 5 s cells and the demo's 1M message streams, all
+  at depths 1, 2, 8, and 64)**. The prediction holds: from
+  depth 2 up the two rings are within run noise at every
+  placement in every instrument, and depth 1 is a number.
+  - Round trips per 5 s and fills per trip, the MPSC rows:
+
+    | placement | flavor  | d=1          | d=2          | d=8          | d=64         |
+    |-----------|---------|-------------:|-------------:|-------------:|-------------:|
+    | 0,1 CCX   | mpsc-v0 | -            | 28.6M (8.34) | 31.3M (6.59) | 32.1M (6.00) |
+    | 0,1 CCX   | mpsc-v1 | 32.3M (8.16) | 29.3M (8.30) | 31.3M (6.58) | 32.1M (6.04) |
+    | 0,3 x-CCX | mpsc-v0 | -            |  8.2M (8.24) |  9.4M (6.59) |  9.2M (6.01) |
+    | 0,3 x-CCX | mpsc-v1 |  9.7M (8.11) |  8.1M (8.27) |  8.8M (6.62) |  9.7M (5.96) |
+    | 0,12 SMT  | mpsc-v0 | -            | 35.3M        | 35.5M        | 35.6M        |
+    | 0,12 SMT  | mpsc-v1 | 36.1M        | 35.7M        | 36.0M        | 36.0M        |
+
+    The send costs match to the tenth of a nanosecond, 8.3 to
+    8.9 ns for both at depth 8 and 64 at every placement.
+  - Streaming, `tp-stream`, ns per message and fills per
+    message:
+
+    | placement | flavor  | d=1          | d=2          | d=8          | d=64         |
+    |-----------|---------|-------------:|-------------:|-------------:|-------------:|
+    | 0,1 CCX   | mpsc-v0 | -            |  56.3 (3.71) |  28.5 (1.79) |  22.2 (0.88) |
+    | 0,1 CCX   | mpsc-v1 |  74.2 (4.20) |  54.2 (3.65) |  29.3 (1.87) |  21.8 (0.86) |
+    | 0,3 x-CCX | mpsc-v0 | -            | 213.8 (3.95) | 106.5 (2.17) |  80.6 (1.35) |
+    | 0,3 x-CCX | mpsc-v1 | 465.2 (5.25) | 218.1 (3.99) | 104.0 (2.12) |  81.3 (1.40) |
+    | 0,12 SMT  | mpsc-v0 | -            |  23.3        |  15.2        |  15.0        |
+    | 0,12 SMT  | mpsc-v1 |  39.8        |  22.2        |  15.2        |  15.0        |
+
+  - Streaming, the demo's sweep, ns per message:
+
+    | placement          | flavor  |   d=1 |   d=2 |   d=8 |  d=64 |
+    |--------------------|---------|------:|------:|------:|------:|
+    | 1t core 0          | mpsc-v0 |     - |  10.2 |  10.1 |  10.1 |
+    | 1t core 0          | mpsc-v1 |  10.4 |  10.2 |  10.1 |  10.1 |
+    | 2t diff cores 0+3  | mpsc-v0 |     - | 201.5 | 108.2 |  89.3 |
+    | 2t diff cores 0+3  | mpsc-v1 | 461.0 | 196.4 | 100.6 |  79.2 |
+    | 2t same core 0+12  | mpsc-v0 |     - |  23.6 |  15.8 |  15.1 |
+    | 2t same core 0+12  | mpsc-v1 |  41.9 |  22.3 |  15.1 |  15.0 |
+
+  - Depth 1, the cell v0 could not run: the round trip moves
+    eight lines, the seq line beside each slot line each way,
+    as spsc v1 does at that depth, and completes more trips
+    than at depth 2 at every placement, again as spsc v1 does.
+    The stream is lockstep, one message in flight and the
+    release travelling back before the next send: 74 ns within
+    the CCX and 465 across it against round trips of 155 and
+    515, so between half a trip and a whole one, on 4.2 and
+    5.2 lines per message.
+  - The first `tp-stream` run put v0 at the SMT pair at 47.3
+    and 29.5 ns at depth 2 and 8, twice its recorded figures,
+    with v1 at 22.5 and 15.3 on them. A rerun read v0 at 23.3
+    and 15.2, so the table above is the rerun. We think the
+    first run caught the same regime flip the v2 cycle found
+    in spsc v1's streams, this time on v0, since nothing in
+    the run changed but the cell's luck.
+- **Default (2026-09-10, at the measurement rung)**: the
+  crate's `MpscRing` re-export is v1. v1 is v0 plus a
+  capability at the same cost, so the numbers holding is the
+  whole case. v0 stays reachable by path and keeps its guard.
+- **Measured (2026-09-10, 7600X, Zen 4, one CCD, at Land's
+  plain-name build, the same three instruments at the same
+  depths, the demo's full run in the README's example run
+  beside the 3900X's)**. The same picture: from depth 2 up
+  the two rings are within run noise at every placement in
+  every instrument, the sends 7.0 to 7.3 ns for both, and
+  depth 1 runs. No fills columns, since the tools' fill
+  events are Zen 2 encodings.
+  - Round trips per 5 s, the MPSC rows:
+
+    | placement | flavor  |   d=1 |   d=2 |   d=8 |  d=64 |
+    |-----------|---------|------:|------:|------:|------:|
+    | 0,1 CCX   | mpsc-v0 |     - | 43.8M | 44.7M | 44.4M |
+    | 0,1 CCX   | mpsc-v1 | 43.8M | 44.2M | 45.7M | 44.4M |
+    | 0,6 SMT   | mpsc-v0 |     - | 49.0M | 49.1M | 49.3M |
+    | 0,6 SMT   | mpsc-v1 | 48.7M | 48.7M | 48.7M | 48.6M |
+    | unpinned  | mpsc-v0 |     - | 51.3M | 48.9M | 42.4M |
+    | unpinned  | mpsc-v1 | 44.4M | 45.4M | 44.6M | 42.8M |
+
+  - Streaming, `tp-stream`, ns per message:
+
+    | placement | flavor  |   d=1 |   d=2 |   d=8 |  d=64 |
+    |-----------|---------|------:|------:|------:|------:|
+    | 0,1 CCX   | mpsc-v0 |     - |  37.3 |  16.7 |  16.6 |
+    | 0,1 CCX   | mpsc-v1 |  81.9 |  37.2 |  16.6 |  15.1 |
+    | 0,6 SMT   | mpsc-v0 |     - |  22.3 |  12.6 |  12.1 |
+    | 0,6 SMT   | mpsc-v1 |  39.7 |  22.2 |  12.2 |  11.6 |
+    | unpinned  | mpsc-v0 |     - |  38.6 |  19.7 |  16.7 |
+    | unpinned  | mpsc-v1 |  84.4 |  37.4 |  20.7 |  16.7 |
+
+  - Streaming, the demo's sweep, ns per message:
+
+    | placement          | flavor  |   d=1 |   d=2 |   d=8 |  d=64 |
+    |--------------------|---------|------:|------:|------:|------:|
+    | 1t core 0          | mpsc-v0 |     - |   7.2 |   7.4 |   7.3 |
+    | 1t core 0          | mpsc-v1 |   7.3 |   7.2 |   7.0 |   7.2 |
+    | 2t diff cores 0+1  | mpsc-v0 |     - |  38.0 |  16.9 |  16.0 |
+    | 2t diff cores 0+1  | mpsc-v1 |  79.6 |  38.8 |  17.1 |  16.6 |
+    | 2t same core 0+6   | mpsc-v0 |     - |  22.6 |  12.8 |  12.6 |
+    | 2t same core 0+6   | mpsc-v1 |  40.1 |  22.3 |  12.5 |  11.8 |
+
+  - Depth 1 completes the same trips as depth 2 here, where
+    the 3900X completed more, and the stream is lockstep as
+    there: 82 ns under the one L3 against a 114 ns round
+    trip, between half a trip and a whole one.
 
 ## Messaging layer: pools and descriptor queues
 
