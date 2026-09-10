@@ -29,52 +29,57 @@ fixed.
 
 #### Solution
 
-The MPSC ring keeps its layout and takes the spsc v1 seq values: claimable at `pos`, committed at
-`pos + M + 1`, released at `pos + M`, tested by equality rather than a signed diff, so `M` is any
-power of two down to 1 with `M` usable slots. The layout version bumps, since the seq values a
-region carries change. The tools drop the MPSC depth floor, and the ring is measured at depths 1,
-2, 8, and 64 beside its recorded numbers to check the prediction.
+An `mpsc::v1` sibling module with v0's layout and the spsc v1 seq values: claimable at `pos`,
+committed at `pos + M + 1`, released at `pos + M`, tested by equality rather than a signed diff, so
+`M` is any power of two down to 1 with `M` usable slots. Own magic, since a v0 region is not a v1
+region. The tombstone stays committed plus `2^31` and the cap stays `2^30`. v0 stays as it is for
+the comparison and gains an `init` guard so capacity 1 is an error rather than a hang. v1 joins the
+demo sweep and the `tp-` tools as a fifth flavor with a depth floor of 1, every flavor renamed to
+the `xpsc-vN` form on the way, and is measured beside v0 at depths 1, 2, 8, and 64, the numbers
+into the design note, and the crate's default re-export moves to v1 if they hold.
 
 #### Acceptance check
 
-`vc-x1 validate` passes, including MPSC tests at `M = 1`, `2`, and a larger power of two, two
-threaded producers and a tombstone at `M = 1` among them. The demo sweep and `tp-matrix` run the
-`mpsc` flavor at depth 1 with no skipped cell. `notes/ring-buffer-design.md` carries the fixed ring
-at depths 1, 2, 8, and 64 on the 3900X, matching the recorded numbers within run noise from depth
-2 up.
+`vc-x1 validate` passes, including v1 tests at `M = 1`, `2`, and a larger power of two, two
+threaded producers and a tombstone at `M = 1` among them, and a v0 test that capacity 1 is rejected.
+The demo sweep and `tp-matrix` run the `mpsc-v1` flavor at depth 1 with no skipped cell.
+`notes/ring-buffer-design.md` carries v0 beside v1 at depths 1, 2, 8, and 64 on the 3900X, with v1
+matching v0 within run noise from depth 2 up.
 
-Prediction, on record: within noise the fixed ring is the old one at every depth from 2 up, since
-the layout and the line traffic are unchanged and only the constant the seq is compared against
-moves. At depth 1 it runs lockstep, at about the round-trip cost.
+Prediction, on record: within noise v1 is v0 at every depth from 2 up, since the layout and the
+line traffic are unchanged and only the constant the seq is compared against moves. At depth 1 it
+runs lockstep, at about the round-trip cost.
 
 #### Ladder
 
 - [fix: mpsc handling of capacity 1 opening][1] (done)
-- [fix: commit at pos + M + 1 in the mpsc ring][2]
-- [perf: measure the fixed mpsc ring across depths][3]
-- [fix: mpsc handling of capacity 1 closing][4]
+- [feat: add the mpsc v1 equality-seq ring][2] (done)
+- [fix: reject capacity 1 in mpsc v0][3]
+- [feat: mpsc v1 in the tools, flavors named xpsc-vN][4]
+- [perf: measure mpsc v1 beside v0][5]
+- [fix: mpsc handling of capacity 1 closing][6]
 
 #### Deliberation
 
-- A fix in v0, not a sibling v1, the user's call at the opening review (2026-09-09), reversing the
-  first draft: the layout, the line traffic, and the atomic ops are unchanged and only the constants
-  the seq is compared against move, so a sibling would be a second copy of the code with nothing to
-  A/B.
+- v1 is a sibling module, not an edit of v0, the user's call at the first rung's review
+  (2026-09-09), reversing the opening's call for a fix in place, which had reversed the draft's
+  sibling: the change is on the hot path, and a sibling keeps the comparison runnable at any later
+  time, where a fix in place leaves it to a two-commit build. The cost accepted is a second copy of
+  the ring for a constant. The cycle keeps its pushed title, since the handling of capacity 1 is
+  still what it fixes.
 - Equality instead of the signed diff is forced, not chosen: with committed at `pos + M + 1`, a
   full slot's previous-lap value is `pos + 1`, which the diff reads as a lost race rather than
   Full. Equality with `pos` decides claimable, and a re-read of `producer_idx` separates stale from
-  full, as the negative branch already does.
-- The layout version bumps though the layout is unchanged: a region written by the old build and
-  attached by the new would misread its seq words, so the bump makes that attach fail toward the
-  layout error rather than misbehave. Only mixed builds across processes could reach it.
-- The flavor label stays `mpsc`: the v0 flavor is the bare name in the tools, `spsc` beside
-  `spsc-v1` and `spsc-v2`, so an eventual MPSC v1 is `mpsc-v1` and the recorded tables keep their
-  column.
-- The tools' depth floor drops in the fix rung rather than its own: `min_depth` to 1 is two lines,
-  and the fix is what makes it true.
-- The measurement rung stays, fix or not: the prediction is on record, and the design note's
-  `mpsc` columns were measured on the old values, so depth 1 needs a number and the rest a
-  confirmation.
+  full, as v0's negative branch already does.
+- Own magic rather than a layout version bump: the layout is unchanged, but a v0 region carries
+  v0's seq values, and a cross-version attach must fail the way a cross-kind one does.
+- Every flavor is named `xpsc-vN`, the user's call (2026-09-09): the bare names `spsc` and `mpsc`
+  meant v0 by a rule a reader had to know, and the uniform form removes it. The recorded tables'
+  columns and the tools' arguments are relabelled in the same rung, the numbers untouched.
+- The default re-export decision waits for the measurement rung: v1 is v0 plus a capability, so
+  the numbers holding is the whole case, and they are not in yet.
+- The v0 guard is its own rung: v0 stays live for comparison and a hang is worse than an error,
+  and a separate commit keeps the v0 diff trivially reviewable.
 
 #### Ladder details
 
@@ -86,18 +91,42 @@ continuation notes held the draft of the segmented-queue cycle, so the opening f
 Todo entry, retitled for v2 segments, and resets the notes. The first draft opened as a sibling
 `mpsc::v1` and was reshaped to a fix at the review, the bookmark renamed with it, before any commit.
 
-##### fix: commit at pos + M + 1 in the mpsc ring
+##### feat: add the mpsc v1 equality-seq ring
 
-The ring hangs at capacity 1 and the tools work around it. The seq values become claimable `pos`,
-committed `pos + M + 1`, released `pos + M`, the checks equality, the layout version bumps, the
-tests cover `M = 1` at every protocol point, the tombstone and the u32 wrap included, the tools'
-depth floor drops to 1, and the bugs entry retires.
+The ring hangs at capacity 1. The module: v0's files under `mpsc::v1` with the seq values and
+equality checks above, its own magic, v0's tests plus `M = 1` at every protocol point, the tombstone
+and the u32 wrap included, and a design-note section stating the protocol and the prediction.
 
-##### perf: measure the fixed mpsc ring across depths
+* The seq values: at `M = 1` the one word cycles through 0, 2, 1, and the next lap's claimable is
+  that 1. Both endpoints carry `capacity + 1` precomputed, so the committed value stays one add on
+  the hot path, the review's catch.
+  - Equality replaced the signed diff on both sides, and the producer's two not-claimable branches
+    became one: re-read `producer_idx`, moved means stale, unmoved means Full.
+  - A consequence: a tombstoned previous lap now reaches the wait policy as Full, where the diff
+    read it as a lost race and spun with no policy call until the consumer skipped it.
+* The tests: the seq values at `M = 1` read directly, a thousand lockstep laps, a tombstone in the
+  only slot, the u32 wrap at `M = 1`, the two-producer stress at `M = 1` and 4 through one helper,
+  and a cross-version attach failing both ways.
+* The rung began as a fix in place in v0 and was reviewed as one, then split into the sibling at
+  the user's call, so v0 is untouched by it.
+
+##### fix: reject capacity 1 in mpsc v0
+
+v0 hangs at capacity 1 and the tools work around it. `init` and `attach` reject a capacity below 2,
+a test covers it, and the bugs entry retires, since v1 is the fix and v0 the guard.
+
+##### feat: mpsc v1 in the tools, flavors named xpsc-vN
+
+The demo sweep and the three `tp-` tools know four flavors, two of them under bare names, and a
+depth floor per flavor. v1 joins as `mpsc-v1` with a floor of 1, so the sweep's first MPSC cell is
+a number, and every flavor takes the `xpsc-vN` form, `spsc-v0` and `mpsc-v0` included, in the
+tools' arguments and labels and in the recorded tables' columns.
+
+##### perf: measure mpsc v1 beside v0
 
 The prediction is on record and nothing tests it. The sweep at depths 1, 2, 8, and 64 across the
-pinned placements, the numbers into the design note beside the recorded `mpsc` columns, the 7600X
-pasted in by the user.
+pinned placements, a design-note section holding the tables, and the default re-export moved if the
+numbers hold, the 7600X pasted in by the user.
 
 ##### fix: mpsc handling of capacity 1 closing
 
@@ -303,6 +332,8 @@ _None._
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [1]: #fix-mpsc-handling-of-capacity-1-opening
-[2]: #fix-commit-at-pos--m--1-in-the-mpsc-ring
-[3]: #perf-measure-the-fixed-mpsc-ring-across-depths
-[4]: #fix-mpsc-handling-of-capacity-1-closing
+[2]: #feat-add-the-mpsc-v1-equality-seq-ring
+[3]: #fix-reject-capacity-1-in-mpsc-v0
+[4]: #feat-mpsc-v1-in-the-tools-flavors-named-xpsc-vn
+[5]: #perf-measure-mpsc-v1-beside-v0
+[6]: #fix-mpsc-handling-of-capacity-1-closing

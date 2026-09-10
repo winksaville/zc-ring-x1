@@ -1068,6 +1068,47 @@ travel on one line.
     with 0.14 fills, twice v0's rate. At the SMT pair, where
     no line crosses, v0 keeps its 2x over every seq protocol.
 
+## MPSC v1: equality-seq ring
+
+The second MPSC protocol, `mpsc::v1`, a sibling of v0 under
+the same module layout, so the two measure side by side. v0
+is Vyukov's queue as [MPSC protocol](#mpsc-protocol) states
+it, and its committed value `pos + 1` equals its released
+value `pos + M` at `M = 1`, so a capacity-1 ring wedges both
+sides after the first release (`notes/bugs.md`, found by the
+demo's depth sweep). v1 takes the seq values spsc v1 chose
+for the same reason, and nothing else changes.
+
+- **Region**: v0's, the four-line header, the seq array, then
+  the slots, with its own magic `ZCM2` and its own layout
+  version, since a v0 region carries v0's seq values and a
+  cross-version attach must fail toward `BadMagic`.
+- **Seq values**: claimable at `seq == pos`, committed at
+  `pos + M + 1`, released at `pos + M`. At `M = 1` the one
+  word cycles through 0, 2, 1, and the released 1 is the next
+  lap's claimable. `M` is any power of two from 1 to `2^30`,
+  with `M` usable slots: the state is in the word, not in an
+  index distance, so no sacrificial slot.
+- **Equality, not a signed diff**: with committed at
+  `pos + M + 1` a full slot's previous-lap value is `pos + 1`,
+  which v0's diff reads as a lost race. So a producer compares
+  the seq with `pos` for claimable, and anything else is stale
+  or full, told apart by re-reading `producer_idx`: moved
+  means another producer claimed `pos`, so reload and retry
+  with no policy call, and unmoved means the previous occupant
+  is not yet released, so the `on_full` policy runs.
+  - A consequence: a tombstoned previous lap reaches the
+    policy as Full, where v0's diff read it as a lost race and
+    spun with no policy call until the consumer skipped it.
+- **Tombstone**: committed plus `2^31`, as v0, and the `2^30`
+  cap keeps the three values a side can see distinct.
+- **Hot path**: the same loads, stores, and lines as v0. Each
+  endpoint carries `capacity + 1` precomputed, so the commit
+  value and the consumer's check stay one add. The prediction
+  on record: within run noise v1 is v0 at every depth from 2
+  up, and at depth 1 it runs lockstep at about the round-trip
+  cost.
+
 ## Messaging layer: pools and descriptor queues
 
 Design for the layer above the ring. The pool half is
