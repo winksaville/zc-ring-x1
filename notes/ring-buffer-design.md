@@ -900,8 +900,8 @@ travel on one line.
   the v1 cycle set: faster than MPSC v0 at every cross-core
   placement.
   - Round trips per 5 s and fills per trip, one cell per
-    flavor and depth (the MPSC ring cannot run at depth 1,
-    `notes/bugs.md`):
+    flavor and depth (the MPSC v0 ring cannot run at depth 1,
+    see [MPSC v1: equality-seq ring](#mpsc-v1-equality-seq-ring)):
 
     | placement | flavor  | d=1          | d=2          | d=8          | d=64         |
     |-----------|---------|-------------:|-------------:|-------------:|-------------:|
@@ -1075,9 +1075,10 @@ the same module layout, so the two measure side by side. v0
 is Vyukov's queue as [MPSC protocol](#mpsc-protocol) states
 it, and its committed value `pos + 1` equals its released
 value `pos + M` at `M = 1`, so a capacity-1 ring wedges both
-sides after the first release (`notes/bugs.md`, found by the
-demo's depth sweep). v1 takes the seq values spsc v1 chose
-for the same reason, and nothing else changes.
+sides after the first release, found by the demo's depth
+sweep on 2026-09-07. v0 now rejects capacity 1 rather than
+hang, and v1 takes the seq values spsc v1 chose for the same
+reason, with nothing else changed.
 
 - **Region**: v0's, the four-line header, the seq array, then
   the slots, with its own magic `ZCM2` and its own layout

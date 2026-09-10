@@ -54,7 +54,7 @@ runs lockstep, at about the round-trip cost.
 
 - [fix: mpsc handling of capacity 1 opening][1] (done)
 - [feat: add the mpsc v1 equality-seq ring][2] (done)
-- [fix: reject capacity 1 in mpsc v0][3]
+- [fix: reject capacity 1 in mpsc v0][3] (done)
 - [feat: mpsc v1 in the tools, flavors named xpsc-vN][4]
 - [perf: measure mpsc v1 beside v0][5]
 - [fix: mpsc handling of capacity 1 closing][6]
@@ -114,6 +114,13 @@ and the u32 wrap included, and a design-note section stating the protocol and th
 
 v0 hangs at capacity 1 and the tools work around it. `init` and `attach` reject a capacity below 2,
 a test covers it, and the bugs entry retires, since v1 is the fix and v0 the guard.
+
+* The floor is a named constant beside the cap, and the geometry check applies both, so `attach`
+  refuses a region another build wrote at capacity 1 as well.
+  - The shared `BadCapacity` error's doc now names a floor, since it was the cap and the power of
+    two alone.
+* The bugs entry's citations moved with it: the tools' floor comments and the v2 tables' note now
+  point at the design note's v1 section, which records the finding and both outcomes.
 
 ##### feat: mpsc v1 in the tools, flavors named xpsc-vN
 

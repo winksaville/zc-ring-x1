@@ -684,9 +684,9 @@ fn global_alloc_free_1t() -> f64 {
 struct StreamFlavor {
     /// The label the table carries.
     name: &'static str,
-    /// The smallest depth the protocol runs at: the MPSC ring
-    /// collapses at 1 (`notes/bugs.md`), so its cell there is
-    /// printed as `-`.
+    /// The smallest depth the protocol runs at: the MPSC v0
+    /// ring rejects 1, where its protocol wedges, so its cell
+    /// there is printed as `-`.
     min_depth: u32,
     /// The single-thread loop at a depth.
     one_t: fn(u32) -> f64,

@@ -99,7 +99,8 @@ pub enum Error {
     TooSmall,
     /// Slot size is zero or not a [`CACHE_LINE_SIZE`] multiple.
     BadSlotSize,
-    /// Capacity is zero, not a power of two, or `> 2^31`.
+    /// Capacity is zero, not a power of two, over the ring's
+    /// cap, or under its floor (the MPSC v0 ring's is 2).
     BadCapacity,
     /// Pool: buffer size is zero or not a [`CACHE_LINE_SIZE`]
     /// multiple.

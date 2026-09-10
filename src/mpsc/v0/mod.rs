@@ -10,6 +10,10 @@
 //! - Producers CAS-claim `producer_idx`; the consumer stays
 //!   CAS-free. Fullness is read from the slot seq, so
 //!   producers never load `consumer_idx`.
+//! - `capacity` is at least 2: committed is Vyukov's `pos + 1`
+//!   and released `pos + M`, the same value at `M = 1`, where
+//!   both sides misread the slot and spin forever. `init` and
+//!   `attach` reject it, and `mpsc::v1` runs down to 1.
 //! - Own magic and layout version: a region is one kind or
 //!   the other, and cross-attaching fails toward
 //!   [`Error::BadMagic`].
@@ -42,6 +46,11 @@ const MPSC_LAYOUT_VERSION: u32 = 1;
 /// tombstone encoding reserves index-arithmetic headroom (see
 /// the design doc's "MPSC open questions").
 const MPSC_MAX_CAPACITY: u32 = 1 << 30;
+
+/// Capacity floor: at 1 the committed and released seq values
+/// coincide and the ring wedges (see the module doc), so v0
+/// refuses it rather than hang.
+const MPSC_MIN_CAPACITY: u32 = 2;
 
 /// Tombstone offset: an unwound `send_with` commits
 /// `pos + 1 + TOMBSTONE` instead of `pos + 1`, marking a
@@ -127,7 +136,7 @@ impl<'a> MpscRing<'a> {
     ///
     /// - `slot_size` — N bytes per slot, a [`CACHE_LINE_SIZE`]
     ///   multiple.
-    /// - `capacity` — M slots, a power of two `<= 2^30`.
+    /// - `capacity` — M slots, a power of two from 2 to `2^30`.
     /// - The region must be [`CACHE_LINE_SIZE`]-aligned and at
     ///   least [`mpsc_region_size`] bytes.
     pub fn init(region: &'a mut [u8], slot_size: u32, capacity: u32) -> Result<Self, Error> {
@@ -307,12 +316,13 @@ pub fn mpsc_region_size(slot_size: u32, capacity: u32) -> u64 {
 /// Geometry checks for [`MpscRing::init`] / [`MpscRing::attach`].
 ///
 /// - Slot size as the SPSC ring; capacity additionally capped
-///   at [`MPSC_MAX_CAPACITY`] for tombstone headroom.
+///   at [`MPSC_MAX_CAPACITY`] for tombstone headroom and floored
+///   at [`MPSC_MIN_CAPACITY`], where the protocol holds.
 fn validate_mpsc_geometry(slot_size: u32, capacity: u32) -> Result<(), Error> {
     if slot_size == 0 || !(slot_size as usize).is_multiple_of(CACHE_LINE_SIZE) {
         return Err(Error::BadSlotSize);
     }
-    if capacity == 0 || !capacity.is_power_of_two() || capacity > MPSC_MAX_CAPACITY {
+    if !capacity.is_power_of_two() || !(MPSC_MIN_CAPACITY..=MPSC_MAX_CAPACITY).contains(&capacity) {
         return Err(Error::BadCapacity);
     }
     Ok(())
@@ -372,6 +382,12 @@ mod tests {
             MpscRing::init(&mut r.0, 64, 1 << 31).err().unwrap(),
             Error::BadCapacity
         );
+        // Under the v0 floor (fine for v1): the protocol wedges
+        // at capacity 1.
+        assert_eq!(
+            MpscRing::init(&mut r.0, 64, 1).err().unwrap(),
+            Error::BadCapacity
+        );
         assert_eq!(
             MpscRing::init(&mut r.0, 64, 8).err().unwrap(),
             Error::TooSmall
@@ -428,6 +444,16 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err, Error::BadCacheLine);
+        // A recorded capacity under the floor is rejected too,
+        // so a region another build wrote at 1 is not attached.
+        ring.header
+            .cache_line_size
+            .store(CACHE_LINE_SIZE as u32, Ordering::Relaxed);
+        ring.header.capacity.store(1, Ordering::Relaxed);
+        let err = unsafe { MpscRing::attach(r.0.as_mut_ptr(), r.0.len()) }
+            .err()
+            .unwrap();
+        assert_eq!(err, Error::BadCapacity);
     }
 
     #[test]

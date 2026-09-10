@@ -56,9 +56,10 @@ tp-matrix 0.1.0 - run the full measurement matrix, markdown tables out
 per ring, powers of two from 1 up), the default `8`, and each
 cell repeats per depth. One message is ever in flight, so the
 depth changes how many seq words share a line and, at 1,
-whether the ring has any slack. The MPSC ring's protocol
-collapses at depth 1 (`notes/bugs.md`), so its cells there are
-skipped with a note.
+whether the ring has any slack. The MPSC v0 ring rejects
+depth 1, where its protocol wedges (the design note's "MPSC
+v1: equality-seq ring"), so its cells there are skipped with a
+note.
 
 This is the tool that answers "which flavor is faster here,
 and why": e.g. on a Zen 2 the SPSC ring moves ~10 cache lines

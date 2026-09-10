@@ -80,8 +80,9 @@ impl Flavor {
     }
 
     /// The smallest depth the flavor's protocol runs at. The
-    /// MPSC ring's committed and released seq values coincide
-    /// at capacity 1 (`notes/bugs.md`), so its cells start at 2.
+    /// MPSC v0 ring's committed and released seq values coincide
+    /// at capacity 1 and its `init` rejects it, so its cells
+    /// start at 2.
     pub fn min_depth(self) -> u32 {
         match self {
             Flavor::Mpsc => 2,
