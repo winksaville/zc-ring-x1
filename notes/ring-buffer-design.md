@@ -1109,6 +1109,71 @@ reason, with nothing else changed.
   on record: within run noise v1 is v0 at every depth from 2
   up, and at depth 1 it runs lockstep at about the round-trip
   cost.
+- **Measured (2026-09-10, 3900X, the rung `perf: measure mpsc
+  v1 beside v0`, at the flavor rung's build: `tp-matrix` and
+  `tp-stream` 5 s cells and the demo's 1M message streams, all
+  at depths 1, 2, 8, and 64)**. The prediction holds: from
+  depth 2 up the two rings are within run noise at every
+  placement in every instrument, and depth 1 is a number.
+  - Round trips per 5 s and fills per trip, the MPSC rows:
+
+    | placement | flavor  | d=1          | d=2          | d=8          | d=64         |
+    |-----------|---------|-------------:|-------------:|-------------:|-------------:|
+    | 0,1 CCX   | mpsc-v0 | -            | 28.6M (8.34) | 31.3M (6.59) | 32.1M (6.00) |
+    | 0,1 CCX   | mpsc-v1 | 32.3M (8.16) | 29.3M (8.30) | 31.3M (6.58) | 32.1M (6.04) |
+    | 0,3 x-CCX | mpsc-v0 | -            |  8.2M (8.24) |  9.4M (6.59) |  9.2M (6.01) |
+    | 0,3 x-CCX | mpsc-v1 |  9.7M (8.11) |  8.1M (8.27) |  8.8M (6.62) |  9.7M (5.96) |
+    | 0,12 SMT  | mpsc-v0 | -            | 35.3M        | 35.5M        | 35.6M        |
+    | 0,12 SMT  | mpsc-v1 | 36.1M        | 35.7M        | 36.0M        | 36.0M        |
+
+    The send costs match to the tenth of a nanosecond, 8.3 to
+    8.9 ns for both at depth 8 and 64 at every placement.
+  - Streaming, `tp-stream`, ns per message and fills per
+    message:
+
+    | placement | flavor  | d=1          | d=2          | d=8          | d=64         |
+    |-----------|---------|-------------:|-------------:|-------------:|-------------:|
+    | 0,1 CCX   | mpsc-v0 | -            |  56.3 (3.71) |  28.5 (1.79) |  22.2 (0.88) |
+    | 0,1 CCX   | mpsc-v1 |  74.2 (4.20) |  54.2 (3.65) |  29.3 (1.87) |  21.8 (0.86) |
+    | 0,3 x-CCX | mpsc-v0 | -            | 213.8 (3.95) | 106.5 (2.17) |  80.6 (1.35) |
+    | 0,3 x-CCX | mpsc-v1 | 465.2 (5.25) | 218.1 (3.99) | 104.0 (2.12) |  81.3 (1.40) |
+    | 0,12 SMT  | mpsc-v0 | -            |  23.3        |  15.2        |  15.0        |
+    | 0,12 SMT  | mpsc-v1 |  39.8        |  22.2        |  15.2        |  15.0        |
+
+  - Streaming, the demo's sweep, ns per message:
+
+    | placement          | flavor  |   d=1 |   d=2 |   d=8 |  d=64 |
+    |--------------------|---------|------:|------:|------:|------:|
+    | 1t core 0          | mpsc-v0 |     - |  10.2 |  10.1 |  10.1 |
+    | 1t core 0          | mpsc-v1 |  10.4 |  10.2 |  10.1 |  10.1 |
+    | 2t diff cores 0+3  | mpsc-v0 |     - | 201.5 | 108.2 |  89.3 |
+    | 2t diff cores 0+3  | mpsc-v1 | 461.0 | 196.4 | 100.6 |  79.2 |
+    | 2t same core 0+12  | mpsc-v0 |     - |  23.6 |  15.8 |  15.1 |
+    | 2t same core 0+12  | mpsc-v1 |  41.9 |  22.3 |  15.1 |  15.0 |
+
+  - Depth 1, the cell v0 could not run: the round trip moves
+    eight lines, the seq line beside each slot line each way,
+    as spsc v1 does at that depth, and completes more trips
+    than at depth 2 at every placement, again as spsc v1 does.
+    The stream is lockstep, one message in flight and the
+    release travelling back before the next send: 74 ns within
+    the CCX and 465 across it against round trips of 155 and
+    515, so between half a trip and a whole one, on 4.2 and
+    5.2 lines per message.
+  - The first `tp-stream` run put v0 at the SMT pair at 47.3
+    and 29.5 ns at depth 2 and 8, twice its recorded figures,
+    with v1 at 22.5 and 15.3 on them. A rerun read v0 at 23.3
+    and 15.2, so the table above is the rerun. We think the
+    first run caught the same regime flip the v2 cycle found
+    in spsc v1's streams, this time on v0, since nothing in
+    the run changed but the cell's luck.
+- **Default (2026-09-10, at the measurement rung)**: the
+  crate's `MpscRing` re-export is v1. v1 is v0 plus a
+  capability at the same cost, so the numbers holding is the
+  whole case. v0 stays reachable by path and keeps its guard.
+  The 7600X's tables, the same three instruments at the
+  cycle's plain-name build, come at the close-out, here and
+  in the README's example run beside the 3900X's.
 
 ## Messaging layer: pools and descriptor queues
 

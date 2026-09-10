@@ -132,8 +132,11 @@ placement while changing something.
 ```sh
 cargo build -p tp_matrix
 cargo test --workspace
-cargo install --path tp_matrix   # installs tp-cell + tp-matrix
+cargo install --path tp_matrix --locked   # installs tp-cell, tp-matrix, tp-stream
 ```
+
+`--locked` builds from the committed `Cargo.lock`, so a saved
+run's banner names a build another machine can reproduce.
 
 `-h` for a summary of the flags, `--help` for details. Both
 print the `name version - tagline` banner first, as does

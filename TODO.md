@@ -56,7 +56,7 @@ runs lockstep, at about the round-trip cost.
 - [feat: add the mpsc v1 equality-seq ring][2] (done)
 - [fix: reject capacity 1 in mpsc v0][3] (done)
 - [feat: mpsc v1 in the tools, flavors named xpsc-vN][4] (done)
-- [perf: measure mpsc v1 beside v0][5]
+- [perf: measure mpsc v1 beside v0][5] (done)
 - [fix: mpsc handling of capacity 1 closing][6]
 
 #### Deliberation
@@ -77,7 +77,11 @@ runs lockstep, at about the round-trip cost.
   meant v0 by a rule a reader had to know, and the uniform form removes it. The recorded tables'
   columns and the tools' arguments are relabelled in the same rung, the numbers untouched.
 - The default re-export decision waits for the measurement rung: v1 is v0 plus a capability, so
-  the numbers holding is the whole case, and they are not in yet.
+  the numbers holding is the whole case. They held, and the re-export is v1.
+- The README's example run is taken at Land, after the rename, the user's call (2026-09-10): the
+  README's run is from 0.7.0 and wants a current one under the plain name and the bare version,
+  which exist together only between the rename and the fast-forward. The design note keeps this
+  rung's tables, cited by rung title, since the code is the same and the analysis is done here.
 - The v0 guard is its own rung: v0 stays live for comparison and a hang is worse than an error,
   and a separate commit keeps the v0 diff trivially reviewable.
 
@@ -146,9 +150,28 @@ The prediction is on record and nothing tests it. The sweep at depths 1, 2, 8, a
 pinned placements, a design-note section holding the tables, and the default re-export moved if the
 numbers hold, the 7600X pasted in by the user.
 
+* Three instruments on the 3900X at the flavor rung's build, `tp-matrix`, `tp-stream`, and the
+  demo, at depths 1, 2, 8, and 64: v1 is v0 within run noise from depth 2 up at every placement,
+  and depth 1 is eight lines per trip and a lockstep stream, as spsc v1 at that depth.
+  - The default `MpscRing` re-export is v1, the numbers being the whole case. The demo's
+    two-producer line moves with it, since it uses the default.
+  - One `tp-stream` run read v0 at twice its figures at the SMT pair at depth 2 and 8, and a rerun
+    read the record. The rerun is the table, the flip noted as the v2 cycle's regime finding.
+* The 7600X did not run at this rung, the user's call at the review (2026-09-10): the new data
+  is collected after Land's rename, so the runs carry the plain name and the bare version.
+  - The demo, `tp-matrix`, and `tp-stream` built here at release after the rename, copied to the
+    7600X and run on both machines: both demo outputs into the README's example run, the 7600X
+    tables into the design note's v1 section beside this rung's 3900X ones, and the closing
+    amended before the trapezoid. The tools README's install line gained `--locked` so a saved
+    banner is a build.
+
 ##### fix: mpsc handling of capacity 1 closing
 
-Closing out the cycle.
+Closing out the cycle. Land's first step, the rename, is followed here by the three instruments
+on both machines at the renamed build, the README's example run and the design note's 7600X
+tables written from them, and the closing amended before the trapezoid, the user's call
+(2026-09-10). The bend: Land's squash carries those pastes beside the rename, and the closing's
+body says so.
 
 ## Waiting
 
