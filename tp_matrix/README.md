@@ -23,9 +23,9 @@ user-mode only, no perf(1), root, bash, or scraping), which
 is the hardware's answer to "how many cache lines crossed
 between the cores per round trip". A cell varies along two
 axes: **flavor** (the SPSC v0 ring, the SPSC v1 seam-word
-ring, the SPSC v2 in-slot seq ring, and the MPSC sibling at
-1p/1c)
-and **placement** (which CPUs the two threads sit on, same
+ring, the SPSC v2 in-slot seq ring, and the MPSC v0 and v1
+siblings at 1p/1c, every flavor named `xpsc-vN` after its
+module path) and **placement** (which CPUs the two threads sit on, same
 L3, different L3, SMT siblings, or unpinned).
 
 ## tp-matrix: the whole picture, one command
@@ -42,14 +42,14 @@ ready to paste into notes:
   (polls per waiting reserve), per side, plus `fills/RT`.
 
 ```sh
-$ tp-matrix -d 10                  # 16 cells x 10 s on a typical SMT machine, depth 8
+$ tp-matrix -d 10                  # 20 cells x 10 s on a typical SMT machine, depth 8
 $ tp-matrix -d 5 --depth 1,2,8,64  # every cell again at each depth
 tp-matrix 0.1.0 - run the full measurement matrix, markdown tables out
 ...
-| placement | flavor | depth |   m.send |     w.recv | ... |  RTs | fills/RT |
-|-----------|--------|------:|---------:|-----------:|-----|-----:|---------:|
-| 0,1 CCX   | spsc   |     8 | 22.3/6.0 | 132.5/13.9 | ... | 3.7M |   10.120 |
-| 0,1 CCX   | mpsc   |     8 |  9.5/4.2 |  95.5/19.6 | ... | 5.2M |    6.617 |
+| placement | flavor  | depth |   m.send |     w.recv | ... |  RTs | fills/RT |
+|-----------|---------|------:|---------:|-----------:|-----|-----:|---------:|
+| 0,1 CCX   | spsc-v0 |     8 | 22.3/6.0 | 132.5/13.9 | ... | 3.7M |   10.120 |
+| 0,1 CCX   | mpsc-v0 |     8 |  9.5/4.2 |  95.5/19.6 | ... | 5.2M |    6.617 |
 ```
 
 `--depth` takes a comma-separated list of ring depths (slots
@@ -114,10 +114,10 @@ rows with first/last/range/count/mean columns), plus the raw
 fill counters:
 
 ```sh
-$ tp-cell spsc -d 5 --pin 0,1
+$ tp-cell spsc-v0 -d 5 --pin 0,1
 tp-cell 0.1.0 - run one phase-probed ring round-trip cell
-spsc round trip [duration=5.0s pin=main=0,worker=1]:
-  tprobe: spsc main send (reserve+commit) [count=21,078,016]
+spsc-v0 round trip [duration=5.0s pin=main=0,worker=1]:
+  tprobe: spsc-v0 main send (reserve+commit) [count=21,078,016]
     ...band rows...
   ...seven more probes, trip order...
   fills: lcl_cache=209,239,903 (9.927/RT)  lcl_l2=249,403  ...

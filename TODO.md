@@ -55,7 +55,7 @@ runs lockstep, at about the round-trip cost.
 - [fix: mpsc handling of capacity 1 opening][1] (done)
 - [feat: add the mpsc v1 equality-seq ring][2] (done)
 - [fix: reject capacity 1 in mpsc v0][3] (done)
-- [feat: mpsc v1 in the tools, flavors named xpsc-vN][4]
+- [feat: mpsc v1 in the tools, flavors named xpsc-vN][4] (done)
 - [perf: measure mpsc v1 beside v0][5]
 - [fix: mpsc handling of capacity 1 closing][6]
 
@@ -128,6 +128,17 @@ The demo sweep and the three `tp-` tools know four flavors, two of them under ba
 depth floor per flavor. v1 joins as `mpsc-v1` with a floor of 1, so the sweep's first MPSC cell is
 a number, and every flavor takes the `xpsc-vN` form, `spsc-v0` and `mpsc-v0` included, in the
 tools' arguments and labels and in the recorded tables' columns.
+
+* The tools' MPSC cell, stream, and demo loops were concrete functions on the crate's default
+  re-export, so a second MPSC version had nowhere to plug in.
+  - Each became a macro stamped per version by module path, as the SPSC ones already were, so the
+    A/B measures the protocol alone. The demo's two-producer line stays on the default re-export,
+    being the one line no SPSC ring has.
+* The flavor names and enum variants carried the bare form for v0.
+  - `Flavor` and the cell tool's argument are `SpscV0` through `MpscV1`, the labels `xpsc-vN`,
+    and the recorded tables' `spsc` and `mpsc` columns read `spsc-v0` and `mpsc-v0` at the same
+    width. The demo's older per-line labels keep their function names, since the README's recorded
+    output carries them.
 
 ##### perf: measure mpsc v1 beside v0
 

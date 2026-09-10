@@ -311,79 +311,99 @@ spsc_loops!(
     zc_ring_x1::spsc::v2::region_size
 );
 
-/// Move COUNT messages single thread through the MPSC ring,
-/// pinned to cpu 0, the sibling of spsc_ring_one_msg_1t, so
-/// the two lines read as the seam between the protocols
-/// (claim CAS + seq vs load/store). Return elapsed seconds.
-fn mpsc_ring_one_msg_1t(depth: u32) -> f64 {
-    let slot = CACHE_LINE_SIZE as u32;
-    let mut region = region(mpsc_region_size(slot, depth));
-    let (producer, mut consumer) = MpscRing::init(region.as_mut_bytes(), slot, depth)
-        .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
-        .split();
+/// Define the MPSC one-message loops over the ring at `$ring`,
+/// its region sized by `$size(slot_size, depth)`, the siblings
+/// of the SPSC loops at the same placements: `$one_t` moves
+/// COUNT messages single thread, pinned to cpu 0, so the two
+/// lines read as the seam between the protocols (claim CAS +
+/// seq vs load/store), and `$two_t` moves them producer-thread
+/// -> consumer-thread (`pin` as in [`spsc_ring_one_msg_2t`]),
+/// measuring what the MPSC protocol costs when you don't need
+/// multiple producers. Each returns elapsed seconds. The MPSC
+/// versions share the endpoint surface and differ by path, so
+/// one body serves both.
+macro_rules! mpsc_loops {
+    ($one_t:ident, $two_t:ident, $ring:path, $size:path) => {
+        fn $one_t(depth: u32) -> f64 {
+            use $ring as MpscRing;
+            let slot = CACHE_LINE_SIZE as u32;
+            let mut region = region($size(slot, depth));
+            let (producer, mut consumer) = MpscRing::init(region.as_mut_bytes(), slot, depth)
+                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
+                .split();
 
-    let start = Instant::now();
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            pin_to_cpu(0);
-            for i in 0..COUNT {
-                producer.send_with::<Msg>(|_| false, |m| m.seq = i).unwrap(); // OK: room is guaranteed, the consumer drains in lockstep
-                match consumer.reserve_slot_with::<Msg>(|_| false) {
-                    Ok(msg) => {
+            let start = Instant::now();
+            std::thread::scope(|s| {
+                s.spawn(move || {
+                    pin_to_cpu(0);
+                    for i in 0..COUNT {
+                        producer.send_with::<Msg>(|_| false, |m| m.seq = i).unwrap(); // OK: room is guaranteed, the consumer drains in lockstep
+                        match consumer.reserve_slot_with::<Msg>(|_| false) {
+                            Ok(msg) => {
+                                assert_eq!(msg.seq, i);
+                                msg.release();
+                            }
+                            Err(Empty) => {
+                                panic!(concat!(
+                                    stringify!($one_t),
+                                    ": consumer Empty SHOULD NOT HAPPEN"
+                                ));
+                            }
+                        }
+                    }
+                });
+            });
+            start.elapsed().as_secs_f64()
+        }
+
+        fn $two_t(pin: PinPair, depth: u32) -> f64 {
+            use $ring as MpscRing;
+            let slot = CACHE_LINE_SIZE as u32;
+            let mut region = region($size(slot, depth));
+            let (producer, mut consumer) = MpscRing::init(region.as_mut_bytes(), slot, depth)
+                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
+                .split();
+
+            let start = Instant::now();
+            std::thread::scope(|s| {
+                s.spawn(move || {
+                    if let Some((p, _)) = pin {
+                        pin_to_cpu(p);
+                    }
+                    for i in 0..COUNT {
+                        producer
+                            .send_with::<Msg>(policy::spin, |m| m.seq = i)
+                            .unwrap(); // OK: policy::spin never gives up
+                    }
+                });
+                s.spawn(move || {
+                    if let Some((_, c)) = pin {
+                        pin_to_cpu(c);
+                    }
+                    for i in 0..COUNT {
+                        let msg = consumer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
                         assert_eq!(msg.seq, i);
                         msg.release();
                     }
-                    Err(Empty) => {
-                        panic!("mpsc_ring_one_msg_1t: consumer Empty SHOULD NOT HAPPEN");
-                    }
-                }
-            }
-        });
-    });
-    start.elapsed().as_secs_f64()
+                });
+            });
+            start.elapsed().as_secs_f64()
+        }
+    };
 }
 
-/// Move COUNT messages producer-thread -> consumer-thread
-/// through the MPSC ring, the sibling of
-/// spsc_ring_one_msg_2t at the same placements, measuring
-/// what the MPSC protocol costs when you don't need multiple
-/// producers. Return elapsed seconds.
-///
-/// - `pin`: `Some((p, c))` pins the producer to cpu `p` and
-///   the consumer to cpu `c`. `None` lets the scheduler place
-///   them (the number then depends on where they land).
-fn mpsc_ring_one_msg_2t(pin: PinPair, depth: u32) -> f64 {
-    let slot = CACHE_LINE_SIZE as u32;
-    let mut region = region(mpsc_region_size(slot, depth));
-    let (producer, mut consumer) = MpscRing::init(region.as_mut_bytes(), slot, depth)
-        .unwrap() // OK: the region is sized by mpsc_region_size and line-aligned
-        .split();
-
-    let start = Instant::now();
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            if let Some((p, _)) = pin {
-                pin_to_cpu(p);
-            }
-            for i in 0..COUNT {
-                producer
-                    .send_with::<Msg>(policy::spin, |m| m.seq = i)
-                    .unwrap(); // OK: policy::spin never gives up
-            }
-        });
-        s.spawn(move || {
-            if let Some((_, c)) = pin {
-                pin_to_cpu(c);
-            }
-            for i in 0..COUNT {
-                let msg = consumer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
-                assert_eq!(msg.seq, i);
-                msg.release();
-            }
-        });
-    });
-    start.elapsed().as_secs_f64()
-}
+mpsc_loops!(
+    mpsc_ring_one_msg_1t,
+    mpsc_ring_one_msg_2t,
+    zc_ring_x1::mpsc::v0::MpscRing,
+    zc_ring_x1::mpsc::v0::mpsc_region_size
+);
+mpsc_loops!(
+    mpsc1_ring_one_msg_1t,
+    mpsc1_ring_one_msg_2t,
+    zc_ring_x1::mpsc::v1::MpscRing,
+    zc_ring_x1::mpsc::v1::mpsc_region_size
+);
 
 /// Move COUNT messages (COUNT/2 per producer) from two
 /// producer threads into one consumer, the line the SPSC
@@ -694,10 +714,11 @@ struct StreamFlavor {
     two_t: fn(PinPair, u32) -> f64,
 }
 
-/// The flavors the sweep runs, in table order.
-const STREAM_FLAVORS: [StreamFlavor; 4] = [
+/// The flavors the sweep runs, in table order, named `xpsc-vN`
+/// after their module paths.
+const STREAM_FLAVORS: [StreamFlavor; 5] = [
     StreamFlavor {
-        name: "spsc",
+        name: "spsc-v0",
         min_depth: 1,
         one_t: spsc_ring_one_msg_1t,
         two_t: spsc_ring_one_msg_2t,
@@ -715,10 +736,16 @@ const STREAM_FLAVORS: [StreamFlavor; 4] = [
         two_t: spsc2_ring_one_msg_2t,
     },
     StreamFlavor {
-        name: "mpsc",
+        name: "mpsc-v0",
         min_depth: 2,
         one_t: mpsc_ring_one_msg_1t,
         two_t: mpsc_ring_one_msg_2t,
+    },
+    StreamFlavor {
+        name: "mpsc-v1",
+        min_depth: 1,
+        one_t: mpsc1_ring_one_msg_1t,
+        two_t: mpsc1_ring_one_msg_2t,
     },
 ];
 

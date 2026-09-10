@@ -25,15 +25,18 @@ const TOP_ABOUT: &str = concat!(
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum FlavorArg {
     /// The SPSC v0 ring (`reserve_slot_with` both ends)
-    Spsc,
+    SpscV0,
     /// The SPSC v1 seam-word ring (same surface, per-slot seq)
     SpscV1,
     /// The SPSC v2 in-slot seq ring (same surface, the seq in
     /// its slot)
     SpscV2,
-    /// The MPSC ring at 1p/1c (`send_with` producers)
-    Mpsc,
-    /// All four, in that order
+    /// The MPSC v0 ring at 1p/1c (`send_with` producers)
+    MpscV0,
+    /// The MPSC v1 equality-seq ring at 1p/1c (same surface,
+    /// runs at depth 1)
+    MpscV1,
+    /// All five, in that order
     All,
 }
 
@@ -74,10 +77,11 @@ fn main() {
     println!("{TOP_ABOUT}");
     let cfg = cli.common.to_cfg(cli.pin);
     let flavors: &[Flavor] = match cli.flavor {
-        FlavorArg::Spsc => &[Flavor::Spsc],
+        FlavorArg::SpscV0 => &[Flavor::SpscV0],
         FlavorArg::SpscV1 => &[Flavor::SpscV1],
         FlavorArg::SpscV2 => &[Flavor::SpscV2],
-        FlavorArg::Mpsc => &[Flavor::Mpsc],
+        FlavorArg::MpscV0 => &[Flavor::MpscV0],
+        FlavorArg::MpscV1 => &[Flavor::MpscV1],
         FlavorArg::All => &FLAVORS,
     };
     for &flavor in flavors {
