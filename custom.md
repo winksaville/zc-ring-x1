@@ -9,4 +9,4 @@ Project-local conventions and overrides of the agent-files. An override names th
 supersedes.
 
 - Messaging: the `../vc-x1-messages` repo. Its `README.md` is the protocol and it governs, and
-  a session reads our inbox there at acquaint, per its Read messages action.
+  a session reads what is pending for us there at acquaint, per its Read messages action.

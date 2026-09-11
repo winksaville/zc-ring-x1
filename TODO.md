@@ -9,15 +9,7 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- No cycle is open. Both repos are clean after the push that carried this note, and the next act
-  is picking a cycle. The top Todo, Segmented queue SPSC v3, is drafted and not yet agreed, and
-  the user still has to decide its open points: `Ring` stays v2 with v3 reached as
-  `spsc::v3::Queue`, attach deferred, trapezoid at close-out.
-- Messaging, `../vc-x1-messages`, is at README v0.3.1. Thread m-2 announced it, and we answered
-  with m-2-1, accepting it with the tightening that Addressed means the recipient field alone,
-  which vc-x1 accepted in m-2-3, and with m-2-4, our `done`. Both lines sit uncommitted in that
-  clone's working copy, as the protocol allows, and vc-x1 closes the thread once iiac-perf
-  answers m-2-3. Nothing is pending for us there as of 2026-09-11T05:00Z.
+_None._
 
 ## In Progress
 
@@ -225,190 +217,53 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### fix: mpsc handling of capacity 1
+### agent-files(adoption): v0.2.4
 
 #### Problem
 
-The MPSC ring accepts capacity 1 and its protocol collapses there: the producer commits `pos + 1`
-and the consumer releases `pos + capacity`, the same value at `M = 1`, so after the first release
-each side reads the other's state and both spin forever. Bug 2 in [bugs.md](notes/bugs.md), found
-by the demo's depth sweep, and the measurement tools skip the MPSC cell at depth 1 until it is
-fixed.
+The family's agreed set is v0.2.4, landed by vc-x1's proposal at `e378ce9ee494` on 2026-09-11,
+and ours was v0.2.3, so `vc-x1 agent-files diff ../vc-x1 -c` reported two of eleven differing:
+the version file and `custom.md`. The change is one clause. The messaging pointer said a session
+reads our inbox at acquaint, and the messages README has had no inbox since v0.3.0, what a session
+reads there is what is pending for us.
 
 #### Solution
 
-An `mpsc::v1` sibling module with v0's layout and the spsc v1 seq values: claimable at `pos`,
-committed at `pos + M + 1`, released at `pos + M`, tested by equality rather than a signed diff, so
-`M` is any power of two down to 1 with `M` usable slots, its own magic, the tombstone and the cap
-as v0's. Done, and the findings in `notes/ring-buffer-design.md`:
-- v1 is v0 within run noise from depth 2 up at every placement in the round-trip matrix, the
-  stream matrix, and the demo's sweep on the 3900X, the send costs matching to the tenth of a
-  nanosecond, and depth 1 runs: eight lines per trip and a lockstep stream, as spsc v1 at that
-  depth. The prediction on record held.
-- The crate's default `MpscRing` is v1. v0 stays reachable by path and rejects capacity 1 rather
-  than hang, and the bugs entry is retired.
-- Every tool flavor is named `xpsc-vN`, `mpsc-v1` the fifth, and the tools' MPSC bodies are macros
-  stamped per version like the SPSC ones, so a further MPSC version plugs in by path.
-- The rung that made v1 was first done as a fix in place and split into the sibling at the
-  review, so the comparison stays runnable, and the equality check replaced the signed diff by
-  necessity: with committed at `pos + M + 1` the diff reads a full slot as a lost race.
+A single-step adoption, the source's set taken whole: `agent-data/agent-files-v0.2.3` renamed to
+`agent-data/agent-files-v0.2.4` and the clause reworded to "reads what is pending for us there",
+so the diff against `../vc-x1` reports nothing differing. Done as stated, the two files the whole
+of it.
 
 #### Acceptance check
 
-`vc-x1 validate` passes, including v1 tests at `M = 1`, `2`, and a larger power of two, two
-threaded producers and a tombstone at `M = 1` among them, and a v0 test that capacity 1 is rejected.
-The demo sweep and `tp-matrix` run the `mpsc-v1` flavor at depth 1 with no skipped cell.
-`notes/ring-buffer-design.md` carries v0 beside v1 at depths 1, 2, 8, and 64 on the 3900X, with v1
-matching v0 within run noise from depth 2 up.
+`vc-x1 agent-files diff ../vc-x1 -c` reports 0 of 11 differing, `vc-x1 agent-files version`
+prints `v0.2.4`, and `agent-data` holds no `agent-files-v0.2.3`.
 
-Prediction, on record: within noise v1 is v0 at every depth from 2 up, since the layout and the
-line traffic are unchanged and only the constant the seq is compared against moves. At depth 1 it
-runs lockstep, at about the round-trip cost.
-
-Passed (2026-09-10): validation passes with the named tests, `mpsc::v1::tests::mpsc_capacity_1_*`,
-`mpsc_seq_values_are_distinct_at_capacity_1`, `threaded_mpsc_two_producers_capacity_1`, and v0's
-`mpsc_init_rejects_bad_geometry` at capacity 1 among them. The measurement rung ran `mpsc-v1` at
-depth 1 in `tp-matrix`, `tp-stream`, and the demo with no skipped cell, and the design note's v1
-section carries v0 beside v1 at the four depths on the 3900X, within run noise from depth 2 up.
+Passed (2026-09-11): the diff reports all eleven files the same, the version prints `v0.2.4`, and
+`ls agent-data` lists `agent-files-v0.2.4` alone among the version files.
 
 #### Ladder
 
-- [fix: mpsc handling of capacity 1 opening][1] (done)
-- [feat: add the mpsc v1 equality-seq ring][2] (done)
-- [fix: reject capacity 1 in mpsc v0][3] (done)
-- [feat: mpsc v1 in the tools, flavors named xpsc-vN][4] (done)
-- [perf: measure mpsc v1 beside v0][5] (done)
-- [fix: mpsc handling of capacity 1 closing][6] (done)
+- agent-files(adoption): v0.2.4 (done)
 
 #### Deliberation
 
-- v1 is a sibling module, not an edit of v0, the user's call at the first rung's review
-  (2026-09-09), reversing the opening's call for a fix in place, which had reversed the draft's
-  sibling: the change is on the hot path, and a sibling keeps the comparison runnable at any later
-  time, where a fix in place leaves it to a two-commit build. The cost accepted is a second copy of
-  the ring for a constant. The cycle keeps its pushed title, since the handling of capacity 1 is
-  still what it fixes.
-- Equality instead of the signed diff is forced, not chosen: with committed at `pos + M + 1`, a
-  full slot's previous-lap value is `pos + 1`, which the diff reads as a lost race rather than
-  Full. Equality with `pos` decides claimable, and a re-read of `producer_idx` separates stale from
-  full, as v0's negative branch already does.
-- Own magic rather than a layout version bump: the layout is unchanged, but a v0 region carries
-  v0's seq values, and a cross-version attach must fail the way a cross-kind one does.
-- Every flavor is named `xpsc-vN`, the user's call (2026-09-09): the bare names `spsc` and `mpsc`
-  meant v0 by a rule a reader had to know, and the uniform form removes it. The recorded tables'
-  columns and the tools' arguments are relabelled in the same rung, the numbers untouched.
-- The default re-export decision waits for the measurement rung: v1 is v0 plus a capability, so
-  the numbers holding is the whole case. They held, and the re-export is v1.
-- The README's example run is taken at Land, after the rename, the user's call (2026-09-10): the
-  README's run is from 0.7.0 and wants a current one under the plain name and the bare version,
-  which exist together only between the rename and the fast-forward. The design note keeps this
-  rung's tables, cited by rung title, since the code is the same and the analysis is done here.
-- The v0 guard is its own rung: v0 stays live for comparison and a hang is worse than an error,
-  and a separate commit keeps the v0 diff trivially reviewable.
-
-#### Ladder details
-
-##### fix: mpsc handling of capacity 1 opening
-
-The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write this
-block from the bugs entry, bump the version-of-record, and rename the package to its dev name. The
-continuation notes held the draft of the segmented-queue cycle, so the opening folds it into that
-Todo entry, retitled for v2 segments, and resets the notes. The first draft opened as a sibling
-`mpsc::v1` and was reshaped to a fix at the review, the bookmark renamed with it, before any commit.
-
-##### feat: add the mpsc v1 equality-seq ring
-
-The ring hangs at capacity 1. The module: v0's files under `mpsc::v1` with the seq values and
-equality checks above, its own magic, v0's tests plus `M = 1` at every protocol point, the tombstone
-and the u32 wrap included, and a design-note section stating the protocol and the prediction.
-
-* The seq values: at `M = 1` the one word cycles through 0, 2, 1, and the next lap's claimable is
-  that 1. Both endpoints carry `capacity + 1` precomputed, so the committed value stays one add on
-  the hot path, the review's catch.
-  - Equality replaced the signed diff on both sides, and the producer's two not-claimable branches
-    became one: re-read `producer_idx`, moved means stale, unmoved means Full.
-  - A consequence: a tombstoned previous lap now reaches the wait policy as Full, where the diff
-    read it as a lost race and spun with no policy call until the consumer skipped it.
-* The tests: the seq values at `M = 1` read directly, a thousand lockstep laps, a tombstone in the
-  only slot, the u32 wrap at `M = 1`, the two-producer stress at `M = 1` and 4 through one helper,
-  and a cross-version attach failing both ways.
-* The rung began as a fix in place in v0 and was reviewed as one, then split into the sibling at
-  the user's call, so v0 is untouched by it.
-
-##### fix: reject capacity 1 in mpsc v0
-
-v0 hangs at capacity 1 and the tools work around it. `init` and `attach` reject a capacity below 2,
-a test covers it, and the bugs entry retires, since v1 is the fix and v0 the guard.
-
-* The floor is a named constant beside the cap, and the geometry check applies both, so `attach`
-  refuses a region another build wrote at capacity 1 as well.
-  - The shared `BadCapacity` error's doc now names a floor, since it was the cap and the power of
-    two alone.
-* The bugs entry's citations moved with it: the tools' floor comments and the v2 tables' note now
-  point at the design note's v1 section, which records the finding and both outcomes.
-
-##### feat: mpsc v1 in the tools, flavors named xpsc-vN
-
-The demo sweep and the three `tp-` tools know four flavors, two of them under bare names, and a
-depth floor per flavor. v1 joins as `mpsc-v1` with a floor of 1, so the sweep's first MPSC cell is
-a number, and every flavor takes the `xpsc-vN` form, `spsc-v0` and `mpsc-v0` included, in the
-tools' arguments and labels and in the recorded tables' columns.
-
-* The tools' MPSC cell, stream, and demo loops were concrete functions on the crate's default
-  re-export, so a second MPSC version had nowhere to plug in.
-  - Each became a macro stamped per version by module path, as the SPSC ones already were, so the
-    A/B measures the protocol alone. The demo's two-producer line stays on the default re-export,
-    being the one line no SPSC ring has.
-* The flavor names and enum variants carried the bare form for v0.
-  - `Flavor` and the cell tool's argument are `SpscV0` through `MpscV1`, the labels `xpsc-vN`,
-    and the recorded tables' `spsc` and `mpsc` columns read `spsc-v0` and `mpsc-v0` at the same
-    width. The demo's older per-line labels keep their function names, since the README's recorded
-    output carries them.
-
-##### perf: measure mpsc v1 beside v0
-
-The prediction is on record and nothing tests it. The sweep at depths 1, 2, 8, and 64 across the
-pinned placements, a design-note section holding the tables, and the default re-export moved if the
-numbers hold, the 7600X pasted in by the user.
-
-* Three instruments on the 3900X at the flavor rung's build, `tp-matrix`, `tp-stream`, and the
-  demo, at depths 1, 2, 8, and 64: v1 is v0 within run noise from depth 2 up at every placement,
-  and depth 1 is eight lines per trip and a lockstep stream, as spsc v1 at that depth.
-  - The default `MpscRing` re-export is v1, the numbers being the whole case. The demo's
-    two-producer line moves with it, since it uses the default.
-  - One `tp-stream` run read v0 at twice its figures at the SMT pair at depth 2 and 8, and a rerun
-    read the record. The rerun is the table, the flip noted as the v2 cycle's regime finding.
-* The 7600X did not run at this rung, the user's call at the review (2026-09-10): the new data
-  is collected after Land's rename, so the runs carry the plain name and the bare version.
-  - The demo, `tp-matrix`, and `tp-stream` built here at release after the rename, copied to the
-    7600X and run on both machines: both demo outputs into the README's example run, the 7600X
-    tables into the design note's v1 section beside this rung's 3900X ones, and the closing
-    amended before the trapezoid. The tools README's install line gained `--locked` so a saved
-    banner is a build.
-
-##### fix: mpsc handling of capacity 1 closing
-
-Closing out the cycle. Land's first step, the rename, is followed here by the three instruments
-on both machines at the renamed build, the README's example run and the design note's 7600X
-tables written from them, and the closing amended before the trapezoid, the user's call
-(2026-09-10). The bend: Land's squash carries those pastes beside the rename, and the closing's
-body says so.
-
-* Close-out shape: trapezoid, the default, since the ladder's five commits read as one change and
-  the merge's second parent keeps every rung's trailer.
-* What outlives the cycle is already in its homes: the protocol and the numbers in the design
-  note's v1 section, the flavor naming in the tools README, and the in-slot seq MPSC the
-  deliberation named as `## Ideas` below.
-* Land's order, the bend included: the rename and lockfile, the three instruments built at release
-  and run here and on the 7600X, the README's example run and the design note's 7600X tables, the
-  squash into this commit, the trapezoid, the fast-forward, the install, the bookmark deleted.
+- Single-step: two files and no design, so one commit carrying the bare `0.15.9`, no dev rename,
+  as the v0.2.3 adoption did.
+- Adoptions copy and bump nothing: the version file is the source's, so `v0.2.4` arrives by rename
+  rather than by a bump of our own ([Agent-files
+  version](agent-data/versioning.md#agent-files-version)).
+- The reference checkout is `../vc-x1`, the family's payload, not `../vc-x1-template`, which still
+  holds the unversioned 2026-08-31 set, so a diff against it names most of the set and says
+  nothing about this adoption.
+- The working copy held more than the adoption at the opening, the continuation note, a
+  half-written Todo entry, and a stray note file at the root. They were set aside as a patch in
+  `tmp/` so this commit carries the adoption alone, and they return once it has pushed
+  ([Unplanned work](AGENTS.md#unplanned-work)).
+- The continuation note's facts had homes already, the SPSC v3 draft in `## Todo` and thread m-2
+  closed, so the section resets to `_None._`.
+- `## Waiting` is `_None._`, nothing to promote.
 
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[1]: #fix-mpsc-handling-of-capacity-1-opening
-[2]: #feat-add-the-mpsc-v1-equality-seq-ring
-[3]: #fix-reject-capacity-1-in-mpsc-v0
-[4]: #feat-mpsc-v1-in-the-tools-flavors-named-xpsc-vn
-[5]: #perf-measure-mpsc-v1-beside-v0
-[6]: #fix-mpsc-handling-of-capacity-1-closing

@@ -17,6 +17,7 @@ the closing rung's last edit, with the cycle title as the row's label.
 | 2026-08-28 | docs: keep the ladder markers in the closed block | 11 | 2129 | the drop-markers step gone, its rationale added |
 | 2026-09-07 | agent-files(adoption): v0.2.3 | 10 | 2315 | iiac-perf's set at d5d5e77a3bb1 copied whole, messaging.md gone, the version marker added |
 | 2026-09-10 | fix: mpsc handling of capacity 1 | 10 | 2315 | unchanged, no agent-file touched |
+| 2026-09-11 | agent-files(adoption): v0.2.4 | 10 | 2315 | vc-x1's set at e378ce9ee494, the version file renamed and one clause of `custom.md` reworded, so the count holds |
 
 Per file at the last row, replaced at each close-out, the history being in the commits:
 
