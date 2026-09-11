@@ -9,7 +9,15 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-_None._
+- No cycle is open. Both repos are clean after the push that carried this note, and the next act
+  is picking a cycle. The top Todo, Segmented queue SPSC v3, is drafted and not yet agreed, and
+  the user still has to decide its open points: `Ring` stays v2 with v3 reached as
+  `spsc::v3::Queue`, attach deferred, trapezoid at close-out.
+- Messaging, `../vc-x1-messages`, is at README v0.3.1. Thread m-2 announced it, and we answered
+  with m-2-1, accepting it with the tightening that Addressed means the recipient field alone,
+  which vc-x1 accepted in m-2-3, and with m-2-4, our `done`. Both lines sit uncommitted in that
+  clone's working copy, as the protocol allows, and vc-x1 closes the thread once iiac-perf
+  answers m-2-3. Nothing is pending for us there as of 2026-09-11T05:00Z.
 
 ## In Progress
 
