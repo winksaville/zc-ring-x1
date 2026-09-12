@@ -1572,6 +1572,54 @@ What keeps this project distinct from it:
   hostile-peer-cannot-cause-UB discipline versus cooperating
   participants within a framework.
 
+### Prior art: cordyceps MpscQueue
+
+[cordyceps](https://github.com/hawkw/mycelium/tree/main/cordyceps)
+carries `MpscQueue<T>`, Vyukov's intrusive node-based MPSC,
+the linked-list shape the pool-message sweep measures beside
+the descriptor rings. The queue owns no storage: a node is
+the caller's, reached through the `Linked` trait, whose
+handle type is the implementer's choice (a pinned box in the
+crate's tests, a pool buffer if the tools rung's check holds)
+and whose `Links<T>` field, one atomic next pointer, sits
+inside the message. So the message carries its own link, and
+one shared line per message moves where the ring moves the
+payload line and a descriptor slot. It is `no_std`, unbounded,
+and allocation-free once the nodes exist, a stub node the
+queue holds keeping the tail from ever being null.
+
+The protocol, as `tests/cordyceps_mpsc.rs` pins it:
+
+- Push is a swap on the head and a store of the previous
+  node's link, two atomics and wait-free, where the ring's
+  claim is a CAS loop that retries under contention.
+- Between those two atomics the consumer can find the tail's
+  link null while the head has moved, and reports
+  `Inconsistent`, a window a preempted producer widens. The
+  blocking dequeue spins on it, and the sweep's consumer
+  counts it.
+- One consumer at a time, a flag CAS that a second caller
+  finds `Busy`, and `Empty` when the tail's link is null and
+  the head sits at the tail.
+- Drop walks what is still enqueued and hands every node back
+  through its handle, so nodes are never leaked by the queue.
+
+What keeps this project distinct from it:
+
+- Pointers, not offsets: a node's link is a machine address,
+  valid in one address space and trusted as written, where
+  the ring and the pool address shared memory by index and
+  validate every one at attach and on every pop, so a
+  hostile peer cannot cause UB. That is the reason an own
+  version of this shape would use offsets.
+- Unbounded: no `Full`, so back-pressure is the pool's
+  `Exhausted` alone, which is what makes the pool size the
+  sweep's axis and gives the queue no depth of its own.
+- In-process: the queue has no attach, no header, and no
+  layout version, so it composes with the pool inside one
+  process and cannot cross the boundary the rings are
+  designed for.
+
 ### Open questions
 
 One question per heading, each directly linkable; a

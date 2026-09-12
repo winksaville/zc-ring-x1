@@ -46,7 +46,7 @@ ns per message over 1M messages, every cell filled. The design note carries thos
 #### Ladder
 
 - [feat: cordyceps MpscQueue beside the mpsc rings opening][1] (done)
-- [test: exercise cordyceps MpscQueue][2]
+- [test: exercise cordyceps MpscQueue][2] (done)
 - [feat: tp-pool, the pool-message sweep][3]
 - [perf: sweep pool size over descriptor rings and cordyceps][4]
 - [feat: cordyceps MpscQueue beside the mpsc rings closing][5]
@@ -112,6 +112,23 @@ the caller owns through the `Linked` trait. `cordyceps = "0.3"` as a dev-depende
 `Busy` under a held `Consumer`, drop handing back enqueued nodes, and `Inconsistent` counted in the
 threaded test, plus a "Prior art: cordyceps MpscQueue" section beside the iceoryx2 one in the
 design note, its push and its window against the rings' claim CAS.
+
+Landed as intended, the crate's first dev-dependency and the first file in `tests/`. What the rung
+settled:
+
+- The node type is the test's own, a pinned box as the handle with the crate's own `Linked` impl
+  shape, a producer tag, a sequence number, and an optional drop counter, so one type serves every
+  test and the hand-back test counts the stub with the nodes.
+- The `Inconsistent` window is narrow on the 3900X: the two-producer test ran 400k messages in
+  debug and in release without landing in it once, and the release consumer saw some two thousand
+  `Empty` retries instead. The test reports the counts and asserts order, since a run that never
+  hits the window is a valid run, and the sweep's consumer will count it the same way.
+- `cordyceps` has no dependencies of its own, and the lock file still grew by some 240 lines: its
+  `cfg(loom)` dependency table, loom and tracing, is resolved into the lock and never built.
+- The prior-art section names what the sweep compares, one shared line per message against the
+  ring's payload line plus descriptor slot, and what keeps the crate distinct, offsets validated at
+  attach against pointers trusted as written, a pool bound against no bound, and in-process against
+  the boundary the rings cross.
 
 ##### feat: tp-pool, the pool-message sweep
 
