@@ -2,8 +2,8 @@
 
 Measure what a cross-thread message handoff over the
 zc-ring-x1 ring queues actually costs (and where the cost
-lives), with three installable binaries: `tp-cell`,
-`tp-matrix`, and `tp-stream`.
+lives), with four installable binaries: `tp-cell`,
+`tp-matrix`, `tp-stream`, and `tp-pool`.
 
 ## The measurement, in one paragraph
 
@@ -105,6 +105,46 @@ building the cell and worth knowing before comparing runs:
   tips it into the second. v0 and v2 read the same in both
   loop shapes. The demo's stream lines are the plain loop.
 
+## tp-pool: the pool-message sweep
+
+The two matrices above write the payload into the ring's slot.
+The messaging layer's loop is the other shape: take a message
+from the pool, fill it, push its reference, receive it,
+process it, return it to the pool. `tp-pool` runs that loop a
+fixed count of messages per cell over the descriptor rings,
+`spsc-v2` and `mpsc-v1` carrying a `Desc`, and over cordyceps's
+`MpscQueue`, Vyukov's intrusive MPSC, linked through the same
+pool's buffers, so the queue is the only variable between the
+rows. The pool bounds the messages in flight, so its size is
+the axis every flavor shares, the columns. A ring depth at or
+above the pool size never reports Full, so that row is the
+ring at the pool's bound and the rows below it are the ring
+throttling first, and the cordyceps row, unbounded, has no
+depth.
+
+```sh
+$ tp-pool                                  # pools 1,100,1000; depths 1,8,64,1024; 1M messages; median of 3
+$ tp-pool --pool 1,10,100 --depth 1,1024 --count 200000 --repeat 5
+tp-pool 0.1.0 - run the pool-message sweep, one table per placement
+...
+0,3 x-CCX: ns/msg
+
+| flavor    | depth | pool=1 | pool=100 | pool=1000 |
+|-----------|-------|-------:|---------:|----------:|
+| spsc-v2   | 1024  |  504.2 |    214.9 |     215.0 |
+| cordyceps | -     |  615.0 |    213.7 |     217.2 |
+```
+
+Each placement gets an `ns/msg` table and a `fills/msg` table
+of the same shape, and a line with the `Inconsistent` results
+the cordyceps consumer retried in the median run, the window
+between a producer's head swap and its link store. The pool's
+free-stack is in every row: the consumer's free pushes the
+buffer it just read, and the producer's alloc pops that same
+buffer, so a line the consumer wrote crosses back on every
+message whatever the queue does, which is why these numbers sit
+far above the in-slot tables' at the same placement.
+
 ## tp-cell: one cell, under the microscope
 
 Runs a single placement (your `--pin` choice, or unpinned)
@@ -132,7 +172,7 @@ placement while changing something.
 ```sh
 cargo build -p tp_matrix
 cargo test --workspace
-cargo install --path tp_matrix --locked   # installs tp-cell, tp-matrix, tp-stream
+cargo install --path tp_matrix --locked   # installs tp-cell, tp-matrix, tp-stream, tp-pool
 ```
 
 `--locked` builds from the committed `Cargo.lock`, so a saved
@@ -154,5 +194,5 @@ from).
 - Non-Linux builds run unpinned without counters.
 - The crates: probes are `tprobe`, generic runner machinery
   (CLI, pinning, drive loop, perf, topology) is `tp_runner`.
-  This crate holds only the ring-aware cells and the two
+  This crate holds only the ring-aware cells and the four
   binaries.

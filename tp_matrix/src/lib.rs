@@ -32,6 +32,11 @@
 //! - `tp-matrix` runs every flavor × placement cell and emits
 //!   markdown tables.
 //! - `tp-stream` runs the streaming cell over the same matrix.
+//! - `tp-pool` runs the pool-message loop, the messaging
+//!   layer's shape, over the descriptor rings and cordyceps's
+//!   intrusive queue on one pool ([`pool`]).
+
+pub mod pool;
 
 use std::time::{Duration, Instant};
 
@@ -130,7 +135,7 @@ pub struct CellResult {
 /// The three per-cell fill counters, opened before the worker
 /// spawns so `inherit` covers it.
 #[cfg(target_os = "linux")]
-struct Fills {
+pub(crate) struct Fills {
     lcl_cache: tp_runner::perf::ProcessCounter,
     lcl_l2: tp_runner::perf::ProcessCounter,
     lcl_dram: tp_runner::perf::ProcessCounter,
@@ -140,7 +145,7 @@ struct Fills {
 impl Fills {
     /// Open + enable all three, returning `None` (with a
     /// one-line note) where perf_event_open is unavailable.
-    fn open() -> Option<Fills> {
+    pub(crate) fn open() -> Option<Fills> {
         use tp_runner::perf::{
             ProcessCounter, ZEN2_FILLS_LCL_CACHE, ZEN2_FILLS_LCL_DRAM, ZEN2_FILLS_LCL_L2,
         };
@@ -170,7 +175,7 @@ impl Fills {
     }
 
     /// Disable and read the totals.
-    fn finish(mut self) -> Option<FillCounts> {
+    pub(crate) fn finish(mut self) -> Option<FillCounts> {
         self.lcl_cache.disable().ok()?;
         self.lcl_l2.disable().ok()?;
         self.lcl_dram.disable().ok()?;

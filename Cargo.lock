@@ -561,9 +561,11 @@ name = "tp_matrix"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "cordyceps",
  "tp_runner",
  "tprobe",
  "zc-ring-x1-dev",
+ "zerocopy",
 ]
 
 [[package]]
@@ -688,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "zc-ring-x1-dev"
-version = "0.15.10-1"
+version = "0.15.10-2"
 dependencies = [
  "cordyceps",
  "libc",

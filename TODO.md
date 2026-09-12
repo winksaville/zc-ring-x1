@@ -47,7 +47,7 @@ ns per message over 1M messages, every cell filled. The design note carries thos
 
 - [feat: cordyceps MpscQueue beside the mpsc rings opening][1] (done)
 - [test: exercise cordyceps MpscQueue][2] (done)
-- [feat: tp-pool, the pool-message sweep][3]
+- [feat: tp-pool, the pool-message sweep][3] (done)
 - [perf: sweep pool size over descriptor rings and cordyceps][4]
 - [feat: cordyceps MpscQueue beside the mpsc rings closing][5]
 
@@ -137,6 +137,32 @@ run the in-slot path. `tp-pool` in the tools crate runs the loop over `spsc-v2`,
 cordyceps on one pool, flags `--pool`, `--depth`, `--count`, and `--repeat`, the placements
 discovered as `tp-stream` does, one markdown table per placement. Whether a pool buffer can be the
 cordyceps handle is settled here.
+
+Landed as intended, a `pool` module in the tools library and the `tp-pool` binary beside the three.
+What the rung settled:
+
+- A pool buffer is the cordyceps node, so every row shares one pool and one free-stack. The pool
+  allocs the buffer as bytes, since a node holds atomics zerocopy cannot derive over, and the
+  producer lays the node over it through raw pointers, the queue's link at the second word so the
+  pool's own free-stack link at the first is left alone. The guard converts to a descriptor to stay
+  allocated without a guard, and the consumer turns the dequeued pointer back into an index against
+  buffer 0's address and frees through the registry, so the free path is the pool's on every row.
+- The handle is the bare pointer, since the pool owns the storage, and the stub is a leaked box
+  handed in as static, so the queue's drop touches nothing the pool owns.
+- The ring rows share one body: the pool loop with the ring's send and receive passed in as
+  closures, spsc-v2 reserving and committing, mpsc-v1 sending with a fill, both carrying a `Desc`
+  in a line-sized slot as the demo's pool cells do.
+- The tables are one `ns/msg` and one `fills/msg` per placement, flavor by depth as rows and pool
+  size as columns, and a line with the cordyceps consumer's `Inconsistent` count for the median
+  run, a median by elapsed time over `--repeat` runs of `--count` messages.
+- The smoke runs already show the pool's free-stack in every row: the consumer's free pushes the
+  buffer it just read and the producer's alloc pops that same buffer, so a line the consumer wrote
+  crosses back per message whatever the queue does, and the numbers sit far above the in-slot
+  tables'. The perf rung reads that against the prediction.
+- The `Inconsistent` window is not rare here: the smoke run saw it on a sixth of the messages at
+  pool sizes above 1 on the same CCX, where the test rung's two producers never landed in it once.
+  A consumer that keeps up finds the tail's link null between the producer's two atomics, which
+  two racing producers did not expose.
 
 ##### perf: sweep pool size over descriptor rings and cordyceps
 
