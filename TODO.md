@@ -48,7 +48,7 @@ ns per message over 1M messages, every cell filled. The design note carries thos
 - [feat: cordyceps MpscQueue beside the mpsc rings opening][1] (done)
 - [test: exercise cordyceps MpscQueue][2] (done)
 - [feat: tp-pool, the pool-message sweep][3] (done)
-- [perf: sweep pool size over descriptor rings and cordyceps][4]
+- [perf: sweep pool size over descriptor rings and cordyceps][4] (done)
 - [feat: cordyceps MpscQueue beside the mpsc rings closing][5]
 
 #### Deliberation
@@ -168,6 +168,24 @@ What the rung settled:
 
 Run the sweep on the 3900X and record the tables in the design note beside the mpsc v1 ones, the
 prediction written before the run and read against them after.
+
+Landed as a `### Measured: pool-message sweep` section after the cordyceps prior art, in the
+messaging layer, since the loop is that layer's and not the mpsc v1 ring's. What the rung settled:
+
+- No prediction was written before the run, a departure from the rung's intent: the tools rung's
+  smoke runs had already shown the numbers, and a prediction written after them would be a
+  reading dressed as one. The note says so and records readings.
+- The first two full runs were perturbed, cross-CCX cells near twice the partial sweeps' at the
+  same flags and every placement slower. Bisecting the flag lists found no dependence on them, and
+  the counters close their events per cell, so no leak. The same default command rerun twice later
+  agreed within a few percent at every pinned cell. We think it was load outside the sandbox, which
+  cannot see host processes. Run three is the record and the unpinned cells, which moved by a third
+  between clean runs, are left out.
+- The answer to the cycle's question: once messages queue, the intrusive list matches `spsc-v2`
+  and beats `mpsc-v1` by a third across the CCX, and at one message in flight it is the slowest
+  row, which we think is the stub re-enqueue putting the consumer on the head line.
+- Pool 100 and 1000 read the same, so the L2 footprint the deliberation expected at 1000 never
+  shows: the LIFO free-stack keeps the working set at the messages in flight.
 
 ##### feat: cordyceps MpscQueue beside the mpsc rings closing
 

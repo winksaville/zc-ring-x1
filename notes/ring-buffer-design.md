@@ -1620,6 +1620,108 @@ What keeps this project distinct from it:
   process and cannot cross the boundary the rings are
   designed for.
 
+### Measured: pool-message sweep
+
+The messaging layer's loop, take a message from the pool,
+fill it, push its reference, receive it, process it, return
+it, run by `tp-pool` over `spsc-v2` and `mpsc-v1` carrying a
+`Desc` and over cordyceps's `MpscQueue` linked through the
+same pool's buffers ([Prior art: cordyceps
+MpscQueue](#prior-art-cordyceps-mpscqueue)), so the queue is
+the only variable between rows. 1p/1c throughout.
+
+- **Measured (2026-09-12, 3900X, the rung `perf: sweep pool
+  size over descriptor rings and cordyceps`, `tp-pool` at its
+  defaults: pools 1, 100, and 1000, ring depths 1, 8, 64, and
+  1024, 1M messages a cell, median of 3)**. A second full run
+  agreed within a few percent at every pinned cell.
+  - No prediction was written before the run. The tools
+    rung's smoke runs had already shown the numbers, so the
+    readings below are findings, not a prediction checked.
+  - ns per message, pinned placements:
+
+    | placement | flavor    | depth | pool=1 | pool=100 | pool=1000 |
+    |-----------|-----------|------:|-------:|---------:|----------:|
+    | 0,1 CCX   | spsc-v2   |     1 |  144.6 |    108.9 |     108.8 |
+    | 0,1 CCX   | spsc-v2   |     8 |  146.6 |     70.3 |      61.9 |
+    | 0,1 CCX   | spsc-v2   |    64 |  135.6 |     63.3 |      64.4 |
+    | 0,1 CCX   | spsc-v2   |  1024 |  132.4 |     63.7 |      64.4 |
+    | 0,1 CCX   | mpsc-v1   |     1 |  164.4 |    123.4 |     126.9 |
+    | 0,1 CCX   | mpsc-v1   |     8 |  164.4 |     95.2 |      94.7 |
+    | 0,1 CCX   | mpsc-v1   |    64 |  163.3 |     91.0 |      91.2 |
+    | 0,1 CCX   | mpsc-v1   |  1024 |  161.2 |     90.7 |      91.0 |
+    | 0,1 CCX   | cordyceps |     - |  166.7 |     75.0 |      74.3 |
+    | 0,3 x-CCX | spsc-v2   |     1 |  523.4 |    379.9 |     373.2 |
+    | 0,3 x-CCX | spsc-v2   |     8 |  489.2 |    203.1 |     202.9 |
+    | 0,3 x-CCX | spsc-v2   |    64 |  498.8 |    211.5 |     209.4 |
+    | 0,3 x-CCX | spsc-v2   |  1024 |  500.3 |    216.8 |     216.4 |
+    | 0,3 x-CCX | mpsc-v1   |     1 |  571.8 |    457.0 |     453.7 |
+    | 0,3 x-CCX | mpsc-v1   |     8 |  588.3 |    362.8 |     367.9 |
+    | 0,3 x-CCX | mpsc-v1   |    64 |  582.2 |    346.3 |     341.0 |
+    | 0,3 x-CCX | mpsc-v1   |  1024 |  603.0 |    336.7 |     339.0 |
+    | 0,3 x-CCX | cordyceps |     - |  614.2 |    221.8 |     216.8 |
+    | 0,12 SMT  | spsc-v2   |     1 |   55.3 |     39.6 |      39.6 |
+    | 0,12 SMT  | spsc-v2   |     8 |   57.4 |     33.1 |      33.1 |
+    | 0,12 SMT  | spsc-v2   |    64 |   56.7 |     33.3 |      33.3 |
+    | 0,12 SMT  | spsc-v2   |  1024 |   56.0 |     33.1 |      33.1 |
+    | 0,12 SMT  | mpsc-v1   |     1 |   63.7 |     48.0 |      47.9 |
+    | 0,12 SMT  | mpsc-v1   |     8 |   63.5 |     42.2 |      42.1 |
+    | 0,12 SMT  | mpsc-v1   |    64 |   63.6 |     41.6 |      41.7 |
+    | 0,12 SMT  | mpsc-v1   |  1024 |   63.5 |     37.2 |      36.9 |
+    | 0,12 SMT  | cordyceps |     - |   74.8 |     33.0 |      33.1 |
+
+  - Cross-core fills per message at the like-for-like rows,
+    ring depth 1024, and the cordyceps consumer's
+    `Inconsistent` retries in the median run:
+
+    | placement | flavor    | pool=1 | pool=100 | pool=1000 | Inconsistent at 100, 1000 |
+    |-----------|-----------|-------:|---------:|----------:|--------------------------:|
+    | 0,1 CCX   | spsc-v2   |  5.847 |    4.991 |     4.977 |                           |
+    | 0,1 CCX   | mpsc-v1   |  8.605 |    7.368 |     7.401 |                           |
+    | 0,1 CCX   | cordyceps |  8.978 |    6.184 |     6.103 |          172658, 165229   |
+    | 0,3 x-CCX | spsc-v2   |  5.857 |    4.795 |     4.805 |                           |
+    | 0,3 x-CCX | mpsc-v1   |  8.661 |    7.453 |     7.426 |                           |
+    | 0,3 x-CCX | cordyceps |  8.873 |    4.688 |     4.575 |            30576, 21729   |
+
+  - The unpinned cells moved by a third between the two runs
+    and are left out.
+- **Readings**:
+  - The linked list is not faster than the descriptor ring.
+    Once the pool lets messages queue, cordyceps matches
+    `spsc-v2` across the CCX and on the SMT pair, 217 against
+    216 and 33 against 33, and trails it by a sixth on the
+    same CCX, 75 against 64. It beats `mpsc-v1`, the ring it
+    competes with as an MPSC, by a third across the CCX, 217
+    against 339, on 4.6 lines per message against 7.4.
+  - At pool 1, one message in flight, cordyceps is the slowest
+    row everywhere, 614 against 500 across the CCX and 75
+    against 56 on SMT. We think it is the stub: a dequeue that
+    empties the queue re-enqueues the stub, so the consumer
+    writes the head line the producer writes on every
+    message, which the fills read as 8.9 lines against
+    `spsc-v2`'s 5.9.
+  - Pool 100 and pool 1000 read the same in every row, so
+    the L2 footprint the cycle expected at 1000 never shows.
+    The free-stack is LIFO: the producer's alloc pops the
+    buffer the consumer's free just pushed, so the working
+    set is the messages actually in flight, not the pool.
+  - Ring depth matters well below the pool: `spsc-v2` reaches
+    its plateau by depth 8 and `mpsc-v1` by 64 at pool 100,
+    so the throttling rows are depth 1 alone for `spsc-v2`,
+    where the cost is 1.8 times the plateau across the CCX.
+  - The loop is an order of magnitude above the in-slot path:
+    `spsc-v2` streams at 14 ns per message across the CCX at
+    depth 64 in `tp-stream` and runs this loop at 209 at the
+    same depth, the pool's
+    free-stack head crossing back on every message whatever
+    the queue does.
+  - The `Inconsistent` window is common once messages queue,
+    about one message in six on the same CCX, one in forty
+    across it, one in twenty on SMT, and never at pool 1. The
+    tests' two producers never landed in it, since it takes a
+    consumer fast enough to reach the tail between one
+    producer's two atomics.
+
 ### Open questions
 
 One question per heading, each directly linkable; a
