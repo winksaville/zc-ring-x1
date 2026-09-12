@@ -9,29 +9,14 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- No cycle is open. `agent-files(adoption): v0.2.4` landed on main at 8d4cdd2babb3 on
-  2026-09-12 (UTC), the artifact installed at 0.15.9, and both repos were clean after Land. The
-  working copy holds this note, a Todo stub `### Implement a MPSC using linked list` with an
-  unfinished sentence, and `intrusive-rust-link-lists.md` at the repo root, an 11-line question
-  about linked-list-based MPSC/SPSC FIFOs in Rust with preallocated messages and embedded links,
-  a draft of that entry. The user decides tomorrow whether the stub becomes the entry, with the
-  file folded in, and where it ranks against the proposal below.
-- The proposed next cycle, single-step `test: exercise cordyceps MpscQueue`, dated 2026-09-11 and
-  not yet approved: `cordyceps = "0.3"` as a dev-dependency, `tests/cordyceps_mpsc.rs` covering
-  FIFO, Empty, two threaded producers with per-producer order, Busy under a held Consumer, drop
-  handing back enqueued nodes, and Inconsistent counted in the threaded test, plus a "Prior art:
-  cordyceps MpscQueue" section beside the iceoryx2 one in the design note. No `-dev` rename. The
-  bookmark push `jj git push --named test-exercise-cordyceps-mpscqueue=@- -R .` waits on the
-  user's go.
-- The cordyceps queue is Vyukov's intrusive MPSC: wait-free two-atomic push, single consumer,
-  an Inconsistent window between a producer's head swap and its link store, a stub node, nodes
-  caller-owned as `Pin<Box<T>>` through the `Linked` trait. Pointers are not forbidden in our
-  layout, they are unsafe-heavy in Rust, which is the reason an own version would use offsets.
-- Messaging, `../vc-x1-messages`, is at README v0.3.2, read. We answered m-3-0 with m-3-2,
-  accepted, and m-4-0 with m-4-2, adopted with the sha-link. Both lines sit uncommitted in that
-  clone beside iiac-perf's, nothing is pending for us as of 2026-09-12T00:30Z, and vc-x1 closes
-  both threads. iiac-perf raised a gap in m-3-1, no title form for a commit closing two threads,
-  vc-x1's pick.
+- The cycle `feat: cordyceps MpscQueue beside the mpsc rings` is closed on its bookmark
+  `feat-cordyceps-mpscqueue-beside-the-mpsc-rings` and not landed. The user's waiver covered every
+  push through the closing and reserved Land for their own review, so `main` still sits at the
+  continuation-notes commit and the package still carries `-dev`. Land waits on that review, the
+  trapezoid recorded as the shape until it confirms or changes it.
+- `../vc-x1-messages` holds a local commit `m-3 m-4 m-5` with our m-3-5 `done` and m-5-2
+  `accepted` beside iiac-perf's three lines, and its `main` bookmark is not moved or pushed. The
+  push waits on the user's go.
 
 ## In Progress
 
@@ -239,53 +224,211 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### agent-files(adoption): v0.2.4
+### feat: cordyceps MpscQueue beside the mpsc rings
 
 #### Problem
 
-The family's agreed set is v0.2.4, landed by vc-x1's proposal at `e378ce9ee494` on 2026-09-11,
-and ours was v0.2.3, so `vc-x1 agent-files diff ../vc-x1 -c` reported two of eleven differing:
-the version file and `custom.md`. The change is one clause. The messaging pointer said a session
-reads our inbox at acquaint, and the messages README has had no inbox since v0.3.0, what a session
-reads there is what is pending for us.
+The question behind the linked-list entry is whether an intrusive MPSC, preallocated messages
+carrying their own links, beats a pool plus a descriptor ring at the loop the messaging layer is
+built on: take a message from the pool, fill it, push its reference, receive it, process it, return
+it. cordyceps's `MpscQueue` is a ready Vyukov implementation of the first shape and nothing here
+exercises it, and the depth sweep measures the in-slot path, which a linked list cannot take, so no
+table answers the question.
 
 #### Solution
 
-A single-step adoption, the source's set taken whole: `agent-data/agent-files-v0.2.3` renamed to
-`agent-data/agent-files-v0.2.4` and the clause reworded to "reads what is pending for us there",
-so the diff against `../vc-x1` reports nothing differing. Done as stated, the two files the whole
-of it.
+Done as planned, the one move being where the numbers went. `cordyceps` is the root crate's
+dev-dependency with a test file pinning the queue's contract and a prior-art section beside
+iceoryx2's. The tools crate gained `tp-pool`, the pool-message loop over `spsc-v2` and `mpsc-v1`
+carrying a descriptor and over cordyceps linked through the same pool's buffers, swept over pools 1,
+100, and 1000 and ring depths 1, 8, 64, and 1024 at 1M messages a cell. The 3900X numbers are a
+measured section in the design note's messaging layer rather than beside the mpsc v1 tables, with no
+prediction ahead of them. The answer: once messages queue the intrusive list matches `spsc-v2` and
+beats `mpsc-v1` by a third across the CCX, and at one message in flight it is the slowest row.
 
 #### Acceptance check
 
-`vc-x1 agent-files diff ../vc-x1 -c` reports 0 of 11 differing, `vc-x1 agent-files version`
-prints `v0.2.4`, and `agent-data` holds no `agent-files-v0.2.3`.
+`cargo test --test cordyceps_mpsc` passes. `tp-pool --pool 1,100,1000 --depth 1,8,64,1024` prints
+one table per placement, rows `spsc-v2` and `mpsc-v1` at each depth and `cordyceps` as one row, cells
+ns per message over 1M messages, every cell filled. The design note carries those tables from the
+3900X with the prediction they are read against.
 
-Passed (2026-09-11): the diff reports all eleven files the same, the version prints `v0.2.4`, and
-`ls agent-data` lists `agent-files-v0.2.4` alone among the version files.
+Passed, one part short (2026-09-12): `cargo test --test cordyceps_mpsc` passes its five tests, and
+`tp-pool` at its defaults, which are the flags above, printed an `ns/msg` and a `fills/msg` table
+per placement, `spsc-v2` and `mpsc-v1` at the four depths and `cordyceps` as one row, every cell
+filled, the pinned tables in the design note. The short part is the prediction: none was written
+before the run, since the tools rung's smoke runs had already shown the numbers, and the note
+records readings instead.
 
 #### Ladder
 
-- agent-files(adoption): v0.2.4 (done)
+- [feat: cordyceps MpscQueue beside the mpsc rings opening][1] (done)
+- [test: exercise cordyceps MpscQueue][2] (done)
+- [feat: tp-pool, the pool-message sweep][3] (done)
+- [perf: sweep pool size over descriptor rings and cordyceps][4] (done)
+- [feat: cordyceps MpscQueue beside the mpsc rings closing][5] (done)
 
 #### Deliberation
 
-- Single-step: two files and no design, so one commit carrying the bare `0.15.9`, no dev rename,
-  as the v0.2.3 adoption did.
-- Adoptions copy and bump nothing: the version file is the source's, so `v0.2.4` arrives by rename
-  rather than by a bump of our own ([Agent-files
-  version](agent-data/versioning.md#agent-files-version)).
-- The reference checkout is `../vc-x1`, the family's payload, not `../vc-x1-template`, which still
-  holds the unversioned 2026-08-31 set, so a diff against it names most of the set and says
-  nothing about this adoption.
-- The working copy held more than the adoption at the opening, the continuation note, a
-  half-written Todo entry, and a stray note file at the root. They were set aside as a patch in
-  `tmp/` so this commit carries the adoption alone, and they return once it has pushed
-  ([Unplanned work](AGENTS.md#unplanned-work)).
-- The continuation note's facts had homes already, the SPSC v3 draft in `## Todo` and thread m-2
-  closed, so the section resets to `_None._`.
+- Multi-step, not the single-step test cycle drafted on 2026-09-11: the sweep is what answers the
+  question, and the test rung characterizes the queue the sweep leans on, so the two run as rungs
+  of one cycle rather than a test cycle and a perf cycle apart.
+- The pool bounds the sweep, not the ring: with X messages preallocated at most X descriptors are
+  ever in the ring, so a depth at or above X never reports Full and measures the same bound as
+  depth X. The swept axis is X, which is what cordyceps shares, since an unbounded queue has no
+  depth of its own.
+- Ring depths 1, 8, 64, and 1024: for every X the rows below it are the ring throttling before the
+  pool does, and the first at or above it is the like-for-like row against cordyceps, 1024 covering
+  X = 1000.
+- Pool sizes 1, 100, and 1000: the pool takes any count, the rings need powers of two, so the X
+  axis is decimal and the depth axis binary. X = 1 is one message in flight, the lockstep ping the
+  demo's pool cells run today, and X = 1000 is 64 KB of buffers, past L1 and inside L2, so that
+  column was expected to measure the queue plus payload lines reused from L2. The sweep did not
+  bear that out, since the LIFO free-stack keeps the working set at the messages in flight.
+- One pool for every row: the queue is the only variable when spsc-v2, mpsc-v1, and cordyceps all
+  alloc from and free to the same pool, the rings carrying a descriptor and cordyceps the buffer's
+  pointer with its link inside the buffer beside the free-stack's word. cordyceps's `Linked` trait
+  leaves the handle type to the implementer, so a pool buffer as the handle is the first thing the
+  tools rung checks. The fallback is X boxed nodes returned through a second `MpscQueue` as the
+  free list, and then the row measures a different allocator too, which the note would say.
+- A new binary in the tools crate: `tp_matrix` can take cordyceps as a plain dependency, where the
+  demo cannot see a dev-dependency and would need a feature on the library, and `tp-stream` runs
+  for a duration where this sweep runs a count.
+- Fixed count, 1M messages, the demo's convention: a `--count` flag defaulting to it and a
+  `--repeat` reporting the median of N, since a cell at X = 1000 runs in tens of milliseconds and
+  a single run is noise-prone.
+- 1p/1c throughout, mpsc-v1 included, as the existing tables do, so the mpsc row isolates protocol
+  cost. A producer-count dimension comes after segments, and the ISR case is a future addition.
+- Segments later: `--pool` and `--depth` are list flags, so a segment count and capacity become two
+  more and the table a row per segment shape, nothing moving.
+- The `-dev` rename at the opening, as the capacity-1 cycle did, since the demo and the tools are
+  installed and a mid-cycle install must not clobber them.
+- The continuation note's facts: the cordyceps proposal became this cycle, its characterization
+  the test rung's intent, the messaging status was acted on at acquaint, and the linked-list
+  question in `tmp/intrusive-rust-link-lists.md` is what this cycle answers, so the section resets
+  and the Todo stub is not filed.
 - `## Waiting` is `_None._`, nothing to promote.
+- Waiver, given at the opening's description review on 2026-09-12: the user's "you have
+  permission to complete the cycle but do NOT land on main" covers every push from the opening
+  through the closing rung, the work and description reviews included, and does not cover Land,
+  which waits on the user's review of the finished ladder.
+
+#### Ladder details
+
+##### feat: cordyceps MpscQueue beside the mpsc rings opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write
+this block, bump the version-of-record, and rename the package and demo binary to `-dev`.
+
+##### test: exercise cordyceps MpscQueue
+
+The queue is Vyukov's intrusive MPSC: a wait-free two-atomic push, a single consumer, an
+`Inconsistent` window between a producer's head swap and its link store, a stub node, and nodes
+the caller owns through the `Linked` trait. `cordyceps = "0.3"` as a dev-dependency and
+`tests/cordyceps_mpsc.rs` covering FIFO, `Empty`, two threaded producers with per-producer order,
+`Busy` under a held `Consumer`, drop handing back enqueued nodes, and `Inconsistent` counted in the
+threaded test, plus a "Prior art: cordyceps MpscQueue" section beside the iceoryx2 one in the
+design note, its push and its window against the rings' claim CAS.
+
+Landed as intended, the crate's first dev-dependency and the first file in `tests/`. What the rung
+settled:
+
+- The node type is the test's own, a pinned box as the handle with the crate's own `Linked` impl
+  shape, a producer tag, a sequence number, and an optional drop counter, so one type serves every
+  test and the hand-back test counts the stub with the nodes.
+- The `Inconsistent` window is narrow on the 3900X: the two-producer test ran 400k messages in
+  debug and in release without landing in it once, and the release consumer saw some two thousand
+  `Empty` retries instead. The test reports the counts and asserts order, since a run that never
+  hits the window is a valid run, and the sweep's consumer will count it the same way.
+- `cordyceps` has no dependencies of its own, and the lock file still grew by some 240 lines: its
+  `cfg(loom)` dependency table, loom and tracing, is resolved into the lock and never built.
+- The prior-art section names what the sweep compares, one shared line per message against the
+  ring's payload line plus descriptor slot, and what keeps the crate distinct, offsets validated at
+  attach against pointers trusted as written, a pool bound against no bound, and in-process against
+  the boundary the rings cross.
+
+##### feat: tp-pool, the pool-message sweep
+
+The pool-message loop has no sweep: the demo runs it at one depth over spsc alone, and the tools
+run the in-slot path. `tp-pool` in the tools crate runs the loop over `spsc-v2`, `mpsc-v1`, and
+cordyceps on one pool, flags `--pool`, `--depth`, `--count`, and `--repeat`, the placements
+discovered as `tp-stream` does, one markdown table per placement. Whether a pool buffer can be the
+cordyceps handle is settled here.
+
+Landed as intended, a `pool` module in the tools library and the `tp-pool` binary beside the three.
+What the rung settled:
+
+- A pool buffer is the cordyceps node, so every row shares one pool and one free-stack. The pool
+  allocs the buffer as bytes, since a node holds atomics zerocopy cannot derive over, and the
+  producer lays the node over it through raw pointers, the queue's link at the second word so the
+  pool's own free-stack link at the first is left alone. The guard converts to a descriptor to stay
+  allocated without a guard, and the consumer turns the dequeued pointer back into an index against
+  buffer 0's address and frees through the registry, so the free path is the pool's on every row.
+- The handle is the bare pointer, since the pool owns the storage, and the stub is a leaked box
+  handed in as static, so the queue's drop touches nothing the pool owns.
+- The ring rows share one body: the pool loop with the ring's send and receive passed in as
+  closures, spsc-v2 reserving and committing, mpsc-v1 sending with a fill, both carrying a `Desc`
+  in a line-sized slot as the demo's pool cells do.
+- The tables are one `ns/msg` and one `fills/msg` per placement, flavor by depth as rows and pool
+  size as columns, and a line with the cordyceps consumer's `Inconsistent` count for the median
+  run, a median by elapsed time over `--repeat` runs of `--count` messages.
+- The smoke runs already show the pool's free-stack in every row: the consumer's free pushes the
+  buffer it just read and the producer's alloc pops that same buffer, so a line the consumer wrote
+  crosses back per message whatever the queue does, and the numbers sit far above the in-slot
+  tables'. The perf rung reads that against the prediction.
+- The `Inconsistent` window is not rare here: the smoke run saw it on a sixth of the messages at
+  pool sizes above 1 on the same CCX, where the test rung's two producers never landed in it once.
+  A consumer that keeps up finds the tail's link null between the producer's two atomics, which
+  two racing producers did not expose.
+
+##### perf: sweep pool size over descriptor rings and cordyceps
+
+Run the sweep on the 3900X and record the tables in the design note beside the mpsc v1 ones, the
+prediction written before the run and read against them after.
+
+Landed as a `### Measured: pool-message sweep` section after the cordyceps prior art, in the
+messaging layer, since the loop is that layer's and not the mpsc v1 ring's. What the rung settled:
+
+- No prediction was written before the run, a departure from the rung's intent: the tools rung's
+  smoke runs had already shown the numbers, and a prediction written after them would be a
+  reading dressed as one. The note says so and records readings.
+- The first two full runs were perturbed, cross-CCX cells near twice the partial sweeps' at the
+  same flags and every placement slower. Bisecting the flag lists found no dependence on them, and
+  the counters close their events per cell, so no leak. The same default command rerun twice later
+  agreed within a few percent at every pinned cell. We think it was load outside the sandbox, which
+  cannot see host processes. Run three is the record and the unpinned cells, which moved by a third
+  between clean runs, are left out.
+- The answer to the cycle's question: once messages queue, the intrusive list matches `spsc-v2`
+  and beats `mpsc-v1` by a third across the CCX, and at one message in flight it is the slowest
+  row, which we think is the stub re-enqueue putting the consumer on the head line.
+- Pool 100 and 1000 read the same, so the L2 footprint the deliberation expected at 1000 never
+  shows: the LIFO free-stack keeps the working set at the messages in flight.
+
+##### feat: cordyceps MpscQueue beside the mpsc rings closing
+
+Closing out the cycle. What closing taught:
+
+* The perf rung's plan put a prediction ahead of the run, and the tools rung could not be built
+  without running the cell, so the numbers were seen a rung early.
+  - A sweep rung that follows its tool rung writes the prediction at the tool rung's opening, before
+    the first smoke run, or the measurement and the tool share a rung.
+* A full sweep read twice as slow as its own partial runs, and the sandbox cannot see the host's
+  processes to say why.
+  - A full sweep is recorded only when a second full run agrees, which is what this rung did.
+
+Close-out shape: trapezoid, the default, since the ladder's four commits read as one change and the
+merge's second parent keeps every rung's trailer. The user reserved Land for their own review, so
+the shape stands until that review confirms or changes it.
+
+What outlives the cycle is already in its homes: the queue's contract in the test file and the
+prior-art section, the tool in the tools README, the numbers and readings in the design note's
+measured section, and the pointer to both in `notes/README.md`.
 
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
+[1]: #feat-cordyceps-mpscqueue-beside-the-mpsc-rings-opening
+[2]: #test-exercise-cordyceps-mpscqueue
+[3]: #feat-tp-pool-the-pool-message-sweep
+[4]: #perf-sweep-pool-size-over-descriptor-rings-and-cordyceps
+[5]: #feat-cordyceps-mpscqueue-beside-the-mpsc-rings-closing
