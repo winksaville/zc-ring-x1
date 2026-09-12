@@ -9,7 +9,29 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-_None._
+- No cycle is open. `agent-files(adoption): v0.2.4` landed on main at 8d4cdd2babb3 on
+  2026-09-12 (UTC), the artifact installed at 0.15.9, and both repos were clean after Land. The
+  working copy holds this note, a Todo stub `### Implement a MPSC using linked list` with an
+  unfinished sentence, and `intrusive-rust-link-lists.md` at the repo root, an 11-line question
+  about linked-list-based MPSC/SPSC FIFOs in Rust with preallocated messages and embedded links,
+  a draft of that entry. The user decides tomorrow whether the stub becomes the entry, with the
+  file folded in, and where it ranks against the proposal below.
+- The proposed next cycle, single-step `test: exercise cordyceps MpscQueue`, dated 2026-09-11 and
+  not yet approved: `cordyceps = "0.3"` as a dev-dependency, `tests/cordyceps_mpsc.rs` covering
+  FIFO, Empty, two threaded producers with per-producer order, Busy under a held Consumer, drop
+  handing back enqueued nodes, and Inconsistent counted in the threaded test, plus a "Prior art:
+  cordyceps MpscQueue" section beside the iceoryx2 one in the design note. No `-dev` rename. The
+  bookmark push `jj git push --named test-exercise-cordyceps-mpscqueue=@- -R .` waits on the
+  user's go.
+- The cordyceps queue is Vyukov's intrusive MPSC: wait-free two-atomic push, single consumer,
+  an Inconsistent window between a producer's head swap and its link store, a stub node, nodes
+  caller-owned as `Pin<Box<T>>` through the `Linked` trait. Pointers are not forbidden in our
+  layout, they are unsafe-heavy in Rust, which is the reason an own version would use offsets.
+- Messaging, `../vc-x1-messages`, is at README v0.3.2, read. We answered m-3-0 with m-3-2,
+  accepted, and m-4-0 with m-4-2, adopted with the sha-link. Both lines sit uncommitted in that
+  clone beside iiac-perf's, nothing is pending for us as of 2026-09-12T00:30Z, and vc-x1 closes
+  both threads. iiac-perf raised a gap in m-3-1, no title form for a commit closing two threads,
+  vc-x1's pick.
 
 ## In Progress
 
