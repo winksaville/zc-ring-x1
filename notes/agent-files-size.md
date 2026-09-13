@@ -19,6 +19,7 @@ the closing rung's last edit, with the cycle title as the row's label.
 | 2026-09-10 | fix: mpsc handling of capacity 1 | 10 | 2315 | unchanged, no agent-file touched |
 | 2026-09-11 | agent-files(adoption): v0.2.4 | 10 | 2315 | vc-x1's set at e378ce9ee494, the version file renamed and one clause of `custom.md` reworded, so the count holds |
 | 2026-09-12 | feat: cordyceps MpscQueue beside the mpsc rings | 10 | 2315 | unchanged, no agent-file touched |
+| 2026-09-12 | docs: map the workspace and its tools | 10 | 2315 | unchanged, no agent-file touched |
 
 Per file at the last row, replaced at each close-out, the history being in the commits:
 

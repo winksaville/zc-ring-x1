@@ -6,10 +6,14 @@ fixed-duration round-trip drive loop. The probes themselves
 are the sibling `tprobe` crate; examples contribute only
 their workload closures.
 
-- `Cfg::parse` — shared CLI grammar: `-d`/`--duration <secs>`,
-  `--pin <main,worker>`, `-t`/`--ticks`,
-  `--decimals <n>` (default 1); other positionals
-  pass through for the example to interpret.
+- `CommonArgs` / `Cfg` — the shared clap flags the binaries
+  flatten into their own parsers, `-d`/`--duration <secs>`,
+  `-t`/`--ticks`, `--decimals <n>` (default 1), and
+  `--depth <list>`, and the runtime config built from them.
+  `parse_pin` parses a `--pin MAIN,WORKER` value and
+  `parse_depth` one `--depth` element.
+- `LineBuf` — a cache-line-aligned heap region sized at
+  runtime, so a cell's ring depth or pool size is a parameter.
 - `pin_to_cpu` — `sched_setaffinity` pinning (Linux; no-op
   stub elsewhere).
 - `drive` — the round-trip loop: send a counter, receive the
@@ -36,9 +40,9 @@ cargo build -p tp_runner
 ## Run
 
 Nothing to install — it's a library; the workspace's
-`tp_matrix` crate (the `tp-cell` / `tp-matrix` binaries)
-exercises it end to end:
+`tp_matrix` crate (`tp-cell`, `tp-matrix`, `tp-stream`, and
+`tp-pool`) exercises it end to end:
 
 ```sh
-cargo run --release -p tp_matrix --bin tp-cell -- both -d 5 --pin 0,1
+cargo run --release -p tp_matrix --bin tp-cell -- all -d 5 --pin 0,1
 ```

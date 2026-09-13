@@ -47,7 +47,7 @@ tprobe is a library — nothing to install. The workspace's
 `tp_runner` crate for the runner half):
 
 ```sh
-cargo run --release -p tp_matrix --bin tp-cell -- both -d 5 --pin 0,1
+cargo run --release -p tp_matrix --bin tp-cell -- all -d 5 --pin 0,1
 ```
 
 ## Reproducing the measurement matrix
@@ -58,7 +58,7 @@ flavor × placement cell, in-process cache-fill counters,
 markdown tables out:
 
 ```sh
-cargo install --path tp_matrix   # installs tp-cell + tp-matrix
+cargo install --path tp_matrix --locked   # installs tp-cell, tp-matrix, tp-stream, tp-pool
 tp-matrix -d 10
 ```
 

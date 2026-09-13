@@ -234,7 +234,78 @@ next-link at every pop and fails toward `Exhausted`, so a
 hostile peer can degrade service (garbage messages, lost
 buffers, spurious exhaustion), never cause UB on this side.
 
+## Workspace and tools
+
+The repo is a Cargo workspace: the ring crate at the root and
+three local measurement crates beside it, dev tooling only,
+never dependencies of the library.
+
+| crate | what it is | `no_std` | docs |
+|---|---|---|---|
+| `zc-ring-x1` library | the SPSC and MPSC rings, the pool, descriptors | yes, std only under `cfg(test)` | this README, [notes/ring-buffer-design.md](notes/ring-buffer-design.md) |
+| `zc-ring-x1-demo` binary | eyeball throughput lines and the depth sweep | no | [Testing](#testing) below |
+| `tprobe` | hardware tick-counter probes and band reports | no | [tprobe/README.md](tprobe/README.md) |
+| `tp_runner` | shared CLI flags, pinning, drive loop, perf counters, topology | no | [tp_runner/README.md](tp_runner/README.md) |
+| `tp_matrix` | the measurement cells and four binaries | no | [tp_matrix/README.md](tp_matrix/README.md) |
+
+Installing the root crate installs only the demo, so the tools
+take a second command:
+
+```sh
+cargo install --path . --locked           # zc-ring-x1-demo
+cargo install --path tp_matrix --locked   # tp-cell, tp-matrix, tp-stream, tp-pool
+```
+
+Which tool answers which question:
+
+- `zc-ring-x1-demo`: a smoke run, single-shot ns per message
+  for every flavor at each placement, and a depth sweep.
+- `tp-matrix`: the round-trip cost per protocol phase and the
+  cross-core cache-line fills per trip, every flavor at every
+  placement ([tp-matrix](tp_matrix/README.md#tp-matrix-the-whole-picture-one-command)).
+- `tp-stream`: what a ring costs per message when the
+  producer runs ahead and the ring holds many
+  ([tp-stream](tp_matrix/README.md#tp-stream-the-streaming-matrix)).
+- `tp-pool`: the messaging layer's loop, pool to queue to pool,
+  over the descriptor rings and cordyceps's intrusive MPSC on
+  one pool ([tp-pool](tp_matrix/README.md#tp-pool-the-pool-message-sweep)).
+- `tp-cell`: one cell's full percentile bands, for a row that
+  looks odd
+  ([tp-cell](tp_matrix/README.md#tp-cell-one-cell-under-the-microscope)).
+
+Where the numbers live: each ring version's measured tables
+are in its section of
+[notes/ring-buffer-design.md](notes/ring-buffer-design.md),
+the pool sweep in
+[Measured: pool-message sweep](notes/ring-buffer-design.md#measured-pool-message-sweep),
+and calibrated benches with percentile tails in
+[iiac-perf](https://github.com/winksaville/iiac-perf), below.
+
+Dependencies and their `no_std` status. Only zerocopy reaches
+a library build, and the library builds for a bare-metal
+target such as `thumbv7em-none-eabi`:
+
+| dependency | `no_std` | used by |
+|---|---|---|
+| zerocopy | yes, default features off | the library, `tp_matrix` |
+| libc | yes | the demo's pinning and `tp_runner`, Linux only |
+| cordyceps | yes, default features | the root crate's tests and `tp_matrix` |
+| clap | no | `tp_runner`, `tp_matrix` |
+| hdrhistogram | no | `tprobe` |
+| perf-event2 | no | `tp_runner`, Linux only |
+
+The cordyceps pieces, its contract tests in
+[tests/cordyceps_mpsc.rs](tests/cordyceps_mpsc.rs) and the
+pool-buffer node in `tp_matrix`, are prior art under study
+([Prior art: cordyceps MpscQueue](notes/ring-buffer-design.md#prior-art-cordyceps-mpscqueue)).
+
 ## Performance runs using benches in iiac-perf each 5min (300s) duration
+
+A 2026-07-06 run at iiac-perf 0.19.0, kept as that version's record.
+iiac-perf has since renamed these benches to
+`zcr-<flavor>-<version>-<threads>`, `zcr-spsc-v2-2t` for one,
+and `iiac-perf zcr` still runs every one of them.
+
 ```
 $ iiac-perf -d 300 zcr
 iiac-perf 0.19.0 — Rust latency microbenchmark harness
@@ -339,6 +410,13 @@ zcr-mpsc-2t: zc-ring-x1 mpsc send_with round-trip (2 threads, spin) [duration=30
 
 - `cargo test`: the full suite, including a threaded stress
   test and a u32-index-wrap test.
+- `cargo test --workspace`: the member crates too, and the
+  cordyceps contract tests in
+  [tests/cordyceps_mpsc.rs](tests/cordyceps_mpsc.rs).
+- `cargo run --example occupancy_probe --release`: who waits
+  for whom in the demo's streams, the probe the design note's
+  flow-control reading rests on
+  ([examples/occupancy_probe.rs](examples/occupancy_probe.rs)).
 - `cargo run --example readme`: the Overview example above
   (committed as [examples/readme.rs](examples/readme.rs) so
   `cargo clippy --all-targets` keeps it compiling against the
