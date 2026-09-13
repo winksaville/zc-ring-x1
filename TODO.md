@@ -9,9 +9,28 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- `../vc-x1-messages` holds a local commit `m-3 m-4 m-5` with our m-3-5 `done` and m-5-2
-  `accepted` beside iiac-perf's three lines, and its `main` bookmark is not moved or pushed. The
-  push waits on the user's go.
+- No cycle is open. `feat: cordyceps MpscQueue beside the mpsc rings` landed as a trapezoid and
+  `docs: map the workspace and its tools` as one commit on 2026-09-12, the demo installed at
+  0.15.11. `../vc-x1-messages` is pushed, m-3-5 and m-5-2 among its lines, and nothing was pending
+  for us there when the session ended.
+- The next cycle, agreed with the user on 2026-09-12 and not yet opened: `cordyceps-ex-1`, a
+  workspace member beside `tp_matrix`, not a new repo. The cordyceps contract tests and the
+  pool-buffer node adapter from `tp_matrix/src/pool.rs` move into it, with a minimal one-producer,
+  one-consumer pool example. The root crate drops its cordyceps dev-dependency, and `tp-pool`
+  keeps its cordyceps row by depending on the new crate for the adapter. The prior-art section may
+  move to the crate's own notes, as `tprobe` keeps its own. A short ladder at 0.15.12, no `-dev`
+  rename. Its opening writes the In Progress block directly, no Todo entry exists for it.
+- Direction, the user's call on 2026-09-12: the demo stays as it is, with no action list or help
+  CLI here. The positional action list and help, the pool and depth sweeps, and cordyceps as a
+  bench belong in iiac-perf, which takes `tp_matrix/src/pool.rs` and the design note's
+  `Measured: pool-message sweep` section as its model and cross-check. The handoff is a messages
+  thread to iiac-perf with sha-links to the landed commits, not yet opened.
+- Caveats: the `tp-pool` cordyceps consumer spins on `Inconsistent` with no bound, so a preempted
+  producer stalls it. The first two full sweeps on 2026-09-12 read about twice slow, we think from
+  load outside the sandbox, so a full sweep counts only when a second full run agrees. The `-dev`
+  binaries from the cordyceps cycle are still in `~/.cargo/bin`.
+- `tmp/intrusive-rust-link-lists.md`, the linked-list question, is answered by the landed cordyceps
+  cycle and can be deleted.
 
 ## In Progress
 
