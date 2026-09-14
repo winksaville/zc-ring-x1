@@ -1,14 +1,17 @@
 //! tp-pool: run the pool-message loop over every placement,
-//! flavor, ring depth, and pool size, a fixed count of messages
-//! per cell, and emit one ns-per-message table per placement,
+//! flavor, ring depth, and pool size, each cell for a duration,
+//! and emit one ns-per-message table per placement,
 //! the pool sizes as columns and the flavor-by-depth rows, with
 //! the fill counters beside it. The descriptor rings sweep
 //! their depth, and the cordyceps row, an unbounded intrusive
 //! queue, has none.
 
+use std::time::Duration;
+
 use clap::Parser;
 
 use tp_matrix::pool::{POOL_FLAVORS, PoolFlavor, PoolResult, run_pool_cell};
+use tp_matrix::{PLACEMENT_MEANING, XFILLS_MEANING, print_legend};
 use tp_runner::parse_depth;
 use tp_runner::topo::{Placement, discover_placements};
 
@@ -53,13 +56,24 @@ struct Cli {
     )]
     depth: Vec<u32>,
 
-    /// Messages per cell
-    #[arg(long, value_name = "N", default_value_t = 1_000_000)]
-    count: u64,
+    /// Wall-clock seconds per cell run
+    #[arg(
+        short = 'd',
+        long = "duration",
+        value_name = "SECS",
+        default_value_t = 0.1,
+        value_parser = parse_duration
+    )]
+    duration: f64,
 
     /// Runs per cell, the median reported
     #[arg(long, value_name = "N", default_value_t = 3, value_parser = parse_repeat)]
     repeat: usize,
+
+    /// Print a legend after the last placement explaining every
+    /// table and column
+    #[arg(short = 'v', long)]
+    verbose: bool,
 }
 
 /// clap value parser for one `--pool` element: a count from 1
@@ -70,6 +84,15 @@ fn parse_pool(s: &str) -> Result<u32, String> {
         return Err("pool size must be at least 1".to_string());
     }
     Ok(n)
+}
+
+/// clap value parser for `--duration`: seconds above zero.
+fn parse_duration(s: &str) -> Result<f64, String> {
+    let secs: f64 = s.parse().map_err(|e| format!("{s}: {e}"))?;
+    if !(secs > 0.0 && secs.is_finite()) {
+        return Err("duration must be a number of seconds above 0".to_string());
+    }
+    Ok(secs)
 }
 
 /// clap value parser for `--repeat`: a count from 1 up.
@@ -110,26 +133,27 @@ fn rows(depths: &[u32]) -> Vec<Row> {
     rows
 }
 
-/// Run one cell `repeat` times and keep the median by elapsed
-/// time, its fill counters with it.
+/// Run one cell `repeat` times and keep the median by ns per
+/// message, its fill counters with it.
 fn median_cell(
     flavor: PoolFlavor,
     pin: Option<(usize, usize)>,
     pool_size: u32,
     depth: u32,
-    count: u64,
+    dur: Duration,
     repeat: usize,
 ) -> PoolResult {
     let mut runs: Vec<PoolResult> = (0..repeat)
-        .map(|_| run_pool_cell(flavor, pin, pool_size, depth, count))
+        .map(|_| run_pool_cell(flavor, pin, pool_size, depth, dur))
         .collect();
-    runs.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+    runs.sort_by(|a, b| ns_per_msg(a).total_cmp(&ns_per_msg(b)));
     runs.swap_remove(runs.len() / 2)
 }
 
 /// Print `rows` as an aligned markdown table under `headers`.
 /// The first two columns left-aligned, the rest right-aligned.
-fn print_table(headers: &[String], rows: &[Vec<String>]) {
+/// Returns the table's width in characters.
+fn print_table(headers: &[String], rows: &[Vec<String>]) -> usize {
     let mut w: Vec<usize> = headers.iter().map(|h| h.len()).collect();
     for row in rows {
         for (i, cell) in row.iter().enumerate() {
@@ -160,14 +184,20 @@ fn print_table(headers: &[String], rows: &[Vec<String>]) {
     for row in rows {
         println!("{}", fmt_row(row));
     }
+    sep.len()
 }
 
-/// `fills/msg` cell: 3 decimals, or 4 when the value is tiny,
+/// A run's elapsed ns over the messages it moved.
+fn ns_per_msg(res: &PoolResult) -> f64 {
+    res.secs * 1e9 / res.msgs.max(1) as f64
+}
+
+/// `xfills/msg` cell: 3 decimals, or 4 when the value is tiny,
 /// `-` when counters were unavailable.
-fn fills_cell(res: &PoolResult, count: u64) -> String {
+fn fills_cell(res: &PoolResult) -> String {
     match &res.fills {
         Some(f) => {
-            let v = f.lcl_cache as f64 / count.max(1) as f64;
+            let v = f.lcl_cache as f64 / res.msgs.max(1) as f64;
             if v < 0.01 {
                 format!("{v:.4}")
             } else {
@@ -178,28 +208,35 @@ fn fills_cell(res: &PoolResult, count: u64) -> String {
     }
 }
 
-/// Entry point: banner, run the sweep, emit the tables.
+/// Entry point: banner, run the sweep, emit the tables, and
+/// the legend once after the last placement.
 fn main() {
     let cli = Cli::parse();
     println!("{TOP_ABOUT}");
     let placements = discover_placements();
     let rows = rows(&cli.depth);
     println!(
-        "{} cells, {} messages each, median of {} runs; ns/msg = elapsed over messages; \
-         fills/msg = cross-core cache-line fills per message",
+        "{} cells, {}s each, median of {} runs{}",
         placements.len() * rows.len() * cli.pool.len(),
-        cli.count,
+        cli.duration,
         cli.repeat,
+        if cli.verbose { "" } else { "; -v for a legend" },
     );
 
     let mut headers = vec!["flavor".to_string(), "depth".to_string()];
     headers.extend(cli.pool.iter().map(|x| format!("pool={x}")));
 
-    for placement in &placements {
+    let mut width = 0;
+    for (i, placement) in placements.iter().enumerate() {
         let Placement { label, pin } = placement;
+        // Two blank lines between placements, so one placement's
+        // tables stand apart from the next one's progress lines.
+        if i > 0 {
+            println!();
+            println!();
+        }
         let mut ns_rows: Vec<Vec<String>> = Vec::new();
         let mut fill_rows: Vec<Vec<String>> = Vec::new();
-        let mut inconsistent: Vec<String> = Vec::new();
         for row in &rows {
             let depth_label = row.depth.map_or("-".to_string(), |d| d.to_string());
             let mut ns_row = vec![row.flavor.as_str().to_string(), depth_label.clone()];
@@ -214,14 +251,11 @@ fn main() {
                     *pin,
                     pool_size,
                     row.depth.unwrap_or(1),
-                    cli.count,
+                    Duration::from_secs_f64(cli.duration),
                     cli.repeat,
                 );
-                ns_row.push(format!("{:.1}", res.secs * 1e9 / cli.count.max(1) as f64));
-                fill_row.push(fills_cell(&res, cli.count));
-                if row.flavor == PoolFlavor::Cordyceps {
-                    inconsistent.push(format!("pool={pool_size}: {}", res.inconsistent));
-                }
+                ns_row.push(format!("{:.1}", ns_per_msg(&res)));
+                fill_row.push(fills_cell(&res));
             }
             ns_rows.push(ns_row);
             fill_rows.push(fill_row);
@@ -229,15 +263,45 @@ fn main() {
         println!();
         println!("{label}: ns/msg");
         println!();
-        print_table(&headers, &ns_rows);
+        width = width.max(print_table(&headers, &ns_rows));
         println!();
-        println!("{label}: fills/msg");
+        println!("{label}: xfills/msg");
         println!();
-        print_table(&headers, &fill_rows);
-        println!();
-        println!(
-            "{label}: cordyceps Inconsistent retries in the median run, {}",
-            inconsistent.join(", ")
-        );
+        width = width.max(print_table(&headers, &fill_rows));
     }
+    if !cli.verbose {
+        return;
+    }
+    println!();
+    print_legend(
+        width,
+        &[
+            (
+                "<placement>",
+                &format!("the prefix of each table title, {PLACEMENT_MEANING}"),
+            ),
+            (
+                "<placement>: ns/msg",
+                "a table whose cells are elapsed ns over messages moved at the row's flavor and depth and the column's pool size, the median of the runs",
+            ),
+            (
+                "<placement>: xfills/msg",
+                &format!(
+                    "a table of the same cells' {XFILLS_MEANING}, per message, from the same median run"
+                ),
+            ),
+            (
+                "flavor",
+                "the queue the pool's messages cross: a descriptor ring carrying a Desc, or cordyceps's intrusive queue linked through the pool's own buffers",
+            ),
+            (
+                "depth",
+                "slots in the ring, `-` for cordyceps, which is unbounded. A depth at or above the pool size never reports Full",
+            ),
+            (
+                "pool=N",
+                "the pool's buffer count, the bound on messages in flight",
+            ),
+        ],
+    );
 }

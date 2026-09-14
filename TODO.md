@@ -9,28 +9,7 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- No cycle is open. `feat: cordyceps MpscQueue beside the mpsc rings` landed as a trapezoid and
-  `docs: map the workspace and its tools` as one commit on 2026-09-12, the demo installed at
-  0.15.11. `../vc-x1-messages` is pushed, m-3-5 and m-5-2 among its lines, and nothing was pending
-  for us there when the session ended.
-- The next cycle, agreed with the user on 2026-09-12 and not yet opened: `cordyceps-ex-1`, a
-  workspace member beside `tp_matrix`, not a new repo. The cordyceps contract tests and the
-  pool-buffer node adapter from `tp_matrix/src/pool.rs` move into it, with a minimal one-producer,
-  one-consumer pool example. The root crate drops its cordyceps dev-dependency, and `tp-pool`
-  keeps its cordyceps row by depending on the new crate for the adapter. The prior-art section may
-  move to the crate's own notes, as `tprobe` keeps its own. A short ladder at 0.15.12, no `-dev`
-  rename. Its opening writes the In Progress block directly, no Todo entry exists for it.
-- Direction, the user's call on 2026-09-12: the demo stays as it is, with no action list or help
-  CLI here. The positional action list and help, the pool and depth sweeps, and cordyceps as a
-  bench belong in iiac-perf, which takes `tp_matrix/src/pool.rs` and the design note's
-  `Measured: pool-message sweep` section as its model and cross-check. The handoff is a messages
-  thread to iiac-perf with sha-links to the landed commits, not yet opened.
-- Caveats: the `tp-pool` cordyceps consumer spins on `Inconsistent` with no bound, so a preempted
-  producer stalls it. The first two full sweeps on 2026-09-12 read about twice slow, we think from
-  load outside the sandbox, so a full sweep counts only when a second full run agrees. The `-dev`
-  binaries from the cordyceps cycle are still in `~/.cargo/bin`.
-- `tmp/intrusive-rust-link-lists.md`, the linked-list question, is answered by the landed cordyceps
-  cycle and can be deleted.
+_None._
 
 ## In Progress
 
@@ -54,6 +33,20 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 `###` heading, so a citation is a link to its anchor. Long-tail entries live in
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
+
+### Paired columns in the tp_matrix tables
+
+`tp-matrix` prints each phase cell as `mean/stdev` in one column, and `tp-pool` prints two tables per
+placement with the same rows and columns, `ns/msg` and `xfills/msg`. Both would read better as one
+heading over two columns. Markdown has one header row and no colspan, and the three layouts weighed
+on 2026-09-13 each fell short:
+
+- Pair names in the one header row, `m.send` then `±`, `1 ns` then `1 xf`: valid markdown, but the
+  pairing is carried by names alone.
+- A group row: group names in the header and sub-names as the first body row, which a markdown
+  renderer shows as a data row.
+- Plain aligned text with a spanning heading: reads best in a terminal, but a paste is no longer a
+  markdown table.
 
 ### Segmented queue SPSC v3
 
@@ -238,64 +231,185 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### docs: map the workspace and its tools
+### feat: clearer tp_matrix counters and a tool map
 
 #### Problem
 
-The root README documents the ring, the pool, the demo, and iiac-perf, and never mentions the
-workspace it sits in: `tprobe`, `tp_runner`, and `tp_matrix` with its four binaries, `tp-cell`,
-`tp-matrix`, `tp-stream`, and `tp-pool`, are documented only in their own READMEs, which nothing at
-the top links to. Installing the root crate does not install the tools, where the measured numbers
-live is not said, and no file records which dependencies are `no_std`. Some of what is written has
-gone stale: the iiac-perf run uses bench names iiac-perf has since renamed, the tp_runner README
-describes a `Cfg::parse` clap replaced, and the tprobe and tp_runner READMEs run `tp-cell both`,
-which `tp-cell` rejects.
+`tp-pool` prints a count of the cordyceps consumer's `Inconsistent` retries, a normal cost of
+Vyukov's queue already inside the row's ns/msg, as if it were a finding, and alone of the tools
+runs a message count where the others take a duration. The `fills` columns of all four tools name a
+perf event rather than what it shows, cache lines pulled into a core from another core's cache, so
+a table at an SMT pair, where nothing crosses, reads as a fault. The tp_matrix README describes each
+tool alone and never says how their numbers relate: `tp-matrix --depth 1,8,64,1024` and `tp-pool`
+share a depth axis and measure different things. The mpsc-v0 skip message names a floor without
+saying which flavor runs below it.
 
 #### Solution
 
-Done as planned. The root README gained a workspace section: a table of the five crates and
-binaries with each one's `no_std` status and a link to its docs, both install commands, a line per
-tool on the question it answers with a link to its section, where the measured numbers live, and a
-dependency table with each dependency's `no_std` status and user. The iiac-perf run is dated
-2026-07-06 and says the benches' names changed, the Testing section names the workspace test run
-and the occupancy probe, tp_runner's README describes the clap flags and `LineBuf` in place of
-`Cfg::parse`, both member READMEs run `tp-cell all` where `both` was rejected, and the manifest's
-workspace comment names all four tool binaries. cordyceps is linked, not described.
+Done in four rungs. The cordyceps consumer waits on `Inconsistent` as on `Empty`, uncounted, after a
+windows-and-retries split showed each window closing within a poll. The fill columns read `xfills`,
+and `-v` prints a legend under every tool's table, one wrapped item per column, the full meaning
+kept out of a default run. `tp-matrix` prints one table in trip order, and the mpsc-v0 skip names
+its floor and mpsc-v1. `tp-pool` runs each cell for `-d` seconds, default 0.1, ending on a `STOP`
+message, with ns/msg and xfills/msg over the messages moved. The tp_matrix README opens with the
+measurements in plain words and a side-by-side table, then one section per tool in the table's
+order, with tp-pool's depth set against tp-matrix's. The paired-columns layout went to `## Todo`.
 
 #### Acceptance check
 
-From the root README a reader reaches every workspace crate and every installed binary by one
-link, finds both install commands and the dependency table with `no_std` status, and every command
-the READMEs show for `tp-cell` runs. `vc-x1 validate` passes.
+`tp-pool -d 0.1 --repeat 1` prints no `Inconsistent` line, with two blank lines between
+placements. `tp-matrix`, `tp-stream`, `tp-pool`, and `tp-cell` label the fill figure `xfills` and
+print, under `-v`, a legend naming every column they print, and `tp-matrix` prints one table. A
+`tp-matrix --depth 1` run's mpsc-v0 skip line names mpsc-v1. The tp_matrix README compares the tools in one table
+with a section per tool, and a reader can answer "how does `tp-matrix --depth 1,8,64,1024` compare
+to `tp-pool`" from it. `vc-x1 validate` passes.
 
-Passed (2026-09-12): the workspace section links `tprobe`, `tp_runner`, and `tp_matrix` by README
-and each of the four tool binaries by its section anchor, the demo by the Testing section, the
-install block and the dependency table are in place, `tp-cell all -d 0.2 --pin 0,1` ran all five
-flavors, and `vc-x1 validate` passed.
+Passed (2026-09-14): `tp-pool -d 0.1 --repeat 1` printed no `Inconsistent` line and two blank lines
+between placements. The four tools print `xfills`, and under `-v` every column header in
+`tp-matrix`, `tp-stream`, and `tp-pool`, and every figure on `tp-cell`'s fill counters line, has a
+legend item. `tp-matrix` printed one table, and its depth 1 run skipped mpsc-v0 with "mpsc-v0 needs
+depth >= 2, mpsc-v1 runs depth 1". The README's tp-pool section answers the depth comparison, and
+`vc-x1 validate` passed.
 
 #### Ladder
 
-- docs: map the workspace and its tools (done)
+- [feat: clearer tp_matrix counters and a tool map opening][1] (done)
+- [refactor: drop the cordyceps Inconsistent count][2] (done)
+- [refactor: xfills label and one tp-matrix table][3] (done)
+- [feat: tp-pool runs for a duration][4] (done)
+- [docs: tp_matrix README maps the tools against each other][5] (done)
+- [feat: clearer tp_matrix counters and a tool map closing][6] (done)
 
 #### Deliberation
 
-- Single-step: documentation only, one straightforward step, so one commit carries the opening,
-  the work, and the close-out, no `-dev` rename since no artifact changes.
-- A map, not new prose: the member crates' READMEs already describe them, so the root README links
-  to each rather than repeating it, and grows by a section rather than by copies.
-- The stale iiac-perf run is dated and relabeled rather than deleted or rerun: it is a record of
-  that version, the current bench names are one command away, and a rerun is iiac-perf's.
-- cordyceps light: the next cycle splits the cordyceps tests and adapter into an example crate, so
-  this one points at them and leaves the prose to that cycle.
-- The continuation note on the landed cycle is dropped, and the one on the unpushed messages commit
-  stays until that commit is pushed.
+- Multi-step: a code change, a rename across four binaries, and a documentation section were three
+  reviews of different kinds, so each was its own rung, and a fourth, the duration, was inserted.
+- In place of cordyceps-ex-1, which is no longer next: the user takes that example crate to
+  iiac-perf directly on 2026-09-13, so this cycle edits `tp_matrix/src/pool.rs` in place, and no
+  Todo entry or message records the handoff.
+- Drop the count, the user's call after a split into windows and retries was built and read: the
+  window is the algorithm's regular cost, not a fault, and its cost is already in ns/msg.
+  - The split showed windows nearly equal to retries, 9969/10892 at the SMT pair for pool=100, so
+    windows almost always close within a poll.
+  - Only a consumer exactly one node behind the producer sees `Inconsistent`: a drained queue waits
+    on the stub and reads `Empty`, so pool=1 is 0 by construction.
+  - `tests/cordyceps_mpsc.rs` keeps its count, since observing the window is that test's point.
+- The name is the user's, x-core cache-line fills, over "cross cache-line fills" and "line
+  transfers", and the header is `xfills`, the full name in a legend: the full name as a header
+  widened `tp-matrix`'s tables past reading. The `FillCounts` fields and the `ZEN2_FILLS_*`
+  constants keep the perf event's names, since they name the event, not the reading.
+- A legend for every column, not only `xfills`, the user's call on reading the long header: the
+  banner line that defined three terms had grown past a terminal's width, and a legend under the
+  table travels with a pasted table.
+  - Full explanations behind `-v`, the user's call after a terse always-on legend read too clipped:
+    the wording that explains a column is too long to print on every run, and wrapped to at most
+    80 columns it reads as prose under a 150-column table.
+- One `tp-matrix` table, folded into the rename rung: the spin table repeated the key columns and
+  `xfills/RT`, and each spin and att breaks down the recv beside it, so trip order puts each wait
+  next to its phase. About 150 columns wide against two tables of 120.
+- `tp-pool` takes `-d` in its own rung, inserted on the user's ask on 2026-09-14: a count where the
+  other tools take a duration surprised. `--count` is replaced rather than kept beside it, and the
+  default is 0.1s, near the old million-message runtime.
+- The mpsc-v0 skip stays: its floor of 2 is v0's protocol (`src/mpsc/v0/mod.rs`), and mpsc-v1 is the
+  flavor that runs depth 1, so only the message changes.
+- No `-dev` rename: the tool binaries are the workspace's, installed by hand, and the root crate's
+  artifact is unchanged by the cycle, as in the cordyceps cycle.
+- The continuation notes are reset: the iiac-perf direction is the user's to carry, the landed
+  cycles and the pushed messages repo need no note, and the answered
+  `tmp/intrusive-rust-link-lists.md` is left for the user.
+- The README carries no iiac-perf plan: which tools move is a plan that goes stale as they move,
+  and the user takes it to iiac-perf directly. As read on 2026-09-14, `tp-pool` goes, `tp-stream`
+  is a candidate, and `tp-matrix` and `tp-cell` stay, since they time these rings' protocol phase
+  by phase.
+- Nothing outlives the cycle in `notes/`, the user's call at close-out: the design note's
+  `Measured: pool-message sweep` keeps its retry counts and 1M-message runs as the record of that
+  run, and this block holds the later reading.
+- Paired columns became a Todo, the user's call on 2026-09-14: markdown has one header row, and
+  none of three layouts read well enough to build in this cycle.
 - `## Waiting` is `_None._`, nothing to promote.
-- The `no_std` column was checked, not recalled: zerocopy, libc, and cordyceps declare `no_std` in
-  their crate roots and clap, hdrhistogram, and perf-event2 do not, and the library built for
-  `thumbv7em-none-eabi` during the conversation that planned this cycle.
-- Corrections found while mapping went in rather than to the backlog: a README command that fails
-  is a factual error, and the prose rule lets a correction go straight in.
+
+#### Ladder details
+
+##### feat: clearer tp_matrix counters and a tool map opening
+
+The cycle's setup commit: publish the bookmark, clear `## Closed`, write this block, reset
+the continuation notes, and bump the version-of-record.
+
+##### refactor: drop the cordyceps Inconsistent count
+
+`tp-pool` reported the cordyceps consumer's `Inconsistent` retries, a cost the algorithm pays on every
+enqueue a caught-up consumer meets, as a separate figure.
+
+* The figure reads as a defect signal and is not one.
+  - The consumer waits on `Inconsistent` as on `Empty`, uncounted, so the window's cost shows in
+    ns/msg as a ring consumer's polls do.
+
+##### refactor: xfills label and one tp-matrix table
+
+The tools' fill columns were labeled by the perf event, so a reader had to know the event to read
+the number, their meanings lived in one banner line past a terminal's width, `tp-matrix` split one
+row of measurements across two tables, and the mpsc-v0 skip named a floor without saying what it
+was or what runs below it.
+
+* The label named the counter, not the reading.
+  - The columns read `xfills`, and `XFILLS_MEANING` defines it once for the four tools: cache lines
+    pulled into a core from another core's cache, near 0 when the threads share a core's caches.
+    Code identifiers keep the event's vocabulary.
+* Column meanings were packed into the banner, and some columns had none.
+  - `-v` prints a markdown list under each table, one item per column, wrapped to the table's width
+    within 60 to 80 columns, and the line under the banner names `-v`, so a default run stays the
+    tables alone and a pasted table can carry its key.
+* `tp-matrix`'s spin table repeated its phase table's key columns.
+  - One table in trip order, each recv followed by the spin and polls inside it.
+* The skip line did not say which depth the flavor needs.
+  - `Flavor::floor_note` states the floor, and for mpsc-v0 names mpsc-v1 as the flavor that runs
+    depth 1, so the three tools that skip share one wording.
+
+##### feat: tp-pool runs for a duration
+
+`tp-pool` alone of the tools took a message count where the others take `-d`, so a sweep's length
+and a cell's figure were set differently from the tools beside it.
+
+* A cell ran a fixed count of messages.
+  - The producer checks the clock every `STREAM_CHECK_EVERY` messages, as `tp-stream`'s producer
+    does, and after the duration sends one more pool message whose sequence number is `STOP`. The
+    consumer frees it and returns the count it received, so every cell ends with the pool whole.
+  - `-d/--duration` replaces `--count`, default 0.1s, and ns/msg and xfills/msg divide by the
+    messages moved.
+* The median run was picked by elapsed time, which varies with the messages a run moves.
+  - The median is by ns per message.
+
+##### docs: tp_matrix README maps the tools against each other
+
+The README described each tool alone, in no set order, so which to run and how their numbers
+relate was left to the reader.
+
+* Nothing compared the tools.
+  - A side-by-side table, then one section per tool in the table's order.
+* The overview was one dense paragraph.
+  - "The measurements" says in plain words what the tools do, with one bullet per tool, and that
+    xfills near 0 at an SMT pair is expected.
+* `tp-pool`'s depth reads like `tp-matrix`'s and is not.
+  - The tp-pool section says depth throttles there and which cells come closest.
+
+##### feat: clearer tp_matrix counters and a tool map closing
+
+Output wording took more review than the code: the fill label went from the full name to a short
+header with a terse legend, and on to full explanations behind `-v`, each step read in a real run.
+
+* A label or legend reads differently in a real run than in a plan.
+  - Each output change was shown in the installed tool before review, which is where the long
+    header, the clipped legend, and tp-pool's mismatched legend keys were caught.
+
+Close-out shape: trapezoid, the user's choice.
+
 
 # References
 
+[1]: #feat-clearer-tp_matrix-counters-and-a-tool-map-opening
+[2]: #refactor-drop-the-cordyceps-inconsistent-count
+[3]: #refactor-xfills-label-and-one-tp-matrix-table
+[4]: #feat-tp-pool-runs-for-a-duration
+[5]: #docs-tp_matrix-readme-maps-the-tools-against-each-other
+[6]: #feat-clearer-tp_matrix-counters-and-a-tool-map-closing
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies

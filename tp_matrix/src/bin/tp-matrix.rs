@@ -1,6 +1,6 @@
 //! tp-matrix: run every flavor × placement round-trip cell and
-//! emit the two markdown tables (phase costs, spin
-//! decomposition) ready to paste, the one-command replacement
+//! emit one markdown table, phase costs with each recv's spin
+//! decomposition beside it and a column legend, ready to paste, the one-command replacement
 //! for the perf(1)-and-scrape recipe.
 //!
 //! Placements are discovered from the CPU topology
@@ -11,7 +11,9 @@
 
 use clap::Parser;
 
-use tp_matrix::{CellResult, FLAVORS, Flavor, run_cell};
+use tp_matrix::{
+    CellResult, FLAVORS, Flavor, PLACEMENT_MEANING, XFILLS_MEANING, print_legend, run_cell,
+};
 use tp_runner::topo::{Placement, discover_placements};
 use tp_runner::{Cfg, CommonArgs};
 use tprobe::{TProbe, ticks};
@@ -30,6 +32,10 @@ const TOP_ABOUT: &str = concat!(
 struct Cli {
     #[command(flatten)]
     common: CommonArgs,
+
+    /// Print a legend under the table explaining every column
+    #[arg(short = 'v', long)]
+    verbose: bool,
 }
 
 /// Probe indices in [`CellResult::probes`] trip order.
@@ -58,7 +64,7 @@ fn stat_cell(p: &TProbe, cfg: &Cfg) -> String {
     format!("{:.d$}/{:.d$}", mean / conv, stdev / conv)
 }
 
-/// `fills/RT` cell: 3 decimals, or 4 when the value is tiny
+/// `xfills/RT` cell: 3 decimals, or 4 when the value is tiny
 /// (the SMT cells), `-` when counters were unavailable.
 fn fills_cell(res: &CellResult) -> String {
     match &res.fills {
@@ -82,7 +88,8 @@ fn rts_cell(res: &CellResult) -> String {
 /// Print `rows` as an aligned markdown table under `headers`.
 /// The first two columns left-aligned, the rest right-aligned.
 /// The depth column is numeric, so it takes the right side.
-fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+/// Returns the table's width in characters.
+fn print_table(headers: &[&str], rows: &[Vec<String>]) -> usize {
     let mut w: Vec<usize> = headers.iter().map(|h| h.len()).collect();
     for row in rows {
         for (i, cell) in row.iter().enumerate() {
@@ -114,9 +121,11 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     for row in rows {
         println!("{}", fmt_row(row));
     }
+    sep.len()
 }
 
-/// Entry point: banner, run the matrix, emit the two tables.
+/// Entry point: banner, run the matrix, emit the table and its
+/// legend.
 fn main() {
     let cli = Cli::parse();
     println!("{TOP_ABOUT}");
@@ -124,13 +133,15 @@ fn main() {
     let placements = discover_placements();
     let unit = if cfg.ticks { "tk" } else { "ns" };
     println!(
-        "{} cells, {:.1}s each; phase cells are mean/stdev of the trimmed \
-         min-p99 band in {unit}; att in polls/waiting reserve; fills/RT = cross-core \
-         cache-line fills per round trip",
+        "{} cells, {:.1}s each{}",
         placements.len() * FLAVORS.len() * cfg.depths.len(),
         cfg.duration.as_secs_f64(),
+        if cli.verbose {
+            ""
+        } else {
+            "; -v for a column legend"
+        },
     );
-    println!();
 
     let mut cells: Vec<(&Placement, Flavor, u32, CellResult)> = Vec::new();
     for placement in &placements {
@@ -138,9 +149,10 @@ fn main() {
             for &depth in &cfg.depths {
                 if depth < flavor.min_depth() {
                     eprintln!(
-                        "skipping {} {} depth {depth}: below the flavor's floor",
+                        "skipping {} {} depth {depth}: {}",
                         placement.label,
-                        flavor.as_str()
+                        flavor.as_str(),
+                        flavor.floor_note()
                     );
                     continue;
                 }
@@ -155,7 +167,9 @@ fn main() {
         }
     }
 
-    let phase_rows: Vec<Vec<String>> = cells
+    // Trip order, each recv followed by the spin and polls inside
+    // it.
+    let rows: Vec<Vec<String>> = cells
         .iter()
         .map(|(p, f, d, r)| {
             vec![
@@ -164,59 +178,80 @@ fn main() {
                 d.to_string(),
                 stat_cell(&r.probes[M_SEND], &cfg),
                 stat_cell(&r.probes[W_RECV], &cfg),
+                stat_cell(&r.probes[W_SPIN], &cfg),
+                stat_cell(&r.probes[W_ATT], &cfg),
                 stat_cell(&r.probes[W_SEND], &cfg),
                 stat_cell(&r.probes[M_RECV], &cfg),
+                stat_cell(&r.probes[M_SPIN], &cfg),
+                stat_cell(&r.probes[M_ATT], &cfg),
                 rts_cell(r),
                 fills_cell(r),
             ]
         })
         .collect();
-    println!("Phase costs (send = reserve+fill+commit; recv = spin wait+read+release):");
     println!();
-    print_table(
+    let width = print_table(
         &[
             "placement",
             "flavor",
             "depth",
             "m.send",
             "w.recv",
-            "w.send",
-            "m.recv",
-            "RTs",
-            "fills/RT",
-        ],
-        &phase_rows,
-    );
-    println!();
-
-    let spin_rows: Vec<Vec<String>> = cells
-        .iter()
-        .map(|(p, f, d, r)| {
-            vec![
-                p.label.clone(),
-                f.as_str().to_string(),
-                d.to_string(),
-                stat_cell(&r.probes[W_SPIN], &cfg),
-                stat_cell(&r.probes[W_ATT], &cfg),
-                stat_cell(&r.probes[M_SPIN], &cfg),
-                stat_cell(&r.probes[M_ATT], &cfg),
-                fills_cell(r),
-            ]
-        })
-        .collect();
-    println!("Spin decomposition (spin = first failed attempt -> reserve success):");
-    println!();
-    print_table(
-        &[
-            "placement",
-            "flavor",
-            "depth",
             "w.spin",
             "w.att",
+            "w.send",
+            "m.recv",
             "m.spin",
             "m.att",
-            "fills/RT",
+            "RTs",
+            "xfills/RT",
         ],
-        &spin_rows,
+        &rows,
+    );
+    if !cli.verbose {
+        return;
+    }
+    let band = "mean/stdev of the trimmed min-p99 band";
+    let send = |who: &str| {
+        format!(
+            "{who}'s send, reserve + fill + commit, the producer's cost of placing a message, {unit} as {band}"
+        )
+    };
+    let recv = |who: &str| {
+        format!("{who}'s recv, spin wait for arrival + read + release, {unit} as {band}")
+    };
+    let spin = |recv: &str| {
+        format!(
+            "the wait inside {recv}, first failed poll to reserve success, {unit} as {band}, recorded only for reserves that waited"
+        )
+    };
+    let att = |recv: &str| format!("polls per waiting reserve inside {recv}, as {band}");
+    println!();
+    print_legend(
+        width,
+        &[
+            ("placement", PLACEMENT_MEANING),
+            (
+                "flavor",
+                "the ring both directions of the round trip run over",
+            ),
+            (
+                "depth",
+                "slots per ring. One message is ever in flight, so depth changes which seq words share a cache line and, at 1, whether the ring has any slack",
+            ),
+            ("m.send", &send("main")),
+            ("w.recv", &recv("the worker")),
+            ("w.spin", &spin("w.recv")),
+            ("w.att", &att("w.recv")),
+            ("w.send", &send("the worker")),
+            ("m.recv", &recv("main")),
+            ("m.spin", &spin("m.recv")),
+            ("m.att", &att("m.recv")),
+            (
+                "RTs",
+                "round trips completed in the cell's duration, in millions",
+            ),
+            ("xfills/RT", &format!("{XFILLS_MEANING}, per round trip")),
+        ],
     );
 }

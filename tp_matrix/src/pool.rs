@@ -13,21 +13,25 @@
 //!   pointer with the queue's link inside the buffer, and its
 //!   consumer maps the pointer back to the buffer's index for
 //!   the free.
-//! - A cell moves a fixed count of messages, so its number is
-//!   elapsed over count, the thread spawn inside it alike for
-//!   every row, and the fill counters over the whole cell give
-//!   the lines crossed per message.
+//! - A cell runs for a duration: the producer checks the clock
+//!   every `STREAM_CHECK_EVERY` messages and, once it has passed,
+//!   sends one more message whose sequence number is `STOP`, and
+//!   the consumer frees that one and returns the count it
+//!   received. The cell's number is elapsed over messages moved,
+//!   the thread spawn inside it alike for every row, and the fill
+//!   counters over the whole cell give the lines crossed per
+//!   message.
 
 use std::ptr::{self, NonNull};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cordyceps::Linked;
 use cordyceps::mpsc_queue::{Links, MpscQueue, TryDequeueError};
-use tp_runner::{LineBuf, pin_to_cpu, unpin_current};
+use tp_runner::{LineBuf, STOP, pin_to_cpu, unpin_current};
 use zc_ring_x1::{CACHE_LINE_SIZE, Desc, Pool, PoolHeader, PoolRegistry, policy};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::FillCounts;
+use crate::{FillCounts, STREAM_CHECK_EVERY};
 
 /// The queue a pool cell runs the loop over.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -68,15 +72,15 @@ impl PoolFlavor {
 
 /// One pool cell's outcome.
 pub struct PoolResult {
+    /// Messages the consumer received, the `STOP` message not
+    /// counted.
+    pub msgs: u64,
     /// Wall-clock seconds from before the threads spawn to the
-    /// consumer's last free.
+    /// consumer's free of the `STOP` message.
     pub secs: f64,
     /// Fill counters over the whole cell, when the platform
     /// provides them.
     pub fills: Option<FillCounts>,
-    /// `Inconsistent` results the cordyceps consumer retried,
-    /// zero for the ring rows.
-    pub inconsistent: u64,
 }
 
 /// The message in a pool buffer for the ring rows: the sequence
@@ -145,7 +149,7 @@ fn pool_region_size(pool_size: u32) -> u64 {
     size_of::<PoolHeader>() as u64 + pool_size as u64 * CACHE_LINE_SIZE as u64
 }
 
-/// Run one pool cell: `count` messages through the loop at
+/// Run one pool cell: the loop for `dur` at
 /// `flavor`, a pool of `pool_size` buffers, and ring `depth`
 /// (ignored by the cordyceps row), the producer on `pin.0` and
 /// the consumer on `pin.1`, with the fill counters open across
@@ -155,30 +159,31 @@ pub fn run_pool_cell(
     pin: Option<(usize, usize)>,
     pool_size: u32,
     depth: u32,
-    count: u64,
+    dur: Duration,
 ) -> PoolResult {
     unpin_current();
     #[cfg(target_os = "linux")]
     let fills = crate::Fills::open();
-    let (secs, inconsistent) = match flavor {
-        PoolFlavor::SpscV2 => (cell_spsc_v2(pin, pool_size, depth, count), 0),
-        PoolFlavor::MpscV1 => (cell_mpsc_v1(pin, pool_size, depth, count), 0),
-        PoolFlavor::Cordyceps => cell_cordyceps(pin, pool_size, count),
+    let (msgs, secs) = match flavor {
+        PoolFlavor::SpscV2 => cell_spsc_v2(pin, pool_size, depth, dur),
+        PoolFlavor::MpscV1 => cell_mpsc_v1(pin, pool_size, depth, dur),
+        PoolFlavor::Cordyceps => cell_cordyceps(pin, pool_size, dur),
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(crate::Fills::finish);
     #[cfg(not(target_os = "linux"))]
     let fills = None;
-    PoolResult {
-        secs,
-        fills,
-        inconsistent,
-    }
+    PoolResult { msgs, secs, fills }
 }
 
 /// The SPSC v2 ring cell: descriptors cross a v2 ring of
 /// `depth` line-sized slots.
-fn cell_spsc_v2(pin: Option<(usize, usize)>, pool_size: u32, depth: u32, count: u64) -> f64 {
+fn cell_spsc_v2(
+    pin: Option<(usize, usize)>,
+    pool_size: u32,
+    depth: u32,
+    dur: Duration,
+) -> (u64, f64) {
     use zc_ring_x1::spsc::v2::{Ring, region_size};
     let slot = CACHE_LINE_SIZE as u32;
     let mut region = LineBuf::new(region_size(slot, depth));
@@ -188,7 +193,7 @@ fn cell_spsc_v2(pin: Option<(usize, usize)>, pool_size: u32, depth: u32, count: 
     run_ring_cell(
         pin,
         pool_size,
-        count,
+        dur,
         move |desc| {
             let mut slot = tx
                 .reserve_slot_with::<Desc>(policy::spin)
@@ -209,7 +214,12 @@ fn cell_spsc_v2(pin: Option<(usize, usize)>, pool_size: u32, depth: u32, count: 
 
 /// The MPSC v1 ring cell at 1p/1c: descriptors cross a v1 ring
 /// of `depth` line-sized slots.
-fn cell_mpsc_v1(pin: Option<(usize, usize)>, pool_size: u32, depth: u32, count: u64) -> f64 {
+fn cell_mpsc_v1(
+    pin: Option<(usize, usize)>,
+    pool_size: u32,
+    depth: u32,
+    dur: Duration,
+) -> (u64, f64) {
     use zc_ring_x1::mpsc::v1::{MpscRing, mpsc_region_size};
     let slot = CACHE_LINE_SIZE as u32;
     let mut region = LineBuf::new(mpsc_region_size(slot, depth));
@@ -219,7 +229,7 @@ fn cell_mpsc_v1(pin: Option<(usize, usize)>, pool_size: u32, depth: u32, count: 
     run_ring_cell(
         pin,
         pool_size,
-        count,
+        dur,
         move |desc| {
             tx.send_with::<Desc>(policy::spin, |m| *m = desc)
                 .expect("spin never gives up"); // OK: policy::spin never gives up
@@ -238,14 +248,16 @@ fn cell_mpsc_v1(pin: Option<(usize, usize)>, pool_size: u32, depth: u32, count: 
 /// The ring rows' loop over a pool of `pool_size` buffers: the
 /// producer allocs, fills, converts the guard to a descriptor,
 /// and hands it to `send`, and the consumer takes one from
-/// `recv`, resolves it, asserts the sequence, and frees.
+/// `recv`, resolves it, asserts the sequence, and frees, until
+/// the `STOP` message. Returns the messages moved and the
+/// seconds.
 fn run_ring_cell(
     pin: Option<(usize, usize)>,
     pool_size: u32,
-    count: u64,
+    dur: Duration,
     mut send: impl FnMut(Desc) + Send,
     mut recv: impl FnMut() -> Desc + Send,
-) -> f64 {
+) -> (u64, f64) {
     let mut pool_region = LineBuf::new(pool_region_size(pool_size));
     let mut pool = Pool::init(
         pool_region.as_mut_bytes(),
@@ -260,28 +272,40 @@ fn run_ring_cell(
     let registry = &registry;
 
     let start = Instant::now();
-    std::thread::scope(|s| {
+    let msgs = std::thread::scope(|s| {
         s.spawn(move || {
             if let Some((p, _)) = pin {
                 pin_to_cpu(p);
             }
-            for i in 0..count {
+            let mut send_seq = |seq: u64| {
                 let mut buf = pool
                     .alloc_with::<Msg>(policy::spin)
                     .expect("spin never gives up"); // OK: policy::spin never gives up
-                buf.seq = i;
+                buf.seq = seq;
                 let desc = registry
                     .into_desc(pool_id, buf)
                     .map_err(|(_, e)| e)
                     .expect("the guard is from the registered pool"); // OK: pool_id came from this registry's register
                 send(desc);
+            };
+            let mut seq: u64 = 0;
+            loop {
+                for _ in 0..STREAM_CHECK_EVERY {
+                    send_seq(seq);
+                    seq += 1;
+                }
+                if start.elapsed() >= dur {
+                    break;
+                }
             }
+            send_seq(STOP);
         });
         let consumer = s.spawn(move || {
             if let Some((_, c)) = pin {
                 pin_to_cpu(c);
             }
-            for i in 0..count {
+            let mut expected: u64 = 0;
+            loop {
                 let desc = recv();
                 // SAFETY: the descriptor was minted by the
                 // producer's into_desc and read after the ring's
@@ -289,22 +313,27 @@ fn run_ring_cell(
                 // exactly once.
                 let msg = unsafe { registry.resolve::<Msg>(desc) }
                     .expect("descriptors come from the producer's into_desc"); // OK: only the producer mints them, on this pool
-                assert_eq!(msg.seq, i, "pool stream order broken");
+                let seq = msg.seq;
                 msg.free();
+                if seq == STOP {
+                    return expected;
+                }
+                assert_eq!(seq, expected, "pool stream order broken");
+                expected += 1;
             }
         });
-        consumer.join().expect("consumer panicked"); // OK: a panic in the consumer is the cell's failure
+        consumer.join().expect("consumer panicked") // OK: a panic in the consumer is the cell's failure
     });
-    start.elapsed().as_secs_f64()
+    (msgs, start.elapsed().as_secs_f64())
 }
 
 /// The cordyceps cell: the queue links through the pool's
 /// buffers. The producer allocs a buffer, lays the node over it,
 /// and enqueues its pointer, and the consumer dequeues, asserts
 /// the sequence, maps the pointer to the buffer's index, and
-/// frees through the registry. Returns the seconds and the
-/// `Inconsistent` results the consumer retried.
-fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, count: u64) -> (f64, u64) {
+/// frees through the registry, until the `STOP` message. Returns
+/// the messages moved and the seconds.
+fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, dur: Duration) -> (u64, f64) {
     let mut pool_region = LineBuf::new(pool_region_size(pool_size));
     let mut pool = Pool::init(
         pool_region.as_mut_bytes(),
@@ -353,12 +382,12 @@ fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, count: u64) -> (f
     let queue = &queue;
 
     let start = Instant::now();
-    let inconsistent = std::thread::scope(|s| {
+    let msgs = std::thread::scope(|s| {
         s.spawn(move || {
             if let Some((p, _)) = pin {
                 pin_to_cpu(p);
             }
-            for i in 0..count {
+            let mut send_seq = |seq: u64| {
                 let mut buf = pool
                     .alloc_with::<RawBuf>(policy::spin)
                     .expect("spin never gives up"); // OK: policy::spin never gives up
@@ -375,26 +404,39 @@ fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, count: u64) -> (f
                 // exists.
                 unsafe {
                     ptr::addr_of_mut!((*node).links).write(Links::new());
-                    ptr::addr_of_mut!((*node).seq).write(i);
+                    ptr::addr_of_mut!((*node).seq).write(seq);
                     queue.enqueue(NodePtr(NonNull::new_unchecked(node)));
                 }
+            };
+            let mut seq: u64 = 0;
+            loop {
+                for _ in 0..STREAM_CHECK_EVERY {
+                    send_seq(seq);
+                    seq += 1;
+                }
+                if start.elapsed() >= dur {
+                    break;
+                }
             }
+            send_seq(STOP);
         });
         let consumer = s.spawn(move || {
             if let Some((_, c)) = pin {
                 pin_to_cpu(c);
             }
             let guard = queue.consume();
-            let mut inconsistent = 0u64;
-            for i in 0..count {
+            let mut expected: u64 = 0;
+            loop {
                 let node = loop {
                     match guard.try_dequeue() {
                         Ok(node) => break node,
-                        Err(TryDequeueError::Inconsistent) => {
-                            inconsistent += 1;
-                            std::hint::spin_loop();
+                        // `Inconsistent` is a producer between its
+                        // head swap and its link store, a message
+                        // not yet reachable, so it waits like
+                        // `Empty`.
+                        Err(TryDequeueError::Inconsistent | TryDequeueError::Empty) => {
+                            std::hint::spin_loop()
                         }
-                        Err(TryDequeueError::Empty) => std::hint::spin_loop(),
                         Err(TryDequeueError::Busy) => {
                             unreachable!("the consumer guard is held")
                         }
@@ -405,7 +447,6 @@ fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, count: u64) -> (f
                 // dequeue until the free below, and the producer
                 // wrote `seq` before its enqueue's release.
                 let seq = unsafe { ptr::addr_of!((*node).seq).read() };
-                assert_eq!(seq, i, "pool stream order broken");
                 let idx = ((node as usize - base) / CACHE_LINE_SIZE) as u32;
                 let desc = Desc {
                     pool_id: pool_id.as_u32(),
@@ -417,10 +458,14 @@ fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, count: u64) -> (f
                 unsafe { registry.resolve::<RawBuf>(desc) }
                     .expect("the index is a buffer of this pool") // OK: computed from a pool buffer's address
                     .free();
+                if seq == STOP {
+                    return expected;
+                }
+                assert_eq!(seq, expected, "pool stream order broken");
+                expected += 1;
             }
-            inconsistent
         });
         consumer.join().expect("consumer panicked") // OK: a panic in the consumer is the cell's failure
     });
-    (start.elapsed().as_secs_f64(), inconsistent)
+    (msgs, start.elapsed().as_secs_f64())
 }

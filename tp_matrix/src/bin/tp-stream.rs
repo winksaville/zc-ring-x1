@@ -1,13 +1,15 @@
 //! tp-stream: run the streaming cell over every flavor,
 //! placement, and depth, and emit one markdown table: ns per
-//! message, messages moved, and cross-core cache-line fills per
-//! message. The streaming sibling of `tp-matrix`, whose cell
+//! message, messages moved, and xfills per message, with a
+//! column legend. The streaming sibling of `tp-matrix`, whose cell
 //! keeps one message in flight and so cannot show what a
 //! full ring costs per message.
 
 use clap::Parser;
 
-use tp_matrix::{FLAVORS, Flavor, StreamResult, run_stream};
+use tp_matrix::{
+    FLAVORS, Flavor, PLACEMENT_MEANING, StreamResult, XFILLS_MEANING, print_legend, run_stream,
+};
 use tp_runner::topo::{Placement, discover_placements};
 use tp_runner::{Cfg, CommonArgs};
 
@@ -25,9 +27,13 @@ const TOP_ABOUT: &str = concat!(
 struct Cli {
     #[command(flatten)]
     common: CommonArgs,
+
+    /// Print a legend under the table explaining every column
+    #[arg(short = 'v', long)]
+    verbose: bool,
 }
 
-/// `fills/msg` cell: 3 decimals, or 4 when the value is tiny
+/// `xfills/msg` cell: 3 decimals, or 4 when the value is tiny
 /// (the SMT cells), `-` when counters were unavailable.
 fn fills_cell(res: &StreamResult) -> String {
     match &res.fills {
@@ -45,7 +51,8 @@ fn fills_cell(res: &StreamResult) -> String {
 
 /// Print `rows` as an aligned markdown table under `headers`.
 /// The first two columns left-aligned, the rest right-aligned.
-fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+/// Returns the table's width in characters.
+fn print_table(headers: &[&str], rows: &[Vec<String>]) -> usize {
     let mut w: Vec<usize> = headers.iter().map(|h| h.len()).collect();
     for row in rows {
         for (i, cell) in row.iter().enumerate() {
@@ -77,21 +84,26 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     for row in rows {
         println!("{}", fmt_row(row));
     }
+    sep.len()
 }
 
-/// Entry point: banner, run the matrix, emit the table.
+/// Entry point: banner, run the matrix, emit the table and its
+/// legend.
 fn main() {
     let cli = Cli::parse();
     println!("{TOP_ABOUT}");
     let cfg: Cfg = cli.common.to_cfg(None);
     let placements = discover_placements();
     println!(
-        "{} cells, {:.1}s each; ns/msg = elapsed over messages moved; fills/msg = cross-core \
-         cache-line fills per message",
+        "{} cells, {:.1}s each{}",
         placements.len() * FLAVORS.len() * cfg.depths.len(),
         cfg.duration.as_secs_f64(),
+        if cli.verbose {
+            ""
+        } else {
+            "; -v for a column legend"
+        },
     );
-    println!();
 
     let mut cells: Vec<(&Placement, Flavor, u32, StreamResult)> = Vec::new();
     for placement in &placements {
@@ -99,9 +111,10 @@ fn main() {
             for &depth in &cfg.depths {
                 if depth < flavor.min_depth() {
                     eprintln!(
-                        "skipping {} {} depth {depth}: below the flavor's floor",
+                        "skipping {} {} depth {depth}: {}",
                         placement.label,
-                        flavor.as_str()
+                        flavor.as_str(),
+                        flavor.floor_note()
                     );
                     continue;
                 }
@@ -129,17 +142,37 @@ fn main() {
             ]
         })
         .collect();
-    println!("Streaming costs (producer streams for the duration, consumer drains):");
     println!();
-    print_table(
+    let width = print_table(
         &[
             "placement",
             "flavor",
             "depth",
             "ns/msg",
             "msgs",
-            "fills/msg",
+            "xfills/msg",
         ],
         &rows,
+    );
+    if !cli.verbose {
+        return;
+    }
+    println!();
+    print_legend(
+        width,
+        &[
+            ("placement", PLACEMENT_MEANING),
+            ("flavor", "the ring the producer streams over"),
+            (
+                "depth",
+                "slots in the ring, the slack the producer can run ahead of the consumer by",
+            ),
+            (
+                "ns/msg",
+                "elapsed ns over messages moved, the producer streaming as fast as the ring admits for the duration and the consumer draining and checking order",
+            ),
+            ("msgs", "messages moved in the duration, in millions"),
+            ("xfills/msg", &format!("{XFILLS_MEANING}, per message")),
+        ],
     );
 }
