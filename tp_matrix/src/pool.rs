@@ -74,9 +74,6 @@ pub struct PoolResult {
     /// Fill counters over the whole cell, when the platform
     /// provides them.
     pub fills: Option<FillCounts>,
-    /// `Inconsistent` results the cordyceps consumer retried,
-    /// zero for the ring rows.
-    pub inconsistent: u64,
 }
 
 /// The message in a pool buffer for the ring rows: the sequence
@@ -160,20 +157,16 @@ pub fn run_pool_cell(
     unpin_current();
     #[cfg(target_os = "linux")]
     let fills = crate::Fills::open();
-    let (secs, inconsistent) = match flavor {
-        PoolFlavor::SpscV2 => (cell_spsc_v2(pin, pool_size, depth, count), 0),
-        PoolFlavor::MpscV1 => (cell_mpsc_v1(pin, pool_size, depth, count), 0),
+    let secs = match flavor {
+        PoolFlavor::SpscV2 => cell_spsc_v2(pin, pool_size, depth, count),
+        PoolFlavor::MpscV1 => cell_mpsc_v1(pin, pool_size, depth, count),
         PoolFlavor::Cordyceps => cell_cordyceps(pin, pool_size, count),
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(crate::Fills::finish);
     #[cfg(not(target_os = "linux"))]
     let fills = None;
-    PoolResult {
-        secs,
-        fills,
-        inconsistent,
-    }
+    PoolResult { secs, fills }
 }
 
 /// The SPSC v2 ring cell: descriptors cross a v2 ring of
@@ -302,9 +295,8 @@ fn run_ring_cell(
 /// buffers. The producer allocs a buffer, lays the node over it,
 /// and enqueues its pointer, and the consumer dequeues, asserts
 /// the sequence, maps the pointer to the buffer's index, and
-/// frees through the registry. Returns the seconds and the
-/// `Inconsistent` results the consumer retried.
-fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, count: u64) -> (f64, u64) {
+/// frees through the registry.
+fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, count: u64) -> f64 {
     let mut pool_region = LineBuf::new(pool_region_size(pool_size));
     let mut pool = Pool::init(
         pool_region.as_mut_bytes(),
@@ -353,7 +345,7 @@ fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, count: u64) -> (f
     let queue = &queue;
 
     let start = Instant::now();
-    let inconsistent = std::thread::scope(|s| {
+    std::thread::scope(|s| {
         s.spawn(move || {
             if let Some((p, _)) = pin {
                 pin_to_cpu(p);
@@ -385,16 +377,17 @@ fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, count: u64) -> (f
                 pin_to_cpu(c);
             }
             let guard = queue.consume();
-            let mut inconsistent = 0u64;
             for i in 0..count {
                 let node = loop {
                     match guard.try_dequeue() {
                         Ok(node) => break node,
-                        Err(TryDequeueError::Inconsistent) => {
-                            inconsistent += 1;
-                            std::hint::spin_loop();
+                        // `Inconsistent` is a producer between its
+                        // head swap and its link store, a message
+                        // not yet reachable, so it waits like
+                        // `Empty`.
+                        Err(TryDequeueError::Inconsistent | TryDequeueError::Empty) => {
+                            std::hint::spin_loop()
                         }
-                        Err(TryDequeueError::Empty) => std::hint::spin_loop(),
                         Err(TryDequeueError::Busy) => {
                             unreachable!("the consumer guard is held")
                         }
@@ -418,9 +411,8 @@ fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, count: u64) -> (f
                     .expect("the index is a buffer of this pool") // OK: computed from a pool buffer's address
                     .free();
             }
-            inconsistent
         });
-        consumer.join().expect("consumer panicked") // OK: a panic in the consumer is the cell's failure
+        consumer.join().expect("consumer panicked"); // OK: a panic in the consumer is the cell's failure
     });
-    (start.elapsed().as_secs_f64(), inconsistent)
+    start.elapsed().as_secs_f64()
 }

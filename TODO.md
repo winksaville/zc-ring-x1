@@ -21,18 +21,18 @@ shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the ru
 
 #### Problem
 
-`tp-pool`'s cordyceps `Inconsistent` figure counts every retry of the consumer's spin, so one long
-window, a producer preempted between its head swap and its link store, reads the same as many short
-ones. The `fills` columns of all four tools name a perf event rather than what it shows, cache lines
-pulled into a core from another core's cache, so a table at an SMT pair, where nothing crosses,
-reads as a fault. The tp_matrix README describes each tool alone and never says how their numbers
-relate, so which of them belongs in iiac-perf cannot be read off it: `tp-matrix --depth 1,8,64,1024`
-and `tp-pool` share a depth axis and measure different things. The mpsc-v0 skip message names a
-floor without saying which flavor runs below it.
+`tp-pool` prints a count of the cordyceps consumer's `Inconsistent` retries, a normal cost of
+Vyukov's queue already inside the row's ns/msg, as if it were a finding. The `fills` columns of all
+four tools name a perf event rather than what it shows, cache lines pulled into a core from another
+core's cache, so a table at an SMT pair, where nothing crosses, reads as a fault. The tp_matrix
+README describes each tool alone and never says how their numbers relate, so which of them belongs
+in iiac-perf cannot be read off it: `tp-matrix --depth 1,8,64,1024` and `tp-pool` share a depth
+axis and measure different things. The mpsc-v0 skip message names a floor without saying which
+flavor runs below it.
 
 #### Solution
 
-Count the cordyceps consumer's `Inconsistent` windows beside its retries and report both. Rename the
+Drop the `Inconsistent` count and let the cordyceps consumer wait on it as on `Empty`. Rename the
 fill columns and their prose to x-core cache-line fills across the four tools and their README, and
 reword the mpsc-v0 skip to name its floor and mpsc-v1. Extend the tp_matrix README with a map of the
 tools against each other: shape, messages in flight, what depth changes, what each reports, the
@@ -40,17 +40,17 @@ SMT reading, and which are candidates for iiac-perf.
 
 #### Acceptance check
 
-`tp-pool --count 200000 --repeat 1` prints both `Inconsistent` figures for each cordyceps cell,
-windows never above retries. `tp-matrix`, `tp-stream`, `tp-pool`, and `tp-cell` print x-core
-cache-line fills where they printed fills, and `grep -rn fills tp_matrix` finds only the perf event
-names and the `FillCounts` internals. A `tp-matrix --depth 1` run's mpsc-v0 skip line names mpsc-v1.
+`tp-pool --count 200000 --repeat 1` prints no `Inconsistent` line, with two blank lines between
+placements. `tp-matrix`, `tp-stream`, `tp-pool`, and `tp-cell` print x-core cache-line fills where
+they printed fills, and `grep -rn fills tp_matrix` finds only the perf event names and the
+`FillCounts` internals. A `tp-matrix --depth 1` run's mpsc-v0 skip line names mpsc-v1.
 The tp_matrix README has a section a reader can answer "how does `tp-matrix --depth 1,8,64,1024`
 compare to `tp-pool`" from. `vc-x1 validate` passes.
 
 #### Ladder
 
 - [feat: clearer tp_matrix counters and a tool map opening][1] (done)
-- [feat: split cordyceps Inconsistent into windows and retries][2]
+- [refactor: drop the cordyceps Inconsistent count][2] (done)
 - [refactor: rename fills to x-core cache-line fills][3]
 - [docs: tp_matrix README maps the tools against each other][4]
 - [feat: clearer tp_matrix counters and a tool map closing][5]
@@ -62,9 +62,13 @@ compare to `tp-pool`" from. `vc-x1 validate` passes.
 - In place of cordyceps-ex-1, which is no longer next: the user takes that example crate to
   iiac-perf directly on 2026-09-13, so this cycle edits `tp_matrix/src/pool.rs` in place, and no
   Todo entry or message records the handoff.
-- Windows beside retries, not in place of them: the retries say how long the consumer spun, the
-  windows how often it met a producer mid-enqueue, and a preempted producer shows as few windows
-  with many retries.
+- Drop the count, the user's call after a split into windows and retries was built and read: the
+  window is the algorithm's regular cost, not a fault, and its cost is already in ns/msg.
+  - The split showed windows nearly equal to retries, 9969/10892 at the SMT pair for pool=100, so
+    windows almost always close within a poll.
+  - Only a consumer exactly one node behind the producer sees `Inconsistent`: a drained queue waits
+    on the stub and reads `Empty`, so pool=1 is 0 by construction.
+  - `tests/cordyceps_mpsc.rs` keeps its count, since observing the window is that test's point.
 - The name is the user's, x-core cache-line fills, over "cross cache-line fills" and "line
   transfers". The column labels grow and the tables widen with them. The `FillCounts` fields and the
   `ZEN2_FILLS_*` constants keep the perf event's names, since they name the event, not the reading.
@@ -84,10 +88,14 @@ compare to `tp-pool`" from. `vc-x1 validate` passes.
 The cycle's setup commit: publish the bookmark, clear `## Closed`, write this block, reset
 the continuation notes, and bump the version-of-record.
 
-##### feat: split cordyceps Inconsistent into windows and retries
+##### refactor: drop the cordyceps Inconsistent count
 
-`PoolResult::inconsistent` counts spin retries only. Count the windows, the first `Inconsistent`
-after a dequeue, beside them, and print both on `tp-pool`'s line.
+`tp-pool` reported the cordyceps consumer's `Inconsistent` retries, a cost the algorithm pays on every
+enqueue a caught-up consumer meets, as a separate figure.
+
+* The figure reads as a defect signal and is not one.
+  - The consumer waits on `Inconsistent` as on `Empty`, uncounted, so the window's cost shows in
+    ns/msg as a ring consumer's polls do.
 
 ##### refactor: rename fills to x-core cache-line fills
 
@@ -306,7 +314,7 @@ _None._
 # References
 
 [1]: #feat-clearer-tp_matrix-counters-and-a-tool-map-opening
-[2]: #feat-split-cordyceps-inconsistent-into-windows-and-retries
+[2]: #refactor-drop-the-cordyceps-inconsistent-count
 [3]: #refactor-rename-fills-to-x-core-cache-line-fills
 [4]: #docs-tp_matrix-readme-maps-the-tools-against-each-other
 [5]: #feat-clearer-tp_matrix-counters-and-a-tool-map-closing

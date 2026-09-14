@@ -136,9 +136,10 @@ tp-pool 0.1.0 - run the pool-message sweep, one table per placement
 ```
 
 Each placement gets an `ns/msg` table and a `fills/msg` table
-of the same shape, and a line with the `Inconsistent` results
-the cordyceps consumer retried in the median run, the window
-between a producer's head swap and its link store. The pool's
+of the same shape. The cordyceps consumer waits on
+`Inconsistent`, a producer between its head swap and its link
+store, as it waits on `Empty`, so that window's cost is in the
+row's ns/msg as a ring consumer's polls are in its. The pool's
 free-stack is in every row: the consumer's free pushes the
 buffer it just read, and the producer's alloc pops that same
 buffer, so a line the consumer wrote crosses back on every

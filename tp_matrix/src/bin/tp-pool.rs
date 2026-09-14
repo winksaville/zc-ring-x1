@@ -195,11 +195,16 @@ fn main() {
     let mut headers = vec!["flavor".to_string(), "depth".to_string()];
     headers.extend(cli.pool.iter().map(|x| format!("pool={x}")));
 
-    for placement in &placements {
+    for (i, placement) in placements.iter().enumerate() {
         let Placement { label, pin } = placement;
+        // Two blank lines between placements, so one placement's
+        // tables stand apart from the next one's progress lines.
+        if i > 0 {
+            println!();
+            println!();
+        }
         let mut ns_rows: Vec<Vec<String>> = Vec::new();
         let mut fill_rows: Vec<Vec<String>> = Vec::new();
-        let mut inconsistent: Vec<String> = Vec::new();
         for row in &rows {
             let depth_label = row.depth.map_or("-".to_string(), |d| d.to_string());
             let mut ns_row = vec![row.flavor.as_str().to_string(), depth_label.clone()];
@@ -219,9 +224,6 @@ fn main() {
                 );
                 ns_row.push(format!("{:.1}", res.secs * 1e9 / cli.count.max(1) as f64));
                 fill_row.push(fills_cell(&res, cli.count));
-                if row.flavor == PoolFlavor::Cordyceps {
-                    inconsistent.push(format!("pool={pool_size}: {}", res.inconsistent));
-                }
             }
             ns_rows.push(ns_row);
             fill_rows.push(fill_row);
@@ -234,10 +236,5 @@ fn main() {
         println!("{label}: fills/msg");
         println!();
         print_table(&headers, &fill_rows);
-        println!();
-        println!(
-            "{label}: cordyceps Inconsistent retries in the median run, {}",
-            inconsistent.join(", ")
-        );
     }
 }
