@@ -16,7 +16,7 @@ pub struct Consumer<'a> {
     header: &'a Header,
     /// Base of the slot array.
     slots: *mut u8,
-    /// Geometry snapshot (see [`Ring`](crate::Ring)).
+    /// Geometry snapshot (see [`Ring`](super::Ring)).
     slot_size: u32,
     /// Slot-position mask (`capacity - 1`).
     mask: u32,
@@ -28,7 +28,7 @@ pub struct Consumer<'a> {
 unsafe impl Send for Consumer<'_> {}
 
 impl<'a> Consumer<'a> {
-    /// Build the handle from [`Ring::split`](crate::Ring::split)'s
+    /// Build the handle from [`Ring::split`](super::Ring::split)'s
     /// geometry snapshot.
     pub(crate) fn new(header: &'a Header, slots: *mut u8, slot_size: u32, mask: u32) -> Self {
         Consumer {

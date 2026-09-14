@@ -56,7 +56,7 @@ const NIL: u32 = u32::MAX;
 /// - line 1: `first_free_idx`, CAS-contended by every freer and
 ///   the allocator — sole owner of its line.
 /// - Every field is atomic for the same reason as the ring
-///   [`Header`](crate::Header): a peer may be mapped at any
+///   [`Header`](crate::spsc::v0::Header): a peer may be mapped at any
 ///   time, and scribbles must be garbage values, never UB.
 #[repr(C)]
 pub struct PoolHeader {
@@ -536,6 +536,14 @@ impl<T: ?Sized> BufSlot<'_, T> {
         self.idx
     }
 
+    /// The buffer's base as the pool's own raw pointer, for a
+    /// holder that lays its own structure over the buffer and
+    /// shares it between threads, so every access derives from
+    /// one pointer rather than from a `&mut` borrow of the guard.
+    pub(crate) fn as_mut_ptr(&self) -> *mut u8 {
+        self.buf
+    }
+
     /// Push the buffer back onto the pool's free-stack.
     ///
     /// - Any holder may free — this is the free-stack's MPSC
@@ -687,7 +695,7 @@ mod tests {
         // be rejected (the two kinds must never cross-attach).
         // 2 slots: the ring header (4 lines) + 2×64 fits the
         // pool-sized test region.
-        crate::Ring::init(&mut r.0, TEST_CACHE_LINE_SIZE, 2).unwrap();
+        crate::spsc::v2::Ring::init(&mut r.0, TEST_CACHE_LINE_SIZE, 2).unwrap();
         let err = unsafe { Pool::attach(r.0.as_mut_ptr(), r.0.len()) }
             .err()
             .unwrap();

@@ -33,7 +33,7 @@
 use std::time::Instant;
 
 use zc_ring_x1::{
-    BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, MpscRing, Pool, PoolRegistry, Ring,
+    BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, MpscRing, Pool, PoolRegistry,
     mpsc_region_size, policy,
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -469,7 +469,7 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
     let mut registry = PoolRegistry::<1>::new();
     let pool_id = registry.register(pool.resolver()).unwrap(); // OK: empty capacity-1 registry always has room
     let (mut producer, mut consumer) =
-        Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
+        zc_ring_x1::spsc::v2::Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
             .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
             .split();
 
@@ -531,7 +531,7 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
     let pool_id = registry.register(pool.resolver()).unwrap(); // OK: empty capacity-1 registry always has room
     let registry = &registry;
     let (mut producer, mut consumer) =
-        Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
+        zc_ring_x1::spsc::v2::Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
             .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
             .split();
 

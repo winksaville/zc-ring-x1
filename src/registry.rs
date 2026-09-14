@@ -198,7 +198,7 @@ impl<const N: usize> Default for PoolRegistry<'_, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CACHE_LINE_SIZE, Exhausted, Pool, PoolHeader, Ring};
+    use crate::{CACHE_LINE_SIZE, Exhausted, Pool, PoolHeader};
     use core::mem::size_of;
 
     /// Test message: one word carrying a sequence number.
@@ -360,7 +360,9 @@ mod tests {
         let mut reg = PoolRegistry::<1>::new();
         let id = reg.register(pool.resolver()).unwrap();
         let reg = &reg;
-        let (mut producer, mut consumer) = Ring::init(&mut rr.0, LINE, 4).unwrap().split();
+        let (mut producer, mut consumer) = crate::spsc::v2::Ring::init(&mut rr.0, LINE, 4)
+            .unwrap()
+            .split();
 
         std::thread::scope(|s| {
             s.spawn(move || {

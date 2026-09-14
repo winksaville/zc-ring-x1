@@ -17,9 +17,9 @@ pub struct Producer<'a> {
     header: &'a Header,
     /// Base of the slot array.
     slots: *mut u8,
-    /// Geometry snapshot (see [`Ring`](crate::Ring)).
+    /// Geometry snapshot (see [`Ring`](super::Ring)).
     slot_size: u32,
-    /// Geometry snapshot (see [`Ring`](crate::Ring)).
+    /// Geometry snapshot (see [`Ring`](super::Ring)).
     capacity: u32,
     /// Slot-position mask (`capacity - 1`).
     mask: u32,
@@ -32,7 +32,7 @@ pub struct Producer<'a> {
 unsafe impl Send for Producer<'_> {}
 
 impl<'a> Producer<'a> {
-    /// Build the handle from [`Ring::split`](crate::Ring::split)'s
+    /// Build the handle from [`Ring::split`](super::Ring::split)'s
     /// geometry snapshot.
     pub(crate) fn new(
         header: &'a Header,

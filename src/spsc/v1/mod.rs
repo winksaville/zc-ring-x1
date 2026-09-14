@@ -51,7 +51,7 @@ const LAYOUT_VERSION: u32 = 1;
 const MAX_CAPACITY: u32 = 1 << 30;
 
 /// Control block at offset 0 of a v1 region — the v0
-/// [`Header`](crate::Header)'s four-line shape, its own type.
+/// [`Header`](crate::spsc::v0::Header)'s four-line shape, its own type.
 ///
 /// - line 0: geometry, written by [`Ring::init`] with `magic`
 ///   last (`Release`), read-only thereafter.

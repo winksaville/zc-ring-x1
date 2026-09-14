@@ -27,68 +27,115 @@ building on, and v2 cleared that bar on 2026-09-07.
 
 #### Solution
 
-A `spsc::v3` module whose ring is a chain of v2 segments, each a v2 ring in one pool buffer, in the
-same shape as v0 through v2 and the crate's default.
+A design to try, agreed with the user on 2026-09-14, not a proven one: if it does not work or is not
+fast enough, its measurements and lessons carry into a v4.
 
-- `spsc::v3::Ring` takes its segments from the application's pool, a segment being an ordinary
-  allocation of a buffer sized for `v2::region_size(slot_size, seg_capacity)`. It takes the first
-  segment and splits into `Producer` and `Consumer`, and an exhausted pool is the ring's Full.
-- Inside a segment it is v2, and the guards are v2's `WriteSlot` and `ReadSlot`.
-- The link to the next segment is word 0 of a segment's user line, the next buffer's index or
-  `u32::MAX` for none, written only by the producer.
-- Producer on Full: try the segment once, then allocate a buffer, init a v2 ring in it, store its
-  index in the old segment's link, and move. The wait policy covers both tries.
-- Consumer on Empty: load the link. Unset means the producer is still here, so wait. Set means try
-  the old segment once more, and only if it is still Empty move to the new segment and free the old
-  one, since every commit to the old segment came before the link store.
-- The pool gains `Pool::alloc_bytes`, a buffer as a guard over its bytes, for laying a v2 ring in
-  it, and v3's consumer gets the same bytes guard back from a segment's index.
+The goal: a segmented ring holds a few segments, and when the consumer keeps up only one is in use
+and v3 costs what v2 costs. The other segments are insurance for the producer outrunning the
+consumer, and switching between them is the only cost v3 adds.
+
+- A `spsc::v3` module in the v0 through v2 shape, `Ring` with `init` and `split`, `Producer`,
+  `Consumer`, `WriteSlot`, `ReadSlot`, and the crate's default. v2 is unchanged, so v0 through v3
+  measure side by side, and v3 borrows from v2 only where convenient.
+- Segments are set up once: `init` borrows the application's pool, takes all of a ring's segments
+  from it with `Pool::alloc_bytes`, at most 32 of them, and initializes each. Nothing
+  allocates or frees while the ring runs, and the ring does not keep the pool's allocator.
+- A segment is a ring of its own, each identical in operation: a pool buffer of slots, each slot
+  opening with its seq word as in v2, at a fixed segment depth. Segments are named by a small
+  number, and indexes are used over pointers, as the pool does.
+- The slot's seq word is 32 bits, so one load gets every bit the consumer needs: the seq value, as
+  v2's claimable, committed, and released, in the low 26 bits, and a MOVED bit with the next
+  segment's number in the high bits.
+- Producer at commit: if the next slot is claimable, commit as v2 does. If not, the segment is about
+  to be full, so take a free segment and commit this message with MOVED and that segment's number.
+  A slot seen claimable stays claimable until the producer claims it, so the look-ahead replaces
+  the next reserve's load. With no free segment it commits plainly, and a later reserve waits on
+  the current segment as a ring does.
+- Consumer: one load of the slot's seq says empty, a message, or a message and then go to segment
+  k. After a MOVED message it releases the slot, gives the old segment back, and switches. No link
+  load and no second look: the MOVED message is the producer's last commit in that segment.
+- Free segments without CAS: the producer keeps a private word P and the consumer a shared word C,
+  one bit per segment. The producer flips a segment's bit in P when it takes it, the consumer in C
+  when it gives it back, so a segment is free where the bits agree, and `trailing_zeros` of
+  `!(P ^ C)` finds one in one instruction. C is touched only on a switch.
+- A segment picks up where it was left: each side keeps a private resume position per segment, and
+  both sides left a segment at the same slot, so reusing one needs no shared write and no
+  re-initialization.
+- At segment depth 1 every commit switches, so depth 1 measures the switch alone.
 - No `attach` for v3 this cycle. A user who needs one names `spsc::v2::Ring`.
 
 #### Acceptance check
 
-A test streams across many segment boundaries with a pool smaller than the message count, at
-`M = 1` and larger, and afterwards finds every segment but the live one back in the pool. A
-threaded stress with a two-buffer pool forces the exhausted wait and the second look. `Ring` at the
-crate root is v3. The segment-size sweep on the 3900X is in the design note, with v3 at `M = depth`
-matching v2 within run noise. `vc-x1 validate` passes.
+A test streams far more messages than one segment holds through a ring of several segments, at
+segment depth 1 and larger, and afterwards every segment but the current one is free, P and C
+agreeing on them. A threaded stress with two or three segments forces switches, MOVED hand-offs,
+and a producer waiting with no free segment. `Ring` at the crate root is v3. The sweep in the design
+note shows v3 matching v2 at the same segment depth while the consumer keeps up, and the switch cost
+at segment depth 1 while the producer runs ahead. `vc-x1 validate` passes.
 
 #### Ladder
 
 - [feat: segmented queue SPSC v3 opening][1] (done)
 - [feat: pool buffers as bytes][2] (done)
-- [feat: spsc v3 segment chain][3]
+- [feat: spsc v3 segment chain][3] (done)
+- [fix: the two tests Miri rejects][7]
 - [feat: spsc v3 in the measurement tools][4]
 - [perf: sweep the segment size][5]
 - [feat: segmented queue SPSC v3 closing][6]
 
 #### Deliberation
 
-- On v2: v2 cleared the bar on 2026-09-07, and within a segment v3 is v2, so v3's cost is the seams.
-- The application's pool, not a private one, the user's call on 2026-09-14: a segment is an
-  ordinary pool allocation, and pools are the application's design, soon of several sizes. The
-  pool's single allocator becomes v3's producer while the ring lives, which the segment-chain rung
-  settles.
+- A design, not a promise, the user's framing on 2026-09-14: v3 is built to be measured, and a
+  design that falls short leads to a v4 rather than a rework of v3.
+- Segments as insurance, the user's goal: with a consumer that keeps up, the ring lives in one
+  segment and costs what v2 costs, so every extra cost is kept to the switch.
+- Segments set up at `init`, the user's call, replacing the draft's allocate-on-Full: the whole cost
+  of creating segments is paid once, and running never allocates, frees, or re-initializes. A
+  queue's capacity is fixed at its segments, and memory is reserved while it is idle.
+- Each segment a ring of its own, the user's call, replacing the draft's v2 region per segment:
+  v2's four-line header is mostly fields a segment never reads, and v3 may borrow v2's slot
+  protocol without being v2.
+- One load for the consumer, the user's call: an earlier step had the consumer load a link, and
+  then a flag beside the seq, on each empty poll.
+  - The MOVED bit and next segment ride in the committed seq value, written only by the producer at
+    its own commit. A flag set in the word at any other time races the consumer's release store,
+    and without CAS a lost flag strands the consumer in a segment the producer has left.
+  - This retires the second look, found while checking the draft: that fix answered an empty read
+    going stale before the link was seen, and the MOVED commit carries the hand-off in the message
+    itself.
+- One bit per segment in two single-writer words, the user's call: a bounded segment count makes
+  the free set one word, finding a free segment one bit scan, and giving one back one bit flip,
+  with no CAS, so v3 stays load and store only like v0 through v2.
 - The v0 through v2 shape, the user's call on 2026-09-14: `spsc::v3::Ring` with `init`, `split`,
   and the same endpoint and guard names, not the draft's `Queue`.
 - v3 is the crate default from its own rung, the user's call: one rung moves the call sites that
   need v2's geometry to `spsc::v2::Ring`, rather than a late rung touching them again.
-- The second look, found while checking the draft: an Empty read before the producer's last commits
-  goes stale by the time the consumer sees the link, and freeing then loses those messages. The
-  user walked through it and agreed.
-- No seal and no CAS at the seam: one producer, so a plain link store is safe. MPSC will be its own
-  implementation, and what v3 teaches about the seam goes into the design note for it.
-  - Carried to MPSC: producers racing to link CAS it, and losers return their segments to the
-    pool; the old segment is sealed before the link, so no late claim lands in it; and a slow
-    producer may still hold a freed segment, so reclamation is the hard part.
+- Segments from the application's pool, the user's call: a segment is an ordinary pool allocation,
+  taken as bytes since no compile-time type describes it.
+- `Header` leaves the crate root and `init` gains `Error::Exhausted` and `Error::BadSegmentCount`,
+  the user's calls: v3's segments carry no ring header, and a ring that cannot get all its segments
+  or asks for none or too many fails at `init`. The ring borrows the pool only during `init`, so no
+  endpoint lends it out.
+- A 32-bit seq word and at most 32 segments, the user's call when the 64 bits first designed met
+  the crate's 32-bit `no_std` targets, which have no 64-bit atomics: 26 seq bits cap a segment at
+  `2^24` slots, and only the consumer's give-back word is shared.
+- The Miri fixes as a rung after v3, the user's call on 2026-09-15: running the whole library under
+  Miri while checking v3 found two failures that predate it. They are fixed in this cycle rather
+  than logged, and after v3, since they are independent of it, so v3 pushes first with nothing set
+  aside.
+- MPSC will be its own implementation, and what v3 teaches goes into the design note for it.
+  - Carried to MPSC: producers racing to take a segment need CAS where v3's single producer does
+    not, a segment must be sealed before the switch so no late claim lands in it, and a slow
+    producer may still hold a segment being given back, so reclamation is the hard part.
 - No v3 `attach`, the user's call: attach is a ring's ability to join an existing region, not a
-  versioning question, and v3's state spans a pool and a chain. A Todo entry holds it.
+  versioning question, and v3's state spans a pool and its segments. A Todo entry holds it.
 - 0.16.0, a minor bump, the user's call: a new queue layer and a new default.
 - No `-dev` rename: the demo's name is unchanged by the cycle, as in the earlier cycles.
-- Prediction, on record from the draft: within a segment v3 is v2. Each seam costs the producer an
-  alloc CAS, the init's header and seq lines, and a link store, and the consumer a header line for
-  the link, a free CAS on the shared pool line, and a cold prefetcher on the new buffer. At `M = 1`
-  roughly three times v2's two lines per message. We think the cost is flat by `M = 8`.
+- Prediction, on record: with the consumer keeping up, v3 matches v2 at the same segment depth, both
+  loading one seq per message on each side. A switch costs the producer a load of C, a bit scan,
+  and a store of P, and the consumer a store of C and a cold segment. We think segment depth 1
+  with the producer ahead runs within twice v2's cost per message, the new segment's line being the
+  larger part.
 - `## Waiting` is `_None._`, nothing to promote.
 
 #### Ladder details
@@ -115,20 +162,44 @@ such as a v2 ring inside a segment, had no way in.
 
 ##### feat: spsc v3 segment chain
 
-The `spsc::v3` module: `Ring`, both endpoints, and the seam protocol, plus a crate-private bytes
-guard from a buffer index for the consumer, with the acceptance tests plus `M = 1`, u32 wrap, and
-the threaded stress. The crate default moves to v3, v2-specific tests name `spsc::v2::Ring`, and the
-README example shows v3's `init`.
+v3 existed only as a design, and the crate's default ring could not grow past one region.
+
+* A ring of segments to measure.
+  - `spsc::v3` builds the Solution's design: segments taken from the pool at `init`, the 32-bit
+    word with MOVED and the next segment, the producer's look-ahead at commit, the consumer's
+    one-load switch, and free segments found through the give-back word.
+  - Tests cover one segment as a plain ring, a full ring of segments, many laps in uneven bursts,
+    depth 1 switching on every commit, a producer waiting with no free segment, abandoned guards,
+    the wait policy, the u32 wrap, and a two-thread stream, which also passed 30 release runs.
+  - Under Miri all of v3's tests pass, and 97 of the library's 99. The two that fail do so on the
+    commit before this rung too, so they predate v3.
+* The crate default was v2.
+  - The crate-root `Ring` is v3 and `Header` leaves the root. Code that needs a single region, the
+    demo's descriptor rings and the pool, registry, and MPSC tests, names `spsc::v2::Ring`, and the
+    README example shows a ring of segments over a pool.
+* Laying a v2 ring over each segment would have needed `init` then `attach`, and a switch to
+  derive pointers from a guard's `&mut` borrow.
+  - Every segment address comes from the pool's own raw pointer, through a crate-private
+    `BufSlot::as_mut_ptr`, so both threads' accesses share one pointer origin.
+
+##### fix: the two tests Miri rejects
+
+Two tests fail under Miri on the commit before v3 as well as with it, each with undefined
+behavior: `mpsc::v0::tests::mpsc_attach_validates_header`, a retag whose tag is no longer in the
+borrow stack, and `mpsc::v1::tests::threaded_mpsc_two_producers_capacity_1`, a data race between
+two producers writing one slot's message. Find each one's cause, in the test or the ring, and fix
+it there, so the whole library passes under Miri.
 
 ##### feat: spsc v3 in the measurement tools
 
 `spsc-v3` as a flavor in `tp-cell`, `tp-matrix`, `tp-stream`, and the demo's sweep, with a segment
-capacity knob. Depth stays the total capacity, so `M = depth` is v2 inside v3.
+count knob. Depth stays the segment depth, so v3 and v2 compare at the same depth.
 
 ##### perf: sweep the segment size
 
-`M` from 1 to depth at depths 64 and 256 across the three pinned placements, into a new design-note
-section with the "carried to MPSC" list, and the 7600X pasted in by the user.
+Segment depth from 1 up across the three pinned placements, the round trip for a consumer that keeps
+up and the stream for a producer that runs ahead, into a new design-note section with the "carried
+to MPSC" list and the verdict on the design, and the 7600X pasted in by the user.
 
 ##### feat: segmented queue SPSC v3 closing
 
@@ -319,4 +390,5 @@ _None._
 [4]: #feat-spsc-v3-in-the-measurement-tools
 [5]: #perf-sweep-the-segment-size
 [6]: #feat-segmented-queue-spsc-v3-closing
+[7]: #fix-the-two-tests-miri-rejects
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies

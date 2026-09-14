@@ -1,7 +1,11 @@
 //! Zero-copy no_std SPSC ring buffer over a caller-provided
 //! memory region, per [notes/ring-buffer-design.md]:
 //!
-//! - One `#[repr(C)]` [`Header`] spanning four cache lines
+//! - The default [`Ring`] is `spsc::v3`, a ring of segments taken
+//!   from a [`Pool`]. The single-region rings, `spsc::v0` through
+//!   `spsc::v2`, stay available by path, and the points below
+//!   describe them.
+//! - One `#[repr(C)]` header spanning four cache lines
 //!   (immutable geometry, producer index, consumer index, app
 //!   user words), followed by M slots of N bytes.
 //! - Indices are free-running `AtomicU32`s, masked only at slot
@@ -42,7 +46,7 @@ pub mod spsc;
 pub use mpsc::{MpscConsumer, MpscHeader, MpscProducer, MpscReadSlot, MpscRing, mpsc_region_size};
 pub use pool::{BufSlot, Exhausted, Pool, PoolHeader, PoolResolver};
 pub use registry::{Desc, PoolId, PoolRegistry, RegistryError};
-pub use spsc::{Consumer, Header, Producer, ReadSlot, Ring, WriteSlot};
+pub use spsc::{Consumer, Producer, ReadSlot, Ring, WriteSlot};
 
 /// Cache-line size the layout is built around.
 ///
@@ -89,8 +93,8 @@ impl<T> core::ops::Deref for CacheAligned<T> {
     }
 }
 
-/// Errors from region validation — [`Ring::init`] /
-/// [`Ring::attach`] and [`Pool::init`] / [`Pool::attach`].
+/// Errors from region validation — the rings' `init` / `attach`,
+/// [`Ring::init`], and [`Pool::init`] / [`Pool::attach`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// Region is not [`CACHE_LINE_SIZE`]-aligned.
@@ -115,6 +119,12 @@ pub enum Error {
     BadLayoutVersion,
     /// Attach: region built with a different [`CACHE_LINE_SIZE`].
     BadCacheLine,
+    /// A ring of segments: the segment count is zero or over the
+    /// most a ring holds.
+    BadSegmentCount,
+    /// A ring of segments: the pool had fewer free buffers than
+    /// the ring's segments.
+    Exhausted,
 }
 
 /// Check `T` fits a slot; called once per `reserve_slot_with`
