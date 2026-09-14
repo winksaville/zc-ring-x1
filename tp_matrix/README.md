@@ -5,30 +5,74 @@ zc-ring-x1 ring queues actually costs (and where the cost
 lives), with four installable binaries: `tp-cell`,
 `tp-matrix`, `tp-stream`, and `tp-pool`.
 
-## The measurement, in one paragraph
+## The measurements
 
-Both tools run the same experiment, a **cell**: a main thread
-sends a counter to a worker over one ring, the worker echoes
-it back over a second ring, as fast as the two threads can go
-for a fixed duration (one message in flight, so every trip is
-a fresh handoff). Every protocol phase is bracketed by two
-hardware tick-counter reads and recorded into its own
-histogram: the sends (`reserve + fill + commit`, the
-producer's cost of placing a message), the recvs (spin wait
-for arrival + read + release), and inside each recv the spin
-wait itself plus how many polls it took. On Linux the process
-also counts its own x-core cache-line fills (`xfills` in the
-tables), cache lines pulled into a core from another core's
-cache, via
-`perf_event_open` (per-process, worker threads inherited,
-user-mode only, no perf(1), root, bash, or scraping), which
-is the hardware's answer to "how many cache lines crossed
-between the cores per round trip". A cell varies along two
-axes: **flavor** (the SPSC v0 ring, the SPSC v1 seam-word
-ring, the SPSC v2 in-slot seq ring, and the MPSC v0 and v1
-siblings at 1p/1c, every flavor named `xpsc-vN` after its
-module path) and **placement** (which CPUs the two threads sit on, same
-L3, different L3, SMT siblings, or unpinned).
+Each tool moves messages between two threads over the rings
+and times it: `tp-cell` and `tp-matrix` time each step with
+hardware tick counters, and `tp-stream` and `tp-pool` time
+the whole run. On Linux each tool also counts xfills,
+cache lines one core had to pull from another core's cache,
+through `perf_event_open`, with no perf(1) or root needed.
+SMT siblings share one core's caches, so there xfills reads
+near 0, which is expected.
+Runs vary by **flavor**, which ring (`spsc-v0`, `spsc-v1`,
+`spsc-v2`, `mpsc-v0`, `mpsc-v1`, named after their module
+paths), and by **placement**, which CPUs the two threads sit
+on: same L3, different L3, SMT siblings, or unpinned.
+
+- `tp-cell`: one round trip, main sends a counter to a worker
+  and the worker sends it back, for one ring and one
+  placement. Prints the full timing distribution of every
+  step.
+- `tp-matrix`: the same round trip for every ring at every
+  placement, one table of mean/stdev per step.
+- `tp-stream`: one thread streams counters as fast as the ring
+  takes them and the other drains, so the ring fills up.
+  Reports ns and xfills per message.
+- `tp-pool`: the messaging layer's loop, take a buffer from a
+  pool, send it, receive it, free it, over two rings and
+  cordyceps. Reports ns and xfills per message by pool size.
+
+## The tools side by side
+
+Each tool answers a different question, so their numbers are
+not comparable one to one.
+
+| | `tp-cell` | `tp-matrix` | `tp-stream` | `tp-pool` |
+|---|---|---|---|---|
+| Question | what one cell's timing looks like | which ring is faster here, and why | what a ring costs when it fills | what the pool loop costs per queue |
+| Shape | round trip, two rings | round trip, two rings | one way, one ring | one way, pool + queue |
+| In flight | 1 | 1 | up to depth | up to pool size |
+| Payload | counter in the slot | counter in the slot | counter in the slot | pool buffer, its `Desc` or pointer crosses |
+| Depth | seq sharing, slack at 1 | seq sharing, slack at 1 | how far the producer can run ahead | throttles when below the pool size |
+| Runs | `-d` per cell | `-d` per cell | `-d` per cell | `-d` per run, median of `--repeat` |
+| Reports | full percentile bands per phase | mean/stdev per phase, RTs, xfills/RT | ns/msg, msgs, xfills/msg | ns/msg and xfills/msg per pool size |
+| Flavors | the five rings | the five rings | the five rings | spsc-v2, mpsc-v1, cordyceps |
+
+## tp-cell: one cell, under the microscope
+
+Runs a single placement (your `--pin` choice, or unpinned)
+and prints the *full* per-probe percentile band tables that
+the matrix summarizes to `mean/stdev` (min/p1/.../p99/max
+rows with first/last/range/count/mean columns), plus the raw
+fill counters:
+
+```sh
+$ tp-cell spsc-v0 -d 5 --pin 0,1 -v
+tp-cell 0.1.0 - run one phase-probed ring round-trip cell
+spsc-v0 round trip [duration=5.0s pin=main=0,worker=1]:
+  tprobe: spsc-v0 main send (reserve+commit) [count=21,078,016]
+    ...band rows...
+  ...seven more probes, trip order...
+  fill counters: lcl_cache=209,239,903 (9.927 xfills/RT)  lcl_l2=249,403  ...
+
+- `lcl_cache`: demand fills served from another core's cache
+...
+```
+
+Use it when a matrix row looks odd and you want the shape of
+the distribution (bimodality, tail weight), or to A/B one
+placement while changing something.
 
 ## tp-matrix: the whole picture, one command
 
@@ -163,30 +207,13 @@ buffer, so a line the consumer wrote crosses back on every
 message whatever the queue does, which is why these numbers sit
 far above the in-slot tables' at the same placement.
 
-## tp-cell: one cell, under the microscope
-
-Runs a single placement (your `--pin` choice, or unpinned)
-and prints the *full* per-probe percentile band tables that
-the matrix summarizes to `mean/stdev` (min/p1/.../p99/max
-rows with first/last/range/count/mean columns), plus the raw
-fill counters:
-
-```sh
-$ tp-cell spsc-v0 -d 5 --pin 0,1 -v
-tp-cell 0.1.0 - run one phase-probed ring round-trip cell
-spsc-v0 round trip [duration=5.0s pin=main=0,worker=1]:
-  tprobe: spsc-v0 main send (reserve+commit) [count=21,078,016]
-    ...band rows...
-  ...seven more probes, trip order...
-  fill counters: lcl_cache=209,239,903 (9.927 xfills/RT)  lcl_l2=249,403  ...
-
-- `lcl_cache`: demand fills served from another core's cache
-...
-```
-
-Use it when a matrix row looks odd and you want the shape of
-the distribution (bimodality, tail weight), or to A/B one
-placement while changing something.
+Depth here throttles: a ring shallower than the pool holds the
+producer back, unlike `tp-matrix`, where one message in flight
+means depth never throttles. The closest match between the two
+is `tp-pool` at pool=1 against `tp-matrix` at depth 1 halved,
+since a round trip is two handoffs, and `tp-pool` still reads
+higher for the pool's free-stack line crossing on every
+message.
 
 ## Build / test / install
 

@@ -36,17 +36,16 @@ Drop the `Inconsistent` count and let the cordyceps consumer wait on it as on `E
 fill columns `xfills`, x-core cache-line fills, with a legend under each tool's table defining every
 column, merge `tp-matrix`'s two tables into one, and reword the mpsc-v0 skip to name its floor and
 mpsc-v1. Extend the tp_matrix README with a map of the tools against each other: shape, messages in
-flight, what depth changes, what each reports, the SMT reading, and which are candidates for
-iiac-perf.
+flight, what depth changes, what each reports, and the SMT reading.
 
 #### Acceptance check
 
 `tp-pool -d 0.1 --repeat 1` prints no `Inconsistent` line, with two blank lines between
 placements. `tp-matrix`, `tp-stream`, `tp-pool`, and `tp-cell` label the fill figure `xfills` and
 print, under `-v`, a legend naming every column they print, and `tp-matrix` prints one table. A
-`tp-matrix --depth 1` run's mpsc-v0 skip line names mpsc-v1. The tp_matrix README has a section a
-reader can answer "how does `tp-matrix --depth 1,8,64,1024` compare to `tp-pool`" from.
-`vc-x1 validate` passes.
+`tp-matrix --depth 1` run's mpsc-v0 skip line names mpsc-v1. The tp_matrix README compares the tools in one table
+with a section per tool, and a reader can answer "how does `tp-matrix --depth 1,8,64,1024` compare
+to `tp-pool`" from it. `vc-x1 validate` passes.
 
 #### Ladder
 
@@ -54,7 +53,7 @@ reader can answer "how does `tp-matrix --depth 1,8,64,1024` compare to `tp-pool`
 - [refactor: drop the cordyceps Inconsistent count][2] (done)
 - [refactor: xfills label and one tp-matrix table][3] (done)
 - [feat: tp-pool runs for a duration][4] (done)
-- [docs: tp_matrix README maps the tools against each other][5]
+- [docs: tp_matrix README maps the tools against each other][5] (done)
 - [feat: clearer tp_matrix counters and a tool map closing][6]
 
 #### Deliberation
@@ -94,6 +93,10 @@ reader can answer "how does `tp-matrix --depth 1,8,64,1024` compare to `tp-pool`
 - The continuation notes are reset: the iiac-perf direction is the user's to carry, the landed
   cycles and the pushed messages repo need no note, and the answered
   `tmp/intrusive-rust-link-lists.md` is left for the user.
+- The README carries no iiac-perf plan: which tools move is a plan that goes stale as they move,
+  and the user takes it to iiac-perf directly. As read on 2026-09-14, `tp-pool` goes, `tp-stream`
+  is a candidate, and `tp-matrix` and `tp-cell` stay, since they time these rings' protocol phase
+  by phase.
 - `## Waiting` is `_None._`, nothing to promote.
 
 #### Ladder details
@@ -149,8 +152,16 @@ and a cell's figure were set differently from the tools beside it.
 
 ##### docs: tp_matrix README maps the tools against each other
 
-Add a section comparing the four tools, the round trip, the stream, the pool loop, and the single
-cell, with the SMT reading and the iiac-perf candidates.
+The README described each tool alone, in no set order, so which to run and how their numbers
+relate was left to the reader.
+
+* Nothing compared the tools.
+  - A side-by-side table, then one section per tool in the table's order.
+* The overview was one dense paragraph.
+  - "The measurements" says in plain words what the tools do, with one bullet per tool, and that
+    xfills near 0 at an SMT pair is expected.
+* `tp-pool`'s depth reads like `tp-matrix`'s and is not.
+  - The tp-pool section says depth throttles there and which cells come closest.
 
 ##### feat: clearer tp_matrix counters and a tool map closing
 
