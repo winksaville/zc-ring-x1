@@ -117,7 +117,7 @@ impl<'a, const N: usize> PoolRegistry<'a, N> {
     ///   mispairing.
     /// - The error side hands the guard back, so a miss
     ///   cannot leak the buffer.
-    pub fn into_desc<T>(
+    pub fn into_desc<T: ?Sized>(
         &self,
         pool_id: PoolId,
         slot: BufSlot<'a, T>,

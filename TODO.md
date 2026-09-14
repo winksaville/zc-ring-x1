@@ -30,9 +30,9 @@ building on, and v2 cleared that bar on 2026-09-07.
 A `spsc::v3` module whose ring is a chain of v2 segments, each a v2 ring in one pool buffer, in the
 same shape as v0 through v2 and the crate's default.
 
-- `spsc::v3::Ring::init(region, slot_size, seg_capacity, seg_count)` builds a `Pool` over the
-  region, one buffer per segment, takes the first segment, and splits into `Producer` and
-  `Consumer`. Capacity is the product, and an exhausted pool is the ring's Full.
+- `spsc::v3::Ring` takes its segments from the application's pool, a segment being an ordinary
+  allocation of a buffer sized for `v2::region_size(slot_size, seg_capacity)`. It takes the first
+  segment and splits into `Producer` and `Consumer`, and an exhausted pool is the ring's Full.
 - Inside a segment it is v2, and the guards are v2's `WriteSlot` and `ReadSlot`.
 - The link to the next segment is word 0 of a segment's user line, the next buffer's index or
   `u32::MAX` for none, written only by the producer.
@@ -41,8 +41,8 @@ same shape as v0 through v2 and the crate's default.
 - Consumer on Empty: load the link. Unset means the producer is still here, so wait. Set means try
   the old segment once more, and only if it is still Empty move to the new segment and free the old
   one, since every commit to the old segment came before the link store.
-- The pool gains `BufSlot::as_mut_bytes` for the init and a crate-private buffer pointer on the
-  resolver for the consumer's attach and free.
+- The pool gains `Pool::alloc_bytes`, a buffer as a guard over its bytes, for laying a v2 ring in
+  it, and v3's consumer gets the same bytes guard back from a segment's index.
 - No `attach` for v3 this cycle. A user who needs one names `spsc::v2::Ring`.
 
 #### Acceptance check
@@ -56,7 +56,7 @@ matching v2 within run noise. `vc-x1 validate` passes.
 #### Ladder
 
 - [feat: segmented queue SPSC v3 opening][1] (done)
-- [feat: bytes and a buffer pointer from a pool buffer][2]
+- [feat: pool buffers as bytes][2] (done)
 - [feat: spsc v3 segment chain][3]
 - [feat: spsc v3 in the measurement tools][4]
 - [perf: sweep the segment size][5]
@@ -65,6 +65,10 @@ matching v2 within run noise. `vc-x1 validate` passes.
 #### Deliberation
 
 - On v2: v2 cleared the bar on 2026-09-07, and within a segment v3 is v2, so v3's cost is the seams.
+- The application's pool, not a private one, the user's call on 2026-09-14: a segment is an
+  ordinary pool allocation, and pools are the application's design, soon of several sizes. The
+  pool's single allocator becomes v3's producer while the ring lives, which the segment-chain rung
+  settles.
 - The v0 through v2 shape, the user's call on 2026-09-14: `spsc::v3::Ring` with `init`, `split`,
   and the same endpoint and guard names, not the draft's `Queue`.
 - v3 is the crate default from its own rung, the user's call: one rung moves the call sites that
@@ -94,16 +98,27 @@ matching v2 within run noise. `vc-x1 validate` passes.
 The cycle's setup commit: publish the bookmark, clear `## Closed`, move the Todo entry into this
 block, file the v3 attach Todo, and bump the version to 0.16.0-0.
 
-##### feat: bytes and a buffer pointer from a pool buffer
+##### feat: pool buffers as bytes
 
-The pool hands out a buffer only as a typed guard. v3 needs the buffer's bytes to init a v2 ring in
-it, and the consumer needs a buffer's address from its index. Add both, with tests.
+The pool handed out a buffer only as a guard typed at compile time, so a layout sized at runtime,
+such as a v2 ring inside a segment, had no way in.
+
+* Every allocation named a `T` whose size is fixed when the code compiles.
+  - `Pool::alloc_bytes` hands out a buffer as a `BufSlot<[u8]>`, which derefs to all of its bytes,
+    mutable like any other allocation. Typed views over the bytes are zero-copy casts.
+* `BufSlot` and the registry's `into_desc` required a sized `T`.
+  - Both take unsized views now, so a bytes guard frees and travels like a typed one.
+* A first design added `BufSlot::as_mut_bytes` and a raw buffer pointer on the resolver.
+  - Dropped with the user: a buffer is mutable by design, and bytes are one more kind of
+    allocation, not a special accessor. The consumer's bytes guard from an index comes with the
+    rung that needs it.
 
 ##### feat: spsc v3 segment chain
 
-The `spsc::v3` module: `Ring`, both endpoints, and the seam protocol, with the acceptance tests
-plus `M = 1`, u32 wrap, and the threaded stress. The crate default moves to v3, v2-specific tests
-name `spsc::v2::Ring`, and the README example shows v3's `init`.
+The `spsc::v3` module: `Ring`, both endpoints, and the seam protocol, plus a crate-private bytes
+guard from a buffer index for the consumer, with the acceptance tests plus `M = 1`, u32 wrap, and
+the threaded stress. The crate default moves to v3, v2-specific tests name `spsc::v2::Ring`, and the
+README example shows v3's `init`.
 
 ##### feat: spsc v3 in the measurement tools
 
@@ -147,6 +162,19 @@ on 2026-09-13 each fell short:
   renderer shows as a data row.
 - Plain aligned text with a spanning heading: reads best in a terminal, but a paste is no longer a
   markdown table.
+
+### Segmented pools
+
+A pool has one buffer size, so an application wanting messages of several sizes builds and registers
+several pools by hand. A segmented pool holds sub-pools of different buffer sizes, and its
+`alloc(size)` takes a buffer from the smallest sub-pool that fits, returning the buffer's location
+and actual size. Typed access becomes a zero-copy cast on those bytes: the whole buffer as a `T`,
+or `T`s at offsets inside it. `alloc::<T>()` stays as `alloc(size_of::<T>())` plus the cast.
+
+- A sub-pool can be a registered pool of its own, so `Desc { pool_id, buf_idx }` already names the
+  sub-pool a buffer came from, and `free` already returns it there.
+- Buffers start on a cache line, so any `T` aligned to at most a line fits any sub-pool.
+- The user's direction on 2026-09-14, raised while settling how v3's segments come from the pool.
 
 ### SPSC v3 attach
 
@@ -286,7 +314,7 @@ _None._
 # References
 
 [1]: #feat-segmented-queue-spsc-v3-opening
-[2]: #feat-bytes-and-a-buffer-pointer-from-a-pool-buffer
+[2]: #feat-pool-buffers-as-bytes
 [3]: #feat-spsc-v3-segment-chain
 [4]: #feat-spsc-v3-in-the-measurement-tools
 [5]: #perf-sweep-the-segment-size
