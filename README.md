@@ -261,7 +261,7 @@ Which tool answers which question:
 - `zc-ring-x1-demo`: a smoke run, single-shot ns per message
   for every flavor at each placement, and a depth sweep.
 - `tp-matrix`: the round-trip cost per protocol phase and the
-  cross-core cache-line fills per trip, every flavor at every
+  x-core cache-line fills per trip, every flavor at every
   placement ([tp-matrix](tp_matrix/README.md#tp-matrix-the-whole-picture-one-command)).
 - `tp-stream`: what a ring costs per message when the
   producer runs ahead and the ring holds many

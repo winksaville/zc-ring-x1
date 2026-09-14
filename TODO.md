@@ -32,28 +32,30 @@ flavor runs below it.
 
 #### Solution
 
-Drop the `Inconsistent` count and let the cordyceps consumer wait on it as on `Empty`. Rename the
-fill columns and their prose to x-core cache-line fills across the four tools and their README, and
-reword the mpsc-v0 skip to name its floor and mpsc-v1. Extend the tp_matrix README with a map of the
-tools against each other: shape, messages in flight, what depth changes, what each reports, the
-SMT reading, and which are candidates for iiac-perf.
+Drop the `Inconsistent` count and let the cordyceps consumer wait on it as on `Empty`. Label the
+fill columns `xfills`, x-core cache-line fills, with a legend under each tool's table defining every
+column, merge `tp-matrix`'s two tables into one, and reword the mpsc-v0 skip to name its floor and
+mpsc-v1. Extend the tp_matrix README with a map of the tools against each other: shape, messages in
+flight, what depth changes, what each reports, the SMT reading, and which are candidates for
+iiac-perf.
 
 #### Acceptance check
 
 `tp-pool --count 200000 --repeat 1` prints no `Inconsistent` line, with two blank lines between
-placements. `tp-matrix`, `tp-stream`, `tp-pool`, and `tp-cell` print x-core cache-line fills where
-they printed fills, and `grep -rn fills tp_matrix` finds only the perf event names and the
-`FillCounts` internals. A `tp-matrix --depth 1` run's mpsc-v0 skip line names mpsc-v1.
-The tp_matrix README has a section a reader can answer "how does `tp-matrix --depth 1,8,64,1024`
-compare to `tp-pool`" from. `vc-x1 validate` passes.
+placements. `tp-matrix`, `tp-stream`, `tp-pool`, and `tp-cell` label the fill figure `xfills` and
+print, under `-v`, a legend naming every column they print, and `tp-matrix` prints one table. A
+`tp-matrix --depth 1` run's mpsc-v0 skip line names mpsc-v1. The tp_matrix README has a section a
+reader can answer "how does `tp-matrix --depth 1,8,64,1024` compare to `tp-pool`" from.
+`vc-x1 validate` passes.
 
 #### Ladder
 
 - [feat: clearer tp_matrix counters and a tool map opening][1] (done)
 - [refactor: drop the cordyceps Inconsistent count][2] (done)
-- [refactor: rename fills to x-core cache-line fills][3]
-- [docs: tp_matrix README maps the tools against each other][4]
-- [feat: clearer tp_matrix counters and a tool map closing][5]
+- [refactor: xfills label and one tp-matrix table][3] (done)
+- [feat: tp-pool runs for a duration][4]
+- [docs: tp_matrix README maps the tools against each other][5]
+- [feat: clearer tp_matrix counters and a tool map closing][6]
 
 #### Deliberation
 
@@ -70,8 +72,21 @@ compare to `tp-pool`" from. `vc-x1 validate` passes.
     on the stub and reads `Empty`, so pool=1 is 0 by construction.
   - `tests/cordyceps_mpsc.rs` keeps its count, since observing the window is that test's point.
 - The name is the user's, x-core cache-line fills, over "cross cache-line fills" and "line
-  transfers". The column labels grow and the tables widen with them. The `FillCounts` fields and the
-  `ZEN2_FILLS_*` constants keep the perf event's names, since they name the event, not the reading.
+  transfers", and the header is `xfills`, the full name in a legend: the full name as a header
+  widened `tp-matrix`'s tables past reading. The `FillCounts` fields and the `ZEN2_FILLS_*`
+  constants keep the perf event's names, since they name the event, not the reading.
+- A legend for every column, not only `xfills`, the user's call on reading the long header: the
+  banner line that defined three terms had grown past a terminal's width, and a legend under the
+  table travels with a pasted table.
+  - Full explanations behind `-v`, the user's call after a terse always-on legend read too clipped:
+    the wording that explains a column is too long to print on every run, and wrapped to at most
+    80 columns it reads as prose under a 150-column table.
+- One `tp-matrix` table, folded into the rename rung: the spin table repeated the key columns and
+  `xfills/RT`, and each spin and att breaks down the recv beside it, so trip order puts each wait
+  next to its phase. About 150 columns wide against two tables of 120.
+- `tp-pool` takes `-d` in its own rung, inserted on the user's ask on 2026-09-14: a count where the
+  other tools take a duration surprised. `--count` is replaced rather than kept beside it, and the
+  default is 0.1s, near the old million-message runtime.
 - The mpsc-v0 skip stays: its floor of 2 is v0's protocol (`src/mpsc/v0/mod.rs`), and mpsc-v1 is the
   flavor that runs depth 1, so only the message changes.
 - No `-dev` rename: the tool binaries are the workspace's, installed by hand, and the root crate's
@@ -97,10 +112,32 @@ enqueue a caught-up consumer meets, as a separate figure.
   - The consumer waits on `Inconsistent` as on `Empty`, uncounted, so the window's cost shows in
     ns/msg as a ring consumer's polls do.
 
-##### refactor: rename fills to x-core cache-line fills
+##### refactor: xfills label and one tp-matrix table
 
-Rename the fill columns, banners, help text, and README prose of the four tools, and reword the
-mpsc-v0 skip to name its floor and mpsc-v1.
+The tools' fill columns were labeled by the perf event, so a reader had to know the event to read
+the number, their meanings lived in one banner line past a terminal's width, `tp-matrix` split one
+row of measurements across two tables, and the mpsc-v0 skip named a floor without saying what it
+was or what runs below it.
+
+* The label named the counter, not the reading.
+  - The columns read `xfills`, and `XFILLS_MEANING` defines it once for the four tools: cache lines
+    pulled into a core from another core's cache, near 0 when the threads share a core's caches.
+    Code identifiers keep the event's vocabulary.
+* Column meanings were packed into the banner, and some columns had none.
+  - `-v` prints a markdown list under each table, one item per column, wrapped to the table's width
+    within 60 to 80 columns, and the line under the banner names `-v`, so a default run stays the
+    tables alone and a pasted table can carry its key.
+* `tp-matrix`'s spin table repeated its phase table's key columns.
+  - One table in trip order, each recv followed by the spin and polls inside it.
+* The skip line did not say which depth the flavor needs.
+  - `Flavor::floor_note` states the floor, and for mpsc-v0 names mpsc-v1 as the flavor that runs
+    depth 1, so the three tools that skip share one wording.
+
+##### feat: tp-pool runs for a duration
+
+`tp-pool` alone of the tools takes a message count where the others take `-d`. Replace `--count`
+with `-d/--duration`, default 0.1s, the producer ending the cell with a `STOP` sequence number as
+`tp-stream` does, and report ns/msg and xfills/msg over the messages moved.
 
 ##### docs: tp_matrix README maps the tools against each other
 
@@ -315,7 +352,8 @@ _None._
 
 [1]: #feat-clearer-tp_matrix-counters-and-a-tool-map-opening
 [2]: #refactor-drop-the-cordyceps-inconsistent-count
-[3]: #refactor-rename-fills-to-x-core-cache-line-fills
-[4]: #docs-tp_matrix-readme-maps-the-tools-against-each-other
-[5]: #feat-clearer-tp_matrix-counters-and-a-tool-map-closing
+[3]: #refactor-xfills-label-and-one-tp-matrix-table
+[4]: #feat-tp-pool-runs-for-a-duration
+[5]: #docs-tp_matrix-readme-maps-the-tools-against-each-other
+[6]: #feat-clearer-tp_matrix-counters-and-a-tool-map-closing
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies

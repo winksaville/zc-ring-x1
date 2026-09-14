@@ -4,12 +4,13 @@
 //!
 //! Successor of the repo's earlier `tp_roundtrip` example, plus
 //! in-process fill counters: each flavor's report ends with a
-//! `fills` line (cross-core cache-line fills per round trip)
-//! where the platform provides counters.
+//! `fill counters` line (xfills per round trip) where the
+//! platform provides counters, and a legend for it closes the
+//! run.
 
 use clap::Parser;
 
-use tp_matrix::{FLAVORS, Flavor, run_cell};
+use tp_matrix::{FLAVORS, Flavor, XFILLS_MEANING, print_legend, run_cell};
 use tp_runner::{CommonArgs, parse_pin, report};
 use tprobe::fmt::fmt_commas;
 
@@ -68,13 +69,21 @@ struct Cli {
 
     #[command(flatten)]
     common: CommonArgs,
+
+    /// Print a legend after the run explaining the fill counters
+    /// line
+    #[arg(short = 'v', long)]
+    verbose: bool,
 }
 
 /// Entry point: banner, run the requested flavors, print the
-/// per-probe reports + fills line.
+/// per-probe reports + fill counters line.
 fn main() {
     let cli = Cli::parse();
     println!("{TOP_ABOUT}");
+    if !cli.verbose {
+        println!("-v for a fill counters legend");
+    }
     let cfg = cli.common.to_cfg(cli.pin);
     let flavors: &[Flavor] = match cli.flavor {
         FlavorArg::SpscV0 => &[Flavor::SpscV0],
@@ -88,8 +97,9 @@ fn main() {
         for &depth in &cfg.depths {
             if depth < flavor.min_depth() {
                 println!(
-                    "{} round trip [depth={depth}]: skipped, below the flavor's floor\n",
-                    flavor.as_str()
+                    "{} round trip [depth={depth}]: skipped, {}\n",
+                    flavor.as_str(),
+                    flavor.floor_note()
                 );
                 continue;
             }
@@ -97,15 +107,31 @@ fn main() {
             report(flavor.as_str(), &cfg, depth, res.probes);
             match &res.fills {
                 Some(f) => println!(
-                    "  fills: lcl_cache={} ({:.3}/RT)  lcl_l2={}  lcl_dram={}  [RTs={}]\n",
+                    "  fill counters: lcl_cache={} ({:.3} xfills/RT)  lcl_l2={}  lcl_dram={}  [RTs={}]\n",
                     fmt_commas(f.lcl_cache),
                     f.lcl_cache as f64 / res.rts.max(1) as f64,
                     fmt_commas(f.lcl_l2),
                     fmt_commas(f.lcl_dram),
                     fmt_commas(res.rts),
                 ),
-                None => println!("  fills: unavailable\n"),
+                None => println!("  fill counters: unavailable\n"),
             }
         }
     }
+    if !cli.verbose {
+        return;
+    }
+    print_legend(
+        80,
+        &[
+            ("lcl_cache", "demand fills served from another core's cache"),
+            (
+                "xfills/RT",
+                &format!("{XFILLS_MEANING}, lcl_cache per round trip"),
+            ),
+            ("lcl_l2", "demand fills served from the core's own L2"),
+            ("lcl_dram", "demand fills served from local DRAM"),
+            ("RTs", "round trips completed in the duration"),
+        ],
+    );
 }

@@ -45,6 +45,48 @@ use tprobe::TProbe;
 use tprobe::ticks;
 use zc_ring_x1::CACHE_LINE_SIZE;
 
+/// The `xfills` legend entry's meaning, shared by every tool
+/// that prints the column.
+pub const XFILLS_MEANING: &str = "x-core cache-line fills: cache lines pulled into a core \
+     from another core's cache, near 0 when the threads share a core's caches, as SMT \
+     siblings do";
+
+/// The `placement` legend entry's meaning, shared by the tools
+/// that sweep placements.
+pub const PLACEMENT_MEANING: &str = "the CPUs the two threads are pinned to and how they \
+     share caches: CCX two cores on one L3, x-CCX cores on different L3s, SMT one core's two \
+     hardware threads sharing its L1 and L2, or unpinned";
+
+/// The narrowest a legend wraps to, so a narrow table's legend
+/// stays readable.
+const LEGEND_MIN_WIDTH: usize = 60;
+
+/// The widest a legend wraps to, so a wide table's legend reads
+/// as prose.
+const LEGEND_MAX_WIDTH: usize = 80;
+
+/// Print a column legend, one markdown list item per column,
+/// `- `name`: meaning`, each wrapped at word boundaries to
+/// `width`, clamped to [`LEGEND_MIN_WIDTH`] and
+/// [`LEGEND_MAX_WIDTH`], with continuation
+/// lines indented two spaces so the item stays one list item.
+pub fn print_legend(width: usize, entries: &[(&str, &str)]) {
+    let width = width.clamp(LEGEND_MIN_WIDTH, LEGEND_MAX_WIDTH);
+    for (name, meaning) in entries {
+        let mut line = format!("- `{name}`:");
+        for word in meaning.split_whitespace() {
+            if line.len() + 1 + word.len() > width {
+                println!("{line}");
+                line = format!("  {word}");
+            } else {
+                line.push(' ');
+                line.push_str(word);
+            }
+        }
+        println!("{line}");
+    }
+}
+
 // The runner's line-aligned regions must be aligned the way
 // the rings want them.
 const _: () = assert!(LINE_BYTES == CACHE_LINE_SIZE);
@@ -103,6 +145,15 @@ impl Flavor {
         match self {
             Flavor::MpscV0 => 2,
             _ => 1,
+        }
+    }
+
+    /// Why a depth below [`Flavor::min_depth`] is skipped, for
+    /// the skip lines.
+    pub fn floor_note(self) -> String {
+        match self {
+            Flavor::MpscV0 => "mpsc-v0 needs depth >= 2, mpsc-v1 runs depth 1".to_string(),
+            _ => format!("{} needs depth >= {}", self.as_str(), self.min_depth()),
         }
     }
 }
@@ -167,7 +218,7 @@ impl Fills {
             }
             (r, _, _) => {
                 if let Err(e) = r {
-                    eprintln!("note: fill counters unavailable ({e}); fills/RT will be absent");
+                    eprintln!("note: fill counters unavailable ({e}); xfills will read -");
                 }
                 None
             }
