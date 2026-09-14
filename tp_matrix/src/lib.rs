@@ -589,7 +589,7 @@ pub struct StreamResult {
 
 /// Messages between the producer's wall-clock checks, as
 /// `drive` spaces its checks.
-const STREAM_CHECK_EVERY: u64 = 4096;
+pub(crate) const STREAM_CHECK_EVERY: u64 = 4096;
 
 /// Run one streaming cell: open the fill counters, stream a
 /// counter for `dur` at `flavor` and ring `depth` from a

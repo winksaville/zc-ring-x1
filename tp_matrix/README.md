@@ -125,8 +125,9 @@ building the cell and worth knowing before comparing runs:
 The two matrices above write the payload into the ring's slot.
 The messaging layer's loop is the other shape: take a message
 from the pool, fill it, push its reference, receive it,
-process it, return it to the pool. `tp-pool` runs that loop a
-fixed count of messages per cell over the descriptor rings,
+process it, return it to the pool. `tp-pool` runs that loop
+for a duration per cell, `-d` as in the other tools, over the
+descriptor rings,
 `spsc-v2` and `mpsc-v1` carrying a `Desc`, and over cordyceps's
 `MpscQueue`, Vyukov's intrusive MPSC, linked through the same
 pool's buffers, so the queue is the only variable between the
@@ -138,8 +139,8 @@ throttling first, and the cordyceps row, unbounded, has no
 depth.
 
 ```sh
-$ tp-pool                                  # pools 1,100,1000; depths 1,8,64,1024; 1M messages; median of 3
-$ tp-pool --pool 1,10,100 --depth 1,1024 --count 200000 --repeat 5
+$ tp-pool                                  # pools 1,100,1000; depths 1,8,64,1024; 0.1 s a run; median of 3
+$ tp-pool --pool 1,10,100 --depth 1,1024 -d 0.5 --repeat 5
 tp-pool 0.1.0 - run the pool-message sweep, one table per placement
 ...
 0,3 x-CCX: ns/msg

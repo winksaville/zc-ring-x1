@@ -41,7 +41,7 @@ iiac-perf.
 
 #### Acceptance check
 
-`tp-pool --count 200000 --repeat 1` prints no `Inconsistent` line, with two blank lines between
+`tp-pool -d 0.1 --repeat 1` prints no `Inconsistent` line, with two blank lines between
 placements. `tp-matrix`, `tp-stream`, `tp-pool`, and `tp-cell` label the fill figure `xfills` and
 print, under `-v`, a legend naming every column they print, and `tp-matrix` prints one table. A
 `tp-matrix --depth 1` run's mpsc-v0 skip line names mpsc-v1. The tp_matrix README has a section a
@@ -53,7 +53,7 @@ reader can answer "how does `tp-matrix --depth 1,8,64,1024` compare to `tp-pool`
 - [feat: clearer tp_matrix counters and a tool map opening][1] (done)
 - [refactor: drop the cordyceps Inconsistent count][2] (done)
 - [refactor: xfills label and one tp-matrix table][3] (done)
-- [feat: tp-pool runs for a duration][4]
+- [feat: tp-pool runs for a duration][4] (done)
 - [docs: tp_matrix README maps the tools against each other][5]
 - [feat: clearer tp_matrix counters and a tool map closing][6]
 
@@ -135,9 +135,17 @@ was or what runs below it.
 
 ##### feat: tp-pool runs for a duration
 
-`tp-pool` alone of the tools takes a message count where the others take `-d`. Replace `--count`
-with `-d/--duration`, default 0.1s, the producer ending the cell with a `STOP` sequence number as
-`tp-stream` does, and report ns/msg and xfills/msg over the messages moved.
+`tp-pool` alone of the tools took a message count where the others take `-d`, so a sweep's length
+and a cell's figure were set differently from the tools beside it.
+
+* A cell ran a fixed count of messages.
+  - The producer checks the clock every `STREAM_CHECK_EVERY` messages, as `tp-stream`'s producer
+    does, and after the duration sends one more pool message whose sequence number is `STOP`. The
+    consumer frees it and returns the count it received, so every cell ends with the pool whole.
+  - `-d/--duration` replaces `--count`, default 0.1s, and ns/msg and xfills/msg divide by the
+    messages moved.
+* The median run was picked by elapsed time, which varies with the messages a run moves.
+  - The median is by ns per message.
 
 ##### docs: tp_matrix README maps the tools against each other
 
@@ -162,6 +170,20 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 `###` heading, so a citation is a link to its anchor. Long-tail entries live in
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
+
+### Paired columns in the tp_matrix tables
+
+`tp-matrix` prints each phase cell as `mean/stdev` in one column, and `tp-pool` prints two tables per
+placement with the same rows and columns, `ns/msg` and `xfills/msg`. Both would read better as one
+heading over two columns. Markdown has one header row and no colspan, and the three layouts weighed
+on 2026-09-13 each fell short:
+
+- Pair names in the one header row, `m.send` then `±`, `1 ns` then `1 xf`: valid markdown, but the
+  pairing is carried by names alone.
+- A group row: group names in the header and sub-names as the first body row, which a markdown
+  renderer shows as a data row.
+- Plain aligned text with a spanning heading: reads best in a terminal, but a paste is no longer a
+  markdown table.
 
 ### Segmented queue SPSC v3
 

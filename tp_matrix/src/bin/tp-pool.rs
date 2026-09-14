@@ -1,10 +1,12 @@
 //! tp-pool: run the pool-message loop over every placement,
-//! flavor, ring depth, and pool size, a fixed count of messages
-//! per cell, and emit one ns-per-message table per placement,
+//! flavor, ring depth, and pool size, each cell for a duration,
+//! and emit one ns-per-message table per placement,
 //! the pool sizes as columns and the flavor-by-depth rows, with
 //! the fill counters beside it. The descriptor rings sweep
 //! their depth, and the cordyceps row, an unbounded intrusive
 //! queue, has none.
+
+use std::time::Duration;
 
 use clap::Parser;
 
@@ -54,9 +56,15 @@ struct Cli {
     )]
     depth: Vec<u32>,
 
-    /// Messages per cell
-    #[arg(long, value_name = "N", default_value_t = 1_000_000)]
-    count: u64,
+    /// Wall-clock seconds per cell run
+    #[arg(
+        short = 'd',
+        long = "duration",
+        value_name = "SECS",
+        default_value_t = 0.1,
+        value_parser = parse_duration
+    )]
+    duration: f64,
 
     /// Runs per cell, the median reported
     #[arg(long, value_name = "N", default_value_t = 3, value_parser = parse_repeat)]
@@ -76,6 +84,15 @@ fn parse_pool(s: &str) -> Result<u32, String> {
         return Err("pool size must be at least 1".to_string());
     }
     Ok(n)
+}
+
+/// clap value parser for `--duration`: seconds above zero.
+fn parse_duration(s: &str) -> Result<f64, String> {
+    let secs: f64 = s.parse().map_err(|e| format!("{s}: {e}"))?;
+    if !(secs > 0.0 && secs.is_finite()) {
+        return Err("duration must be a number of seconds above 0".to_string());
+    }
+    Ok(secs)
 }
 
 /// clap value parser for `--repeat`: a count from 1 up.
@@ -116,20 +133,20 @@ fn rows(depths: &[u32]) -> Vec<Row> {
     rows
 }
 
-/// Run one cell `repeat` times and keep the median by elapsed
-/// time, its fill counters with it.
+/// Run one cell `repeat` times and keep the median by ns per
+/// message, its fill counters with it.
 fn median_cell(
     flavor: PoolFlavor,
     pin: Option<(usize, usize)>,
     pool_size: u32,
     depth: u32,
-    count: u64,
+    dur: Duration,
     repeat: usize,
 ) -> PoolResult {
     let mut runs: Vec<PoolResult> = (0..repeat)
-        .map(|_| run_pool_cell(flavor, pin, pool_size, depth, count))
+        .map(|_| run_pool_cell(flavor, pin, pool_size, depth, dur))
         .collect();
-    runs.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+    runs.sort_by(|a, b| ns_per_msg(a).total_cmp(&ns_per_msg(b)));
     runs.swap_remove(runs.len() / 2)
 }
 
@@ -170,12 +187,17 @@ fn print_table(headers: &[String], rows: &[Vec<String>]) -> usize {
     sep.len()
 }
 
+/// A run's elapsed ns over the messages it moved.
+fn ns_per_msg(res: &PoolResult) -> f64 {
+    res.secs * 1e9 / res.msgs.max(1) as f64
+}
+
 /// `xfills/msg` cell: 3 decimals, or 4 when the value is tiny,
 /// `-` when counters were unavailable.
-fn fills_cell(res: &PoolResult, count: u64) -> String {
+fn fills_cell(res: &PoolResult) -> String {
     match &res.fills {
         Some(f) => {
-            let v = f.lcl_cache as f64 / count.max(1) as f64;
+            let v = f.lcl_cache as f64 / res.msgs.max(1) as f64;
             if v < 0.01 {
                 format!("{v:.4}")
             } else {
@@ -194,9 +216,9 @@ fn main() {
     let placements = discover_placements();
     let rows = rows(&cli.depth);
     println!(
-        "{} cells, {} messages each, median of {} runs{}",
+        "{} cells, {}s each, median of {} runs{}",
         placements.len() * rows.len() * cli.pool.len(),
-        cli.count,
+        cli.duration,
         cli.repeat,
         if cli.verbose { "" } else { "; -v for a legend" },
     );
@@ -229,11 +251,11 @@ fn main() {
                     *pin,
                     pool_size,
                     row.depth.unwrap_or(1),
-                    cli.count,
+                    Duration::from_secs_f64(cli.duration),
                     cli.repeat,
                 );
-                ns_row.push(format!("{:.1}", res.secs * 1e9 / cli.count.max(1) as f64));
-                fill_row.push(fills_cell(&res, cli.count));
+                ns_row.push(format!("{:.1}", ns_per_msg(&res)));
+                fill_row.push(fills_cell(&res));
             }
             ns_rows.push(ns_row);
             fill_rows.push(fill_row);
@@ -260,7 +282,7 @@ fn main() {
             ),
             (
                 "<placement>: ns/msg",
-                "a table whose cells are elapsed ns over messages at the row's flavor and depth and the column's pool size, the median of the runs by elapsed time",
+                "a table whose cells are elapsed ns over messages moved at the row's flavor and depth and the column's pool size, the median of the runs",
             ),
             (
                 "<placement>: xfills/msg",
