@@ -28,6 +28,8 @@ pub(super) struct ConsumerState {
     pub(super) resume: [u32; MAX_SEGMENTS as usize],
     /// The give-back word's value: this side is its only writer.
     pub(super) given: u32,
+    /// Segment switches so far, counted on the switch path only.
+    pub(super) switches: u64,
 }
 
 /// The consuming endpoint: `reserve_slot_with` the oldest
@@ -52,9 +54,23 @@ impl<'a> Consumer<'a> {
                 pos: 0,
                 resume: [0; MAX_SEGMENTS as usize],
                 given: 0,
+                switches: 0,
             },
             _region: PhantomData,
         }
+    }
+
+    /// Segment switches this consumer has made: how many MOVED
+    /// messages it has released. Once it has read everything the
+    /// producer sent, it equals the producer's count.
+    pub fn switches(&self) -> u64 {
+        self.st.switches
+    }
+
+    /// The segment this consumer reads from, `0` to the ring's
+    /// segment count less one.
+    pub fn segment(&self) -> u32 {
+        self.st.cur
     }
 
     /// Reserve the oldest unread slot as a `&T`, applying an
@@ -155,6 +171,7 @@ impl<T> ReadSlot<'_, T> {
             segs.given().store(st.given, Ordering::Release);
             st.cur = k;
             st.pos = st.resume[k as usize];
+            st.switches += 1;
         }
     }
 }

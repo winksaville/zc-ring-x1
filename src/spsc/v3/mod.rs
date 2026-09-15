@@ -553,6 +553,130 @@ mod tests {
         assert!(prod.st.pos < start && cons.st.pos < start);
     }
 
+    /// One cache line of heap backing store, so a `Vec` of them is
+    /// a line-aligned region of any size.
+    #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Clone)]
+    #[repr(C, align(64))]
+    struct Line([u8; CACHE_LINE_SIZE]);
+
+    /// The segment counts and depths the matrix covers: all of
+    /// them, or under Miri a corner, its interpreter being slow.
+    fn matrix() -> (Vec<u32>, Vec<u32>) {
+        if cfg!(miri) {
+            (vec![1, 2, 32], vec![1, 8])
+        } else {
+            ((1..=MAX_SEGMENTS).collect(), vec![1, 8, 64, 1024])
+        }
+    }
+
+    /// Run `f` on a ring of `count` segments of `depth` one-line
+    /// slots over a pool holding exactly those segments.
+    fn with_ring(count: u32, depth: u32, f: impl FnOnce(Producer<'_>, Consumer<'_>)) {
+        let buf = segment_size(64, depth);
+        let bytes = size_of::<PoolHeader>() as u64 + buf * count as u64;
+        let mut store = vec![Line([0; CACHE_LINE_SIZE]); bytes.div_ceil(64) as usize];
+        let mut pool = Pool::init(store.as_mut_slice().as_mut_bytes(), buf as u32, count).unwrap();
+        let (prod, cons) = Ring::init(&mut pool, 64, depth, count).unwrap().split();
+        f(prod, cons);
+    }
+
+    #[test]
+    fn every_count_and_depth_fills_and_drains() {
+        // With the consumer idle the producer writes into every
+        // segment in turn, switching once between each pair, and
+        // the consumer follows it through the same switches.
+        let (counts, depths) = matrix();
+        for &count in &counts {
+            for &depth in &depths {
+                with_ring(count, depth, |mut prod, mut cons| {
+                    let total = (count * depth) as u64;
+                    let mut used = 1u32 << prod.segment();
+                    for i in 0..total {
+                        send(&mut prod, i, i + 1);
+                        used |= 1 << prod.segment();
+                    }
+                    assert_eq!(prod.reserve_slot_with::<Msg>(|_| false).err(), Some(Full));
+                    assert_eq!(
+                        used.count_ones(),
+                        count,
+                        "{count} segments at depth {depth}"
+                    );
+                    assert_eq!(prod.switches(), (count - 1) as u64);
+                    recv(&mut cons, 0, total);
+                    assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+                    assert_eq!(cons.switches(), prod.switches());
+                    assert_eq!(cons.segment(), prod.segment());
+                    assert_eq!(free_segments(&prod).count_ones(), count - 1);
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn every_count_and_depth_survives_uneven_bursts() {
+        // Bursts of every size up to the ring's capacity leave
+        // segments mid-lap, and after each drain both ends agree.
+        let (counts, depths) = matrix();
+        let rounds = if cfg!(miri) { 5 } else { 40 };
+        for &count in &counts {
+            for &depth in &depths {
+                with_ring(count, depth, |mut prod, mut cons| {
+                    let capacity = (count * depth) as u64;
+                    let mut next = 0u64;
+                    for round in 0..rounds {
+                        let n = 1 + (round * 7919) % capacity;
+                        send(&mut prod, next, next + n);
+                        recv(&mut cons, next, next + n);
+                        next += n;
+                        assert_eq!(cons.switches(), prod.switches());
+                        assert_eq!(free_segments(&prod).count_ones(), count - 1);
+                    }
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn every_count_and_depth_streams_across_threads() {
+        // A producer and a consumer on their own threads, both
+        // spinning: order holds and the switch counts agree.
+        let (counts, depths) = matrix();
+        let total: u64 = if cfg!(miri) { 50 } else { 10_000 };
+        for &count in &counts {
+            for &depth in &depths {
+                with_ring(count, depth, |mut prod, mut cons| {
+                    let (sent, seen) = std::thread::scope(|s| {
+                        let producer = s.spawn(move || {
+                            for i in 0..total {
+                                let mut slot =
+                                    prod.reserve_slot_with::<Msg>(crate::policy::spin).unwrap();
+                                slot.seq = i;
+                                slot.commit();
+                            }
+                            prod.switches()
+                        });
+                        let consumer = s.spawn(move || {
+                            for i in 0..total {
+                                let msg =
+                                    cons.reserve_slot_with::<Msg>(crate::policy::spin).unwrap();
+                                assert_eq!(msg.seq, i);
+                                msg.release();
+                            }
+                            cons.switches()
+                        });
+                        (producer.join().unwrap(), consumer.join().unwrap())
+                    });
+                    assert_eq!(sent, seen, "{count} segments at depth {depth}");
+                    if depth == 1 && count > 1 {
+                        // Every commit at depth 1 finds its one
+                        // slot taken, so it switches when it can.
+                        assert!(sent > 0);
+                    }
+                });
+            }
+        }
+    }
+
     /// The two-thread stream through `count` segments of depth
     /// `cap`, `total` messages, spinning on both ends.
     fn threaded(cap: u32, count: u32, total: u64) {

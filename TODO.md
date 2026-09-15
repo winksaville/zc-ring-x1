@@ -79,8 +79,8 @@ at segment depth 1 while the producer runs ahead. `vc-x1 validate` passes.
 - [feat: pool buffers as bytes][2] (done)
 - [feat: spsc v3 segment chain][3] (done)
 - [fix: the two tests Miri rejects][7] (done)
+- [test: spsc v3 across segment counts and depths][8] (done)
 - [feat: spsc v3 in the measurement tools][4]
-- [perf: sweep the segment size][5]
 - [feat: segmented queue SPSC v3 closing][6]
 
 #### Deliberation
@@ -123,6 +123,13 @@ at segment depth 1 while the producer runs ahead. `vc-x1 validate` passes.
   Miri while checking v3 found two failures that predate it. They are fixed in this cycle rather
   than logged, and after v3, since they are independent of it, so v3 pushes first with nothing set
   aside.
+- v3's fast path tuned after this cycle, the user's call on 2026-09-15: the tools showed v3 three
+  times v2 with no switch in play, and the first cause found, a copy per message, is v3 code, not
+  tool code. This cycle makes multiple segments work, and a Todo entry holds the tuning.
+- Verification before measurement, the user's call on 2026-09-15: a test rung runs every segment
+  count at depths 1 to 1024 and shows the switches before the tools measure cost, since passing
+  tests over a few shapes are not seeing it work. It is inserted ahead of the tools rung, whose
+  edits wait in `tmp/tools-rung.patch`, and the old sweep rung folds into the tools rung.
 - MPSC will be its own implementation, and what v3 teaches goes into the design note for it.
   - Carried to MPSC: producers racing to take a segment need CAS where v3's single producer does
     not, a segment must be sealed before the switch so no late claim lands in it, and a slow
@@ -206,16 +213,43 @@ the library never passed a whole Miri run.
   floor of 2 keeps its seq values from coinciding, and v0 is left unchanged as the historical
   sibling.
 
+##### test: spsc v3 across segment counts and depths
+
+Multiple segments were shown working only by tests nobody watched, over a few chosen shapes.
+
+* Nothing showed a segment switch happening.
+  - Each endpoint counts its switches, on the switch path only, behind `switches()`, and names the
+    segment it is in behind `segment()`.
+* The tests covered a handful of segment counts and depths.
+  - Three tests run every count from 1 to 32 at depths 1, 8, 64, and 1024: filling every segment
+    with the consumer idle and draining, bursts of every size up to capacity, and a two-thread
+    stream. Order holds, both ends count the same switches, and a filled ring used every segment.
+    Under Miri they run a corner of the matrix, and pass.
+* Something to watch.
+  - `examples/spsc_v3_segments.rs` runs the same matrix and prints two tables. Filled, a ring of n
+    segments used all n with n - 1 switches at every depth. Streaming 100,000 messages, depth 1
+    switched on nearly every message once there were four or more segments, and depth 8 and up a
+    few hundred times per run.
+  - Its nanoseconds are a hundred thousand messages on unpinned threads, a sign of life rather
+    than a measurement, which the tools rung makes.
+
 ##### feat: spsc v3 in the measurement tools
 
-`spsc-v3` as a flavor in `tp-cell`, `tp-matrix`, `tp-stream`, and the demo's sweep, with a segment
-count knob. Depth stays the segment depth, so v3 and v2 compare at the same depth.
+The tools measured every ring but v3, so nothing could say what v3 costs against v2.
 
-##### perf: sweep the segment size
-
-Segment depth from 1 up across the three pinned placements, the round trip for a consumer that keeps
-up and the stream for a producer that runs ahead, into a new design-note section with the "carried
-to MPSC" list and the verdict on the design, and the 7600X pasted in by the user.
+* No tool could build a ring of segments.
+  - `tp-cell`, `tp-matrix`, `tp-stream`, and the demo's depth sweep run `spsc-v3`, each ring over a
+    pool holding exactly its segments. One macro per tool builds either a single-region ring or a
+    segmented one, so the cell bodies stay shared.
+  - `--segments N`, 1 to 32 and default 2, sets the count in the three tools, and the demo uses 2.
+    Depth is each segment's, and banners and legends say so.
+* What the first runs showed.
+  - Where no switch happens, the demo's one-thread loop, v3 ran about 24 ns per message against
+    v2's 7.5, so the cost is on v3's fast path, not in switching. That goes to a Todo entry.
+* The sweep folds in here: segment depth from 1 up across the three pinned placements, the round
+  trip for a consumer that keeps up and the stream for a producer that runs ahead, into a new
+  design-note section with the "carried to MPSC" list and the verdict on the design, and the 7600X
+  pasted in by the user.
 
 ##### feat: segmented queue SPSC v3 closing
 
@@ -262,6 +296,20 @@ or `T`s at offsets inside it. `alloc::<T>()` stays as `alloc(size_of::<T>())` pl
   sub-pool a buffer came from, and `free` already returns it there.
 - Buffers start on a cache line, so any `T` aligned to at most a line fits any sub-pool.
 - The user's direction on 2026-09-14, raised while settling how v3's segments come from the pool.
+
+### SPSC v3 fast path
+
+With the consumer keeping up, `spsc::v3` should cost what v2 costs, and on 2026-09-15 it cost about
+three times as much where no segment switch happens, the demo's one-thread loop reading 24 ns per
+message against v2's 7.5.
+
+- Found: `WriteSlot::commit` and `ReadSlot::release` begin `let segs = st.segs;`, copying the ring's
+  whole segment table, about 280 bytes, on every message. `let segs = &st.segs;` in both took the
+  same-CCX stream at depth 64 from 18.4 to 10.7 ns per message, against v2's 4.5 to 5.7, and the SMT
+  pair from 21.8 to 14.3, against 8.2.
+- Apply that, then find what keeps v3 behind v2 on the fast path, measured against v2 at each step.
+- The user's call on 2026-09-15, deferred from the segmented queue cycle so that cycle makes
+  multiple segments work first.
 
 ### SPSC v3 attach
 
@@ -404,7 +452,7 @@ _None._
 [2]: #feat-pool-buffers-as-bytes
 [3]: #feat-spsc-v3-segment-chain
 [4]: #feat-spsc-v3-in-the-measurement-tools
-[5]: #perf-sweep-the-segment-size
 [6]: #feat-segmented-queue-spsc-v3-closing
 [7]: #fix-the-two-tests-miri-rejects
+[8]: #test-spsc-v3-across-segment-counts-and-depths
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies

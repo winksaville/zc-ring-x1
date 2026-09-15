@@ -30,6 +30,8 @@ pub(super) struct ProducerState {
     /// The slot at `pos` was seen claimable and so still is: only
     /// the producer turns claimable into anything else.
     pub(super) claimable: bool,
+    /// Segment switches so far, counted on the switch path only.
+    pub(super) switches: u64,
 }
 
 /// The producing endpoint: `reserve_slot_with`, write in place,
@@ -56,9 +58,22 @@ impl<'a> Producer<'a> {
                 resume: [0; MAX_SEGMENTS as usize],
                 taken: 1,
                 claimable: false,
+                switches: 0,
             },
             _region: PhantomData,
         }
+    }
+
+    /// Segment switches this producer has made: how many of its
+    /// commits carried a message into a new segment.
+    pub fn switches(&self) -> u64 {
+        self.st.switches
+    }
+
+    /// The segment this producer writes into, `0` to the ring's
+    /// segment count less one.
+    pub fn segment(&self) -> u32 {
+        self.st.cur
     }
 
     /// Reserve the next free slot as a `&mut T`, applying an
@@ -175,6 +190,7 @@ impl<T> WriteSlot<'_, T> {
                 st.resume[st.cur as usize] = next;
                 st.cur = k;
                 st.pos = st.resume[k as usize];
+                st.switches += 1;
             }
         }
         slot.store(word, Ordering::Release);
