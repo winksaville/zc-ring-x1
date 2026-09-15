@@ -52,7 +52,7 @@ validate` passes.
 #### Ladder
 
 - [feat: segmented queue MPSC v2 opening][1] (done)
-- [docs: mpsc v2 design and prediction][2]
+- [docs: mpsc v2 design and prediction][2] (done)
 - [feat: mpsc v2 segment chain][3]
 - [test: mpsc v2 across segment counts, depths, and producers][4]
 - [feat: mpsc v2 in the measurement tools][5]
@@ -101,8 +101,21 @@ block, file the two follow-on Todo entries, and bump the version to 0.17.0-0.
 
 ##### docs: mpsc v2 design and prediction
 
-The design note has v3's list of what MPSC needs and no MPSC v2 section, so the protocol is settled
-in prose before code, with the prediction on record.
+The design note had v3's list of what MPSC needs and no MPSC v2 section, so the protocol was settled
+in prose before code.
+
+* The three carried problems, a CAS to take a segment, a seal before the switch, and reclamation
+  under a slow producer, had no MPSC answer.
+  - The new section
+    [MPSC v2: ring of segments](notes/ring-buffer-design.md#mpsc-v2-ring-of-segments) resolves
+    them into the packed claim word, with the switch, the consumer's second look, reuse, the API,
+    trust, and the alternative weighed.
+* v3's second look was retired for a race, and v2 needs one.
+  - The section says why the race does not reach v2: the seal is a header word the consumer never
+    stores to, read on the empty path only.
+* No prediction was on record.
+  - Within run noise of v1 from depth 2 up, within twice v1 at depth 1, and the switch's cost
+    itemized, for the tools rung to check.
 
 ##### feat: mpsc v2 segment chain
 
