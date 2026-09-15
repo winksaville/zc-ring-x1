@@ -64,16 +64,19 @@ pub(crate) const TOMBSTONE: u32 = 1 << 31;
 const _: () = assert!(SEG_SHIFT + MAX_SEGMENTS.trailing_zeros() <= 31);
 
 /// The word naming segment `seg` and position `pos`.
+#[inline]
 fn word(seg: u32, pos: u32) -> u32 {
     (seg << SEG_SHIFT) | seq_of(pos)
 }
 
 /// The segment a word names.
+#[inline]
 fn word_seg(w: u32) -> u32 {
     (w >> SEG_SHIFT) & SEG_MASK
 }
 
 /// The position a word names.
+#[inline]
 fn word_pos(w: u32) -> u32 {
     w & SEQ_MASK
 }
@@ -152,6 +155,7 @@ struct Segments {
 impl Segments {
     /// The seq word of the slot at position `idx` in segment
     /// `seg`.
+    #[inline]
     fn seq(&self, seg: u32, idx: u32) -> &AtomicU32 {
         let slot = crate::slot_ptr(self.slots[seg as usize], idx, self.mask, self.slot_size);
         // SAFETY: seg < seg_count and the slot is in bounds of
@@ -162,6 +166,7 @@ impl Segments {
 
     /// The body of the slot at position `idx` in segment `seg`,
     /// behind its [`SLOT_HEADER_BYTES`].
+    #[inline]
     fn body(&self, seg: u32, idx: u32) -> *mut u8 {
         let slot = crate::slot_ptr(self.slots[seg as usize], idx, self.mask, self.slot_size);
         // SAFETY: SLOT_HEADER_BYTES < CACHE_LINE_SIZE <= slot_size,
@@ -170,6 +175,7 @@ impl Segments {
     }
 
     /// Segment `seg`'s header.
+    #[inline]
     fn header(&self, seg: u32) -> &SegmentHeader {
         // SAFETY: seg < seg_count, and the header is the front of
         // a buffer that lives as long as the pool region the ring
@@ -178,26 +184,31 @@ impl Segments {
     }
 
     /// Segment `seg`'s seal word.
+    #[inline]
     fn seal(&self, seg: u32) -> &AtomicU32 {
         &self.header(seg).seal
     }
 
     /// The claim word.
+    #[inline]
     fn claim(&self) -> &AtomicU32 {
         &self.header(0).claim
     }
 
     /// The in-use word.
+    #[inline]
     fn in_use(&self) -> &AtomicU32 {
         &self.header(0).in_use.in_use
     }
 
     /// The ring's count of producer switches.
+    #[inline]
     fn switches(&self) -> &AtomicU32 {
         &self.header(0).in_use.switches
     }
 
     /// Every segment's bit.
+    #[inline]
     fn all(&self) -> u32 {
         if self.seg_count == MAX_SEGMENTS {
             u32::MAX

@@ -48,8 +48,8 @@ const DEPTH: u32 = 64;
 /// The ring depths the sweep runs, DEPTH among them.
 const DEPTHS: [u32; 4] = [1, 2, 8, 64];
 
-/// Segments per ring in the sweep's spsc-v3 row, the depth being
-/// each segment's.
+/// Segments per ring in the sweep's spsc-v3 and mpsc-v2 rows, the
+/// depth being each segment's.
 const SEGMENTS: u32 = 2;
 
 /// The demo message: the sequence number the consumer
@@ -338,6 +338,36 @@ spsc_loops!(
 );
 spsc_loops!(spsc3_ring_one_msg_1t, spsc3_ring_one_msg_2t, segmented);
 
+/// Bind one MPSC ring's `$producer` and `$consumer`, one-line
+/// slots at `$depth`, its storage held in `$store` (and, for a
+/// ring of segments, its pool in `$pool`) so it outlives them.
+///
+/// - `single $ring, $size`: a ring over one region sized by
+///   `$size(slot_size, depth)`.
+/// - `segmented`: a v2 ring of [`SEGMENTS`] segments, each
+///   `$depth` slots, over a pool holding exactly those segments.
+macro_rules! mpsc_pair {
+    ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
+     single $ring:path, $size:path) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let mut $store = region($size(slot, $depth));
+        let ($producer, mut $consumer) = <$ring>::init($store.as_mut_bytes(), slot, $depth)
+            .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
+            .split();
+    };
+    ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr, segmented) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let buf = zc_ring_x1::mpsc::v2::segment_size(slot, $depth);
+        let mut $store = region(size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * SEGMENTS as u64);
+        let mut $pool = Pool::init($store.as_mut_bytes(), buf as u32, SEGMENTS)
+            .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
+        let ($producer, mut $consumer) =
+            zc_ring_x1::mpsc::v2::MpscRing::init(&mut $pool, slot, $depth, SEGMENTS)
+                .unwrap() // OK: the pool holds exactly the segments, sized by segment_size
+                .split();
+    };
+}
+
 /// Define the MPSC one-message loops over the ring at `$ring`,
 /// its region sized by `$size(slot_size, depth)`, the siblings
 /// of the SPSC loops at the same placements: `$one_t` moves
@@ -348,16 +378,11 @@ spsc_loops!(spsc3_ring_one_msg_1t, spsc3_ring_one_msg_2t, segmented);
 /// measuring what the MPSC protocol costs when you don't need
 /// multiple producers. Each returns elapsed seconds. The MPSC
 /// versions share the endpoint surface and differ by path, so
-/// one body serves both.
+/// one body serves them all.
 macro_rules! mpsc_loops {
-    ($one_t:ident, $two_t:ident, $ring:path, $size:path) => {
+    ($one_t:ident, $two_t:ident, $($pair:tt)+) => {
         fn $one_t(depth: u32) -> f64 {
-            use $ring as MpscRing;
-            let slot = CACHE_LINE_SIZE as u32;
-            let mut region = region($size(slot, depth));
-            let (producer, mut consumer) = MpscRing::init(region.as_mut_bytes(), slot, depth)
-                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
-                .split();
+            mpsc_pair!(producer, consumer, store, pool, depth, $($pair)+);
 
             let start = Instant::now();
             std::thread::scope(|s| {
@@ -384,12 +409,7 @@ macro_rules! mpsc_loops {
         }
 
         fn $two_t(pin: PinPair, depth: u32) -> f64 {
-            use $ring as MpscRing;
-            let slot = CACHE_LINE_SIZE as u32;
-            let mut region = region($size(slot, depth));
-            let (producer, mut consumer) = MpscRing::init(region.as_mut_bytes(), slot, depth)
-                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
-                .split();
+            mpsc_pair!(producer, consumer, store, pool, depth, $($pair)+);
 
             let start = Instant::now();
             std::thread::scope(|s| {
@@ -422,15 +442,16 @@ macro_rules! mpsc_loops {
 mpsc_loops!(
     mpsc_ring_one_msg_1t,
     mpsc_ring_one_msg_2t,
-    zc_ring_x1::mpsc::v0::MpscRing,
+    single zc_ring_x1::mpsc::v0::MpscRing,
     zc_ring_x1::mpsc::v0::mpsc_region_size
 );
 mpsc_loops!(
     mpsc1_ring_one_msg_1t,
     mpsc1_ring_one_msg_2t,
-    zc_ring_x1::mpsc::v1::MpscRing,
+    single zc_ring_x1::mpsc::v1::MpscRing,
     zc_ring_x1::mpsc::v1::mpsc_region_size
 );
+mpsc_loops!(mpsc2_ring_one_msg_1t, mpsc2_ring_one_msg_2t, segmented);
 
 /// Move COUNT messages (COUNT/2 per producer) from two
 /// producer threads into one consumer, the line the SPSC
@@ -743,7 +764,7 @@ struct StreamFlavor {
 
 /// The flavors the sweep runs, in table order, named `xpsc-vN`
 /// after their module paths.
-const STREAM_FLAVORS: [StreamFlavor; 6] = [
+const STREAM_FLAVORS: [StreamFlavor; 7] = [
     StreamFlavor {
         name: "spsc-v0",
         min_depth: 1,
@@ -780,6 +801,12 @@ const STREAM_FLAVORS: [StreamFlavor; 6] = [
         one_t: mpsc1_ring_one_msg_1t,
         two_t: mpsc1_ring_one_msg_2t,
     },
+    StreamFlavor {
+        name: "mpsc-v2",
+        min_depth: 1,
+        one_t: mpsc2_ring_one_msg_1t,
+        two_t: mpsc2_ring_one_msg_2t,
+    },
 ];
 
 /// Where a sweep row's threads sit.
@@ -811,7 +838,7 @@ fn depth_sweep(smt: PinPair, far: PinPair) {
     }
     let depth_list: Vec<String> = DEPTHS.iter().map(|d| d.to_string()).collect();
     println!(
-        "depth sweep: {} messages per cell, ns/msg at depths {}, spsc-v3 with {SEGMENTS} segments",
+        "depth sweep: {} messages per cell, ns/msg at depths {}, spsc-v3 and mpsc-v2 with {SEGMENTS} segments",
         commas(COUNT),
         depth_list.join(", ")
     );

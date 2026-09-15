@@ -74,6 +74,7 @@ const _: () = assert!(MAX_SEG_CAPACITY + 1 < SEQ_MASK);
 
 /// The seq value for free-running position `idx`, wrapped to
 /// [`SEQ_BITS`].
+#[inline]
 pub(crate) fn seq_of(idx: u32) -> u32 {
     idx & SEQ_MASK
 }

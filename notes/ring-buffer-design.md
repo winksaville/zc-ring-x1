@@ -1491,6 +1491,87 @@ until v2 matches it where no switch happens.
   read-modify-writes and the seal store, and the consumer one
   extra load, the give-back read-modify-write, and a cold
   segment.
+- **Measured (2026-09-15, 3900X, the rung `feat: mpsc v2 in
+  the measurement tools`, `tp-matrix` and `tp-stream` 1 s
+  cells at depths 1, 8, 64, and 1024, two segments, one
+  producer, each sweep run twice, and the demo's sweep)**. The
+  runs agreed within 10% but for the marked (`*`) cells, whose
+  means moved more than 15% between runs. The 7600X is not yet
+  run.
+  - Streaming, the producer running ahead: ns per message v1 /
+    v2, and v2's switches per message:
+
+    | 3900X     | d=1                   | d=8                  | d=64                 | d=1024               |
+    |-----------|----------------------:|---------------------:|---------------------:|---------------------:|
+    | 0,1 CCX   | 80.1* / 97.0 (0.993)  |  26.8 / 10.1 (0.000) |  21.8 / 14.5 (0.000) |  19.9 / 11.7 (0.000) |
+    | 0,3 x-CCX | 457.4 / 357.4 (0.682) | 102.5 / 31.3 (0.001) |  81.0 / 14.0 (0.000) |  90.3 / 17.3 (0.000) |
+    | 0,12 SMT  |  41.5 / 32.9 (0.731)  |  15.3 / 11.7 (0.000) |  15.1 / 11.8 (0.000) |  15.0 / 11.6 (0.000) |
+    | unpinned  |  91.7 / 98.6 (0.986)  |  27.1 / 10.3 (0.000) |  22.2 / 14.3 (0.000) |  20.4 / 11.4 (0.000) |
+
+  - The round trip, one message in flight so the consumer keeps
+    up: main's send and the worker's receive, means in ns, v1 /
+    v2, lines pulled per round trip, and v2's switches:
+
+    | placement | depth | m.send v1 / v2 | w.recv v1 / v2 | xfills/RT v1 / v2 | switches/RT |
+    |-----------|------:|---------------:|---------------:|------------------:|------------:|
+    | 0,1 CCX   |     1 |      9.0 / 9.0 |    82.5 / 89.5 |     8.136 / 4.016 |       0.000 |
+    | 0,1 CCX   |     8 |      8.7 / 9.1 |   89.7 / 106.8 |     6.590 / 3.070 |       0.000 |
+    | 0,1 CCX   |    64 |     8.7 / 10.1 |   84.7 / 112.0 |     5.970 / 2.787 |       0.000 |
+    | 0,1 CCX   |  1024 |     8.7 / 10.0 |   95.3 / 105.2 |     5.934 / 2.028 |       0.000 |
+    | 0,3 x-CCX |     1 |      8.6 / 9.3 |  253.1 / 201.5 |     8.144 / 4.005 |       0.000 |
+    | 0,3 x-CCX |    64 |      8.6 / 9.1 |  308.0 / 328.2 |     5.989 / 3.214 |       0.000 |
+    | 0,12 SMT  |     1 |     8.8 / 12.1 |    79.2 / 85.2 |   0.0004 / 0.0006 |       0.000 |
+    | 0,12 SMT  |    64 |     8.8 / 12.0 |    79.3 / 85.0 |   0.0006 / 0.0007 |       0.000 |
+
+  - The demo's one-thread loop, both ends on core 0, ns per
+    message at every depth: v1 10.1, v2 13.0.
+- **Readings**:
+  - The design does what it says. With the consumer keeping
+    up, the round trip switches 0.000 times at every depth,
+    depth 1 included, since a released slot is claimable and
+    v2 switches only at a full segment where v3 switches at
+    its look-ahead. Streaming at depth 8 and up, the producer
+    running ahead, it switches at most 0.001 times per
+    message, and at depth 1 on 0.68 to 0.99 of them.
+  - The first sweep had v2's send at half again v1's and its
+    one-thread loop at twice, and the cause was calls across
+    codegen units: the segment table's accessors, the seq
+    helper, and the word packers are small non-generic
+    functions in the parent module called from the producer
+    and consumer modules, real calls without `#[inline]`.
+    With the hints the tables above are what v2 costs, and
+    the one-thread loop's remaining 3 ns over v1 is not yet
+    found.
+  - The prediction holds for the send and fails for the
+    receive, and the stream beats it. Main's send matches
+    v1's within a nanosecond everywhere but the SMT pair,
+    where it costs 3 ns more. The worker's receive runs 5 to
+    30% slower from depth 8 up, 106 to 112 against 85 to 90
+    ns across the CCX, and at depth 1 runs faster than v1's.
+    We think the seq word in the slot line is the reason for
+    both: the consumer spins on the line the producer then
+    writes twice, the body and the seq, where v1's producer
+    fills the slot line unwatched and stores the seq beside
+    it, and at depth 1 the one line is hot on both sides.
+  - Half the lines. v2 pulls 4.0 lines per round trip at
+    depth 1 against v1's 8.1, and 2.0 against 5.9 at depth
+    1024, the seq array's lines gone as spsc v2 lost them
+    against spsc v1.
+  - Streaming, v2 is the faster ring from depth 8 up at every
+    placement: 10 to 15 ns per message against 20 to 27
+    across the CCX, 14 to 31 against 81 to 103 across the
+    CCXs, and 12 against 15 on the SMT pair, with the fill
+    counts under 1 per message against v1's 0.65 to 2.1. At
+    depth 1, where nearly every send switches, it costs 20%
+    more than v1 across the CCX and less than v1 elsewhere,
+    inside the prediction's twice.
+- **Verdict (2026-09-15, 3900X)**: the segment design works,
+  its switch is cheap, and v2 streams two to five times faster
+  than v1 from depth 8 up while pulling half the lines. It does
+  not match v1 in the round trip: the send matches, the
+  receive runs up to 30% slower from depth 8 up, and the SMT
+  send costs 3 ns more. The Todo entry `MPSC v2 as the
+  default` waits on the round trip, and the 7600X.
 
 ## Messaging layer: pools and descriptor queues
 

@@ -55,7 +55,7 @@ validate` passes.
 - [docs: mpsc v2 design and prediction][2] (done)
 - [feat: mpsc v2 segment chain][3] (done)
 - [test: mpsc v2 across segment counts, depths, and producers][4] (done)
-- [feat: mpsc v2 in the measurement tools][5]
+- [feat: mpsc v2 in the measurement tools][5] (done)
 - [feat: segmented queue MPSC v2 closing][6]
 
 #### Deliberation
@@ -93,6 +93,12 @@ validate` passes.
 - The give-back is one poll late, a consequence of the second look being on the empty path only: a
   segment is given back at the reserve after its last release. The alternative, a seal load at
   every release, is a load on the fast path, and the tools rung measures the path as it is.
+- Inline hints on v2's helpers in the tools rung, before the sweep on record: the first sweep put
+  v2's one-thread loop at twice v1's, and the cause was calls across codegen units, small
+  non-generic helpers in the parent module called from the child modules. `#[inline]` on them is
+  the whole fix, so it went in before the sweep rather than into a fast-path Todo, and v3's
+  matching finding went into its fast-path entry. `seq_of`, shared with v3, is inlined too, so v3's
+  own numbers move a little; v0 and v1 are untouched.
 - 0.17.0, a minor bump, as v3's: a new queue layer.
 - No `-dev` rename: the demo's name is unchanged by the cycle, as in the earlier cycles.
 - The user's waiver on 2026-09-15, "you have permission to complete the rungs before close-out and
@@ -181,8 +187,29 @@ shapes.
 
 ##### feat: mpsc v2 in the measurement tools
 
-The tools measure v0 and v1 and not v2, so nothing can say what v2 costs against v1: add the flavor,
-sweep both machines, and write the tables and verdict into the note.
+The tools measured every MPSC ring but v2, so nothing could say what v2 costs against v1.
+
+* No tool could build an MPSC ring of segments.
+  - `tp-cell`, `tp-matrix`, `tp-stream`, and the demo's depth sweep run `mpsc-v2`, each ring over a
+    pool holding exactly its segments, through an `mpsc_pair` builder beside the `spsc_pair` one,
+    so the MPSC cell bodies stay shared across v0, v1, and v2. `--segments` covers it, its rows
+    carry `switches/RT` and `switches/msg`, and the banners and legends name both segmented rings.
+* The first sweep put v2's send at half again v1's and its one-thread loop at twice.
+  - Calls across codegen units: the segment table's accessors, the seq helper, and the word packers
+    are small non-generic functions in the parent module called from the producer and consumer
+    modules, real calls without `#[inline]`. The hints went on before the sweep on record, and v3's
+    matching finding went into its fast-path Todo entry.
+* What v2 costs against v1 was not measured.
+  - The sweep, `tp-matrix` and `tp-stream` at depths 1, 8, 64, and 1024 with two segments, ran
+    twice on the 3900X, and the demo's sweep once. It is the measured part of
+    [MPSC v2: ring of segments](notes/ring-buffer-design.md#mpsc-v2-ring-of-segments), with the
+    tables, the readings, and the verdict.
+  - The verdict: the design works, the round trip never switches, and v2 streams two to five times
+    faster than v1 from depth 8 up while pulling half the lines. It does not match v1 in the round
+    trip: the send matches everywhere but the SMT pair, and the receive runs up to 30% slower from
+    depth 8 up, we think from the seq word sharing the slot line the consumer spins on.
+  - The 7600X is not yet run: the sweep there goes over ssh with binaries built here, and the host
+    is the user's to reach. It is the one open item of the acceptance check.
 
 ##### feat: segmented queue MPSC v2 closing
 
@@ -240,6 +267,14 @@ message against v2's 7.5.
   whole segment table, about 280 bytes, on every message. `let segs = &st.segs;` in both took the
   same-CCX stream at depth 64 from 18.4 to 10.7 ns per message, against v2's 4.5 to 5.7, and the SMT
   pair from 21.8 to 14.3, against 8.2.
+- Found on 2026-09-15 in the MPSC v2 cycle, whose v2 shares v3's shape: the segment table's
+  accessors, the seq helper, and the word packers are small non-generic functions in the parent
+  module, called from the producer and consumer child modules. A release build without LTO puts
+  each module in its own codegen unit, so without `#[inline]` those are real calls on every send
+  and receive. Inlining v2's took its one-thread demo loop from 20.0 to 13.2 ns per message
+  against v1's 10.1. Only `seq_of` was inlined for v3, and v3's own accessors in `Segments` still
+  are not. `slot_ptr` and `check_type` in `lib.rs` are the same kind of call for every ring, v0
+  and v1 included, and were left alone so the comparisons stay as they were.
 - Apply that, then find what keeps v3 behind v2 on the fast path, measured against v2 at each step.
 - The user's call on 2026-09-15, deferred from the segmented queue cycle so that cycle makes
   multiple segments work first.
