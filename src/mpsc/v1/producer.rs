@@ -136,7 +136,15 @@ impl<'a> MpscProducer<'a> {
         T: FromBytes + IntoBytes + KnownLayout,
     {
         check_type::<T>(self.slot_size);
-        let mut pos = self.header.producer_idx.load(Ordering::Relaxed);
+        // SeqCst on every producer_idx access: the claim is only
+        // exclusive if these are linearizable. Under the weaker
+        // guarantee Relaxed gives, a stale re-read and a CAS on it
+        // let two producers claim one position, which at M = 1,
+        // where pos + M + 1 is the next-but-one claimable value, is
+        // a real double fill (Miri's weak memory model finds it).
+        // We think the instructions are the same either way on
+        // x86, where a load is a move and a CAS a locked cmpxchg.
+        let mut pos = self.header.producer_idx.load(Ordering::SeqCst);
         let mut attempt = 0u32;
         loop {
             // Acquire pairs with the consumer's Release in
@@ -149,8 +157,8 @@ impl<'a> MpscProducer<'a> {
                 match self.header.producer_idx.compare_exchange_weak(
                     pos,
                     pos.wrapping_add(1),
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
                 ) {
                     Ok(_) => break,
                     Err(actual) => pos = actual,
@@ -166,7 +174,7 @@ impl<'a> MpscProducer<'a> {
                 // pos (or tombstoned it), no policy call. If
                 // not, the slot's previous occupant is not yet
                 // released.
-                let cur = self.header.producer_idx.load(Ordering::Relaxed);
+                let cur = self.header.producer_idx.load(Ordering::SeqCst);
                 if cur != pos {
                     pos = cur;
                     continue;

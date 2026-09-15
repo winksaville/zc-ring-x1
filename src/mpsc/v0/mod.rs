@@ -435,14 +435,16 @@ mod tests {
             .unwrap();
         assert_eq!(err, Error::BadMagic);
         MpscRing::init(&mut r.0, 64, 4).unwrap();
-        let ring = unsafe { MpscRing::attach(r.0.as_mut_ptr(), r.0.len()) }.unwrap();
+        // Taken once after init: each `as_mut_ptr()` borrows the
+        // whole region, and a second one would invalidate `ring`'s
+        // header, which the test goes on to write through.
+        let (base, len) = (r.0.as_mut_ptr(), r.0.len());
+        let ring = unsafe { MpscRing::attach(base, len) }.unwrap();
         assert_eq!(ring.slot_size, 64);
         assert_eq!(ring.capacity, 4);
         // A different recorded cache line is rejected.
         ring.header.cache_line_size.store(128, Ordering::Relaxed);
-        let err = unsafe { MpscRing::attach(r.0.as_mut_ptr(), r.0.len()) }
-            .err()
-            .unwrap();
+        let err = unsafe { MpscRing::attach(base, len) }.err().unwrap();
         assert_eq!(err, Error::BadCacheLine);
         // A recorded capacity under the floor is rejected too,
         // so a region another build wrote at 1 is not attached.
@@ -450,9 +452,7 @@ mod tests {
             .cache_line_size
             .store(CACHE_LINE_SIZE as u32, Ordering::Relaxed);
         ring.header.capacity.store(1, Ordering::Relaxed);
-        let err = unsafe { MpscRing::attach(r.0.as_mut_ptr(), r.0.len()) }
-            .err()
-            .unwrap();
+        let err = unsafe { MpscRing::attach(base, len) }.err().unwrap();
         assert_eq!(err, Error::BadCapacity);
     }
 

@@ -78,7 +78,7 @@ at segment depth 1 while the producer runs ahead. `vc-x1 validate` passes.
 - [feat: segmented queue SPSC v3 opening][1] (done)
 - [feat: pool buffers as bytes][2] (done)
 - [feat: spsc v3 segment chain][3] (done)
-- [fix: the two tests Miri rejects][7]
+- [fix: the two tests Miri rejects][7] (done)
 - [feat: spsc v3 in the measurement tools][4]
 - [perf: sweep the segment size][5]
 - [feat: segmented queue SPSC v3 closing][6]
@@ -184,11 +184,27 @@ v3 existed only as a design, and the crate's default ring could not grow past on
 
 ##### fix: the two tests Miri rejects
 
-Two tests fail under Miri on the commit before v3 as well as with it, each with undefined
-behavior: `mpsc::v0::tests::mpsc_attach_validates_header`, a retag whose tag is no longer in the
-borrow stack, and `mpsc::v1::tests::threaded_mpsc_two_producers_capacity_1`, a data race between
-two producers writing one slot's message. Find each one's cause, in the test or the ring, and fix
-it there, so the whole library passes under Miri.
+Two tests failed under Miri with undefined behavior, on the commit before v3 as well as with it, so
+the library never passed a whole Miri run.
+
+* `mpsc::v0::tests::mpsc_attach_validates_header` wrote through a ring whose pointers it had
+  already invalidated.
+  - The fault was the test's: each `as_mut_ptr()` borrows the whole region, and it called it again
+    for its third attach and then wrote through the earlier ring's header. It now takes the pointer
+    once. v1's copy of the test stops before that write, which is why only v0 failed.
+* `mpsc::v1::tests::threaded_mpsc_two_producers_capacity_1` had two producers filling one slot.
+  - The fault was the ring's claim: it loaded and CASed `producer_idx` with `Relaxed`, which does
+    not promise a producer sees another's claim. Under Miri's weak memory model a stale re-read
+    and a CAS on it let two producers win one position, and at `M = 1`, where a committed value is
+    the next-but-one claimable value, that is a double fill. The claim's `producer_idx` accesses are
+    `SeqCst` now. Only the CAS and the re-read both being strict removed it: either alone still
+    raced.
+  - We think today's x86 builds never double-claimed, a CAS there being one locked instruction, but
+    the claim rested on a guarantee `Relaxed` does not give.
+* Result: the whole library, 99 tests, passes under Miri, and again under three more seeds. mpsc
+  v0's claim has the same `Relaxed` pattern and Miri does not reject it. We think v0's capacity
+  floor of 2 keeps its seq values from coinciding, and v0 is left unchanged as the historical
+  sibling.
 
 ##### feat: spsc v3 in the measurement tools
 
