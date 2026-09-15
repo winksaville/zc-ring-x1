@@ -57,6 +57,7 @@ validate` passes.
 - [test: mpsc v2 across segment counts, depths, and producers][4] (done)
 - [feat: mpsc v2 in the measurement tools][5] (done)
 - [feat: every ring in the demo's one_msg lines and a segment stress][9] (done)
+- [perf: mpsc v2 on the 7600X and a native build][10] (done)
 - [feat: segmented queue MPSC v2 closing][6]
 
 #### Deliberation
@@ -235,6 +236,24 @@ with two segments so a switch and the fast path mixed, and nothing in it stresse
     and both ends count the same switches: per pause two for mpsc-v2, which switches at full, and
     one and a half for spsc-v3, which switches at its look-ahead.
   - The lagging line prints no rate, since its pace is the consumer's pauses, not the ring's.
+
+##### perf: mpsc v2 on the 7600X and a native build
+
+The sweep had run on the 3900X only, and whether a build native to the 7600X measures differently
+from the binaries built here had never been asked.
+
+* The 7600X had no numbers.
+  - The same sweep ran there over ssh, twice, with the binaries built here, and its tables and
+    readings joined the note's section. It reads as the 3900X does, closer: v2 streams two and a
+    half to three times faster from depth 8 up, its send matches or beats v1's everywhere but the
+    SMT pair, and its receive is slower only around depth 64.
+* Whether native codegen changes the numbers was unknown.
+  - Three builds of the bookmark's source swept the same way on the 7600X: the 3900X's binaries, a
+    default build there, and a `target-cpu=native` build there. Every MPSC cell agreed within run
+    noise. The one line that moved was spsc-v3's one-thread loop, a fifth faster native, which
+    points at its fast path again and is noted in the section.
+  - The 7600X's earlier known-hosts line was stale, so the runs used a scratch known-hosts file,
+    and the tree went over as a git archive of the bookmark, so the 7600X never touched GitHub.
 
 ##### feat: segmented queue MPSC v2 closing
 
@@ -452,4 +471,5 @@ _None._
 [5]: #feat-mpsc-v2-in-the-measurement-tools
 [6]: #feat-segmented-queue-mpsc-v2-closing
 [9]: #feat-every-ring-in-the-demos-one_msg-lines-and-a-segment-stress
+[10]: #perf-mpsc-v2-on-the-7600x-and-a-native-build
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies

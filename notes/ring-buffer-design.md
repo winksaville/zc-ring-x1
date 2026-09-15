@@ -1496,8 +1496,8 @@ until v2 matches it where no switch happens.
   cells at depths 1, 8, 64, and 1024, two segments, one
   producer, each sweep run twice, and the demo's sweep)**. The
   runs agreed within 10% but for the marked (`*`) cells, whose
-  means moved more than 15% between runs. The 7600X is not yet
-  run.
+  means moved more than 15% between runs. The 7600X follows,
+  under its own heading.
   - Streaming, the producer running ahead: ns per message v1 /
     v2, and v2's switches per message:
 
@@ -1525,6 +1525,48 @@ until v2 matches it where no switch happens.
 
   - The demo's one-thread loop, both ends on core 0, ns per
     message at every depth: v1 10.1, v2 13.0.
+- **Measured (2026-09-15, 7600X, Zen 4, one CCD, the rung
+  `perf: mpsc v2 on the 7600X and a native build`, the same
+  instruments and depths, binaries built on the 3900X as
+  before, each sweep run twice, the runs agreeing within
+  10%)**. The 7600X has no cross-CCX placement, its six cores
+  sharing one L3.
+  - Streaming: ns per message v1 / v2, and v2's switches per
+    message:
+
+    | 7600X     | d=1                  | d=8                 | d=64                | d=1024              |
+    |-----------|---------------------:|--------------------:|--------------------:|--------------------:|
+    | 0,1 CCX   | 79.3 / 73.3 (0.740)  | 17.7 / 6.2 (0.000)  | 16.6 / 5.9 (0.000)  | 13.0 / 4.7 (0.001)  |
+    | 0,6 SMT   | 40.1 / 31.7 (0.685)  | 12.2 / 7.4 (0.000)  | 11.6 / 7.4 (0.000)  | 11.5 / 7.4 (0.000)  |
+    | unpinned  | 81.4 / 75.3 (0.752)  | 19.6 / 6.3 (0.000)  | 16.6 / 6.2 (0.000)  | 13.3 / 4.8 (0.001)  |
+
+  - The round trip, means in ns, v1 / v2, and v2's switches:
+
+    | placement | depth | m.send v1 / v2 | w.recv v1 / v2 | switches/RT |
+    |-----------|------:|---------------:|---------------:|------------:|
+    | 0,1 CCX   |     1 |      7.2 / 6.8 |    77.1 / 70.7 |       0.000 |
+    | 0,1 CCX   |     8 |      7.2 / 6.9 |    70.2 / 80.8 |       0.000 |
+    | 0,1 CCX   |    64 |      7.1 / 7.0 |    78.8 / 99.0 |       0.000 |
+    | 0,1 CCX   |  1024 |      7.2 / 6.9 |    78.3 / 72.0 |       0.000 |
+    | 0,6 SMT   |     1 |      7.0 / 7.5 |    65.2 / 70.5 |       0.000 |
+    | 0,6 SMT   |    64 |      7.1 / 7.7 |    64.8 / 68.2 |       0.000 |
+
+    The lines per round trip are the 3900X's, 4.0 against 8.0
+    at depth 1.
+  - The demo's one-thread loop, ns per message: v1 6.7, v2
+    8.2.
+  - **Three builds of the same source**, a question never
+    asked before: the binaries built on the 3900X, a build on
+    the 7600X with the default target, and one with
+    `-C target-cpu=native`, the last two by its rustc 1.98.1
+    against the 3900X's 1.98.0, each swept the same way. Every
+    MPSC cell agreed across the three within run noise, so the
+    tables above hold for all three. The one line that moved
+    was spsc-v3's one-thread loop, 15.4 ns on the first two
+    builds and 10.6 to 12.3 on the native one, a fifth off,
+    while spsc-v2 and both MPSC rings stayed put: native
+    codegen helps a fast path that is still doing too much,
+    which is the SPSC v3 fast-path entry's finding again.
 - **Readings**:
   - The design does what it says. With the consumer keeping
     up, the round trip switches 0.000 times at every depth,
@@ -1565,13 +1607,20 @@ until v2 matches it where no switch happens.
     depth 1, where nearly every send switches, it costs 20%
     more than v1 across the CCX and less than v1 elsewhere,
     inside the prediction's twice.
-- **Verdict (2026-09-15, 3900X)**: the segment design works,
-  its switch is cheap, and v2 streams two to five times faster
-  than v1 from depth 8 up while pulling half the lines. It does
-  not match v1 in the round trip: the send matches, the
-  receive runs up to 30% slower from depth 8 up, and the SMT
-  send costs 3 ns more. The Todo entry `MPSC v2 as the
-  default` waits on the round trip, and the 7600X.
+  - The 7600X reads the same, closer. v2 streams two and a
+    half to three times faster than v1 from depth 8 up and
+    faster at depth 1 too, its send matches or beats v1's
+    everywhere but the SMT pair, where it costs half a
+    nanosecond more, and its receive is slower only around
+    depth 64, 99 against 79 ns, faster at depth 1 and 1024.
+- **Verdict (2026-09-15, 3900X and 7600X)**: the segment design
+  works, its switch is cheap, and v2 streams two to five times
+  faster than v1 from depth 8 up while pulling half the lines,
+  on both machines and under three builds. It does not match
+  v1 in the round trip: the send matches, the receive runs up
+  to 30% slower from depth 8 up on the 3900X and around depth
+  64 on the 7600X, and the SMT send costs more. The Todo entry
+  `MPSC v2 as the default` waits on the round trip.
 
 ## Messaging layer: pools and descriptor queues
 
