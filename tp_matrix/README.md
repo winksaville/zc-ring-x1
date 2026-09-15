@@ -16,9 +16,14 @@ through `perf_event_open`, with no perf(1) or root needed.
 SMT siblings share one core's caches, so there xfills reads
 near 0, which is expected.
 Runs vary by **flavor**, which ring (`spsc-v0`, `spsc-v1`,
-`spsc-v2`, `mpsc-v0`, `mpsc-v1`, named after their module
-paths), and by **placement**, which CPUs the two threads sit
-on: same L3, different L3, SMT siblings, or unpinned.
+`spsc-v2`, `spsc-v3`, `mpsc-v0`, `mpsc-v1`, named after their
+module paths), and by **placement**, which CPUs the two
+threads sit on: same L3, different L3, SMT siblings, or
+unpinned. `spsc-v3` is a ring of segments: `--segments N`, 1
+to 32 and default 2, sets how many per ring, the depth is each
+segment's, and its rows add how often it switched segments,
+`switches/RT` in `tp-matrix` and `switches/msg` in
+`tp-stream`, `-` for every other flavor.
 
 - `tp-cell`: one round trip, main sends a counter to a worker
   and the worker sends it back, for one ring and one
@@ -47,7 +52,7 @@ not comparable one to one.
 | Depth | seq sharing, slack at 1 | seq sharing, slack at 1 | how far the producer can run ahead | throttles when below the pool size |
 | Runs | `-d` per cell | `-d` per cell | `-d` per cell | `-d` per run, median of `--repeat` |
 | Reports | full percentile bands per phase | mean/stdev per phase, RTs, xfills/RT | ns/msg, msgs, xfills/msg | ns/msg and xfills/msg per pool size |
-| Flavors | the five rings | the five rings | the five rings | spsc-v2, mpsc-v1, cordyceps |
+| Flavors | the six rings | the six rings | the six rings | spsc-v2, mpsc-v1, cordyceps |
 
 ## tp-cell: one cell, under the microscope
 
@@ -81,7 +86,7 @@ from `/sys` CPU topology) and prints one markdown table ready
 to paste into notes, a row per cell with its columns in trip
 order: `m.send`, then `w.recv` with the `w.spin` and `w.att`
 inside it, `w.send`, then `m.recv` with `m.spin` and `m.att`,
-then round trips completed and `xfills/RT`. The phase and
+then round trips completed, `xfills/RT`, and `switches/RT`. The phase and
 spin cells are `mean/stdev` of the trimmed min-p99 band.
 
 Every tool takes `-v` (`--verbose`), which adds a legend under
@@ -91,11 +96,11 @@ can carry its own key. On a run without `-v`, the line under
 each banner says so.
 
 ```sh
-$ tp-matrix -d 10                  # 20 cells x 10 s on a typical SMT machine, depth 8
+$ tp-matrix -d 10                  # 24 cells x 10 s on a typical SMT machine, depth 8
 $ tp-matrix -d 5 --depth 1,2,8,64  # every cell again at each depth
 $ tp-matrix -d 1 -v                # with the column legend
 tp-matrix 0.1.0 - run the full measurement matrix, markdown tables out
-20 cells, 1.0s each
+24 cells, 1.0s each, spsc-v3 with 2 segments
 ...
 | placement | flavor  | depth |   m.send |     w.recv |     w.spin | ... |  RTs | xfills/RT |
 |-----------|---------|------:|---------:|-----------:|-----------:|-----|-----:|----------:|

@@ -48,8 +48,15 @@ in sync with `src/`.
   u32-index-wrap proof) and [Miri](https://github.com/rust-lang/miri)
   on the non-threaded suite.
 
+The crate-root `Ring` is `spsc::v3`, a ring of segments taken
+from a pool at `init`: with a consumer that keeps up it lives in
+one segment, and the others absorb a producer that runs ahead.
+The points above describe the single-region rings, `spsc::v0`
+through `spsc::v2`, which stay available by path and keep
+`attach` and `user()`.
+
 ```rust
-use zc_ring_x1::Ring;
+use zc_ring_x1::{Pool, PoolHeader, Ring};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -59,13 +66,15 @@ struct Msg {
     val: u64,
 }
 
-// Cache-line-aligned region: 256 B header + 4 slots × 64 B.
+// A pool of two segments, each a header line + 4 slots × 64 B.
+const SEG: usize = 64 + 4 * 64;
 #[repr(C, align(64))]
-struct Region([u8; 512]);
-let mut region = Region([0; 512]);
+struct Region([u8; size_of::<PoolHeader>() + 2 * SEG]);
+let mut region = Region([0; size_of::<PoolHeader>() + 2 * SEG]);
 
+let mut pool = Pool::init(&mut region.0, SEG as u32, 2).unwrap();
 let (mut producer, mut consumer) =
-    Ring::init(&mut region.0, 64, 4).unwrap().split();
+    Ring::init(&mut pool, 64, 4, 2).unwrap().split();
 
 let mut slot = producer.reserve_slot_with::<Msg>(|_| false).unwrap();
 slot.seq = 1;
@@ -78,7 +87,7 @@ msg.release(); // slot is free for reuse
 ```
 
 Status: an experiment. SPSC only. Attaching to an existing
-shared-memory region is `unsafe` (see `Ring::attach`), and planned
+shared-memory region is `unsafe` (see `spsc::v2::Ring::attach`), and planned
 hardening and follow-ons are tracked in
 [TODO.md](TODO.md).
 

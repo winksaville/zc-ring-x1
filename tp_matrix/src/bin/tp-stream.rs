@@ -18,12 +18,20 @@ use tp_runner::{Cfg, CommonArgs};
 const TOP_ABOUT: &str = concat!(
     "tp-stream ",
     env!("CARGO_PKG_VERSION"),
+    " (zc-ring-x1 ",
+    env!("ZC_RING_X1_VERSION"),
+    ")",
     " - run the streaming matrix, one markdown table out"
 );
 
 /// The tp-stream CLI.
 #[derive(Parser, Debug)]
-#[command(name = "tp-stream", version, about = TOP_ABOUT, max_term_width = 80)]
+#[command(
+    name = "tp-stream",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (zc-ring-x1 ", env!("ZC_RING_X1_VERSION"), ")"),
+    about = TOP_ABOUT,
+    max_term_width = 80
+)]
 struct Cli {
     #[command(flatten)]
     common: CommonArgs,
@@ -35,6 +43,15 @@ struct Cli {
 
 /// `xfills/msg` cell: 3 decimals, or 4 when the value is tiny
 /// (the SMT cells), `-` when counters were unavailable.
+/// `switches/msg` cell for the segmented flavor, `-` for the
+/// single-region ones.
+fn switches_cell(res: &StreamResult) -> String {
+    match res.switches {
+        Some(n) => format!("{:.3}", n as f64 / res.msgs.max(1) as f64),
+        None => "-".to_string(),
+    }
+}
+
 fn fills_cell(res: &StreamResult) -> String {
     match &res.fills {
         Some(f) => {
@@ -95,9 +112,10 @@ fn main() {
     let cfg: Cfg = cli.common.to_cfg(None);
     let placements = discover_placements();
     println!(
-        "{} cells, {:.1}s each{}",
+        "{} cells, {:.1}s each, spsc-v3 with {} segments{}",
         placements.len() * FLAVORS.len() * cfg.depths.len(),
         cfg.duration.as_secs_f64(),
+        cfg.segments,
         if cli.verbose {
             ""
         } else {
@@ -123,7 +141,7 @@ fn main() {
                     placement.label,
                     flavor.as_str()
                 );
-                let res = run_stream(flavor, cfg.duration, placement.pin, depth);
+                let res = run_stream(flavor, cfg.duration, placement.pin, depth, cfg.segments);
                 cells.push((placement, flavor, depth, res));
             }
         }
@@ -139,6 +157,7 @@ fn main() {
                 format!("{:.1}", r.secs * 1e9 / r.msgs.max(1) as f64),
                 format!("{:.1}M", r.msgs as f64 / 1e6),
                 fills_cell(r),
+                switches_cell(r),
             ]
         })
         .collect();
@@ -151,6 +170,7 @@ fn main() {
             "ns/msg",
             "msgs",
             "xfills/msg",
+            "switches/msg",
         ],
         &rows,
     );
@@ -165,7 +185,7 @@ fn main() {
             ("flavor", "the ring the producer streams over"),
             (
                 "depth",
-                "slots in the ring, the slack the producer can run ahead of the consumer by",
+                "slots in the ring, per segment for spsc-v3, the slack the producer can run ahead of the consumer by before spsc-v3 switches segments",
             ),
             (
                 "ns/msg",
@@ -173,6 +193,10 @@ fn main() {
             ),
             ("msgs", "messages moved in the duration, in millions"),
             ("xfills/msg", &format!("{XFILLS_MEANING}, per message")),
+            (
+                "switches/msg",
+                "segment switches per message, spsc-v3 only: how often the producer, running ahead, found its segment about to be full and moved to another",
+            ),
         ],
     );
 }

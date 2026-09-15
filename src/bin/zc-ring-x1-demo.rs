@@ -33,7 +33,7 @@
 use std::time::Instant;
 
 use zc_ring_x1::{
-    BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, MpscRing, Pool, PoolRegistry, Ring,
+    BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, MpscRing, Pool, PoolRegistry,
     mpsc_region_size, policy,
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -47,6 +47,10 @@ const DEPTH: u32 = 64;
 
 /// The ring depths the sweep runs, DEPTH among them.
 const DEPTHS: [u32; 4] = [1, 2, 8, 64];
+
+/// Segments per ring in the sweep's spsc-v3 row, the depth being
+/// each segment's.
+const SEGMENTS: u32 = 2;
 
 /// The demo message: the sequence number the consumer
 /// asserts, and `val` (spare payload, doubling as the
@@ -200,8 +204,38 @@ fn pin_to_cpu(cpu: usize) {
 #[cfg(not(target_os = "linux"))]
 fn pin_to_cpu(_cpu: usize) {}
 
-/// Define the SPSC one-message loops over the ring at `$ring`,
-/// its region sized by `$size(slot_size, depth)`: `$one_t`
+/// Bind one SPSC ring's `$producer` and `$consumer`, one-line
+/// slots at `$depth`, its storage held in `$store` (and, for a
+/// ring of segments, its pool in `$pool`) so it outlives them.
+///
+/// - `single $ring, $size`: a ring over one region sized by
+///   `$size(slot_size, depth)`.
+/// - `segmented`: a v3 ring of [`SEGMENTS`] segments, each
+///   `$depth` slots, over a pool holding exactly those segments.
+macro_rules! spsc_pair {
+    ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
+     single $ring:path, $size:path) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let mut $store = region($size(slot, $depth));
+        let (mut $producer, mut $consumer) = <$ring>::init($store.as_mut_bytes(), slot, $depth)
+            .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
+            .split();
+    };
+    ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr, segmented) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let buf = zc_ring_x1::spsc::v3::segment_size(slot, $depth);
+        let mut $store = region(size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * SEGMENTS as u64);
+        let mut $pool = Pool::init($store.as_mut_bytes(), buf as u32, SEGMENTS)
+            .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
+        let (mut $producer, mut $consumer) =
+            zc_ring_x1::spsc::v3::Ring::init(&mut $pool, slot, $depth, SEGMENTS)
+                .unwrap() // OK: the pool holds exactly the segments, sized by segment_size
+                .split();
+    };
+}
+
+/// Define the SPSC one-message loops over the ring `$pair` builds
+/// (see `spsc_pair`): `$one_t`
 /// moves COUNT messages single thread, pinned to cpu 0, and
 /// `$two_t` moves them producer-thread -> consumer-thread (`pin`
 /// as in [`spsc_ring_one_msg_2t`]), both over a ring of `depth`
@@ -214,13 +248,9 @@ fn pin_to_cpu(_cpu: usize) {}
 /// affinity mask, which would squeeze every later part onto
 /// cpu 0.
 macro_rules! spsc_loops {
-    ($one_t:ident, $two_t:ident, $ring:path, $size:path) => {
+    ($one_t:ident, $two_t:ident, $($pair:tt)+) => {
         fn $one_t(depth: u32) -> f64 {
-            let slot = CACHE_LINE_SIZE as u32;
-            let mut region = region($size(slot, depth));
-            let (mut producer, mut consumer) = <$ring>::init(region.as_mut_bytes(), slot, depth)
-                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
-                .split();
+            spsc_pair!(producer, consumer, store, pool, depth, $($pair)+);
 
             let start = Instant::now();
             std::thread::scope(|s| {
@@ -258,11 +288,7 @@ macro_rules! spsc_loops {
         }
 
         fn $two_t(pin: PinPair, depth: u32) -> f64 {
-            let slot = CACHE_LINE_SIZE as u32;
-            let mut region = region($size(slot, depth));
-            let (mut producer, mut consumer) = <$ring>::init(region.as_mut_bytes(), slot, depth)
-                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
-                .split();
+            spsc_pair!(producer, consumer, store, pool, depth, $($pair)+);
 
             let start = Instant::now();
             std::thread::scope(|s| {
@@ -295,21 +321,22 @@ macro_rules! spsc_loops {
 spsc_loops!(
     spsc_ring_one_msg_1t,
     spsc_ring_one_msg_2t,
-    zc_ring_x1::spsc::v0::Ring,
+    single zc_ring_x1::spsc::v0::Ring,
     v0_region_size
 );
 spsc_loops!(
     spsc1_ring_one_msg_1t,
     spsc1_ring_one_msg_2t,
-    zc_ring_x1::spsc::v1::Ring,
+    single zc_ring_x1::spsc::v1::Ring,
     zc_ring_x1::spsc::v1::region_size
 );
 spsc_loops!(
     spsc2_ring_one_msg_1t,
     spsc2_ring_one_msg_2t,
-    zc_ring_x1::spsc::v2::Ring,
+    single zc_ring_x1::spsc::v2::Ring,
     zc_ring_x1::spsc::v2::region_size
 );
+spsc_loops!(spsc3_ring_one_msg_1t, spsc3_ring_one_msg_2t, segmented);
 
 /// Define the MPSC one-message loops over the ring at `$ring`,
 /// its region sized by `$size(slot_size, depth)`, the siblings
@@ -469,7 +496,7 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
     let mut registry = PoolRegistry::<1>::new();
     let pool_id = registry.register(pool.resolver()).unwrap(); // OK: empty capacity-1 registry always has room
     let (mut producer, mut consumer) =
-        Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
+        zc_ring_x1::spsc::v2::Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
             .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
             .split();
 
@@ -531,7 +558,7 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
     let pool_id = registry.register(pool.resolver()).unwrap(); // OK: empty capacity-1 registry always has room
     let registry = &registry;
     let (mut producer, mut consumer) =
-        Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
+        zc_ring_x1::spsc::v2::Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
             .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
             .split();
 
@@ -716,7 +743,7 @@ struct StreamFlavor {
 
 /// The flavors the sweep runs, in table order, named `xpsc-vN`
 /// after their module paths.
-const STREAM_FLAVORS: [StreamFlavor; 5] = [
+const STREAM_FLAVORS: [StreamFlavor; 6] = [
     StreamFlavor {
         name: "spsc-v0",
         min_depth: 1,
@@ -734,6 +761,12 @@ const STREAM_FLAVORS: [StreamFlavor; 5] = [
         min_depth: 1,
         one_t: spsc2_ring_one_msg_1t,
         two_t: spsc2_ring_one_msg_2t,
+    },
+    StreamFlavor {
+        name: "spsc-v3",
+        min_depth: 1,
+        one_t: spsc3_ring_one_msg_1t,
+        two_t: spsc3_ring_one_msg_2t,
     },
     StreamFlavor {
         name: "mpsc-v0",
@@ -778,7 +811,7 @@ fn depth_sweep(smt: PinPair, far: PinPair) {
     }
     let depth_list: Vec<String> = DEPTHS.iter().map(|d| d.to_string()).collect();
     println!(
-        "depth sweep: {} messages per cell, ns/msg at depths {}",
+        "depth sweep: {} messages per cell, ns/msg at depths {}, spsc-v3 with {SEGMENTS} segments",
         commas(COUNT),
         depth_list.join(", ")
     );

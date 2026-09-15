@@ -56,7 +56,7 @@ const NIL: u32 = u32::MAX;
 /// - line 1: `first_free_idx`, CAS-contended by every freer and
 ///   the allocator — sole owner of its line.
 /// - Every field is atomic for the same reason as the ring
-///   [`Header`](crate::Header): a peer may be mapped at any
+///   [`Header`](crate::spsc::v0::Header): a peer may be mapped at any
 ///   time, and scribbles must be garbage values, never UB.
 #[repr(C)]
 pub struct PoolHeader {
@@ -234,6 +234,26 @@ impl<'a> Pool<'a> {
         T: FromBytes + IntoBytes + KnownLayout,
     {
         check_type::<T>(self.buf_size);
+        self.pop()
+    }
+
+    /// Pop the first free buffer off the free-stack as an owned
+    /// [`BufSlot`] over its bytes, all [`buf_size`](Pool::buf_size)
+    /// of them, or [`Exhausted`].
+    ///
+    /// - For a layout sized at runtime, such as a ring region,
+    ///   that no `T` describes. The guard derefs to `[u8]`, and
+    ///   typed views over the bytes are zero-copy casts.
+    /// - Otherwise [`alloc`](Pool::alloc): same free-stack pop,
+    ///   same single-popper token, same free.
+    pub fn alloc_bytes(&mut self) -> Result<BufSlot<'a, [u8]>, Exhausted> {
+        self.pop()
+    }
+
+    /// The validated free-stack pop behind [`alloc`](Pool::alloc)
+    /// and [`alloc_bytes`](Pool::alloc_bytes), minting a guard of
+    /// the caller's view `T`.
+    fn pop<T: ?Sized>(&mut self) -> Result<BufSlot<'a, T>, Exhausted> {
         loop {
             // Acquire pairs with free's Release CAS: seeing a
             // head index means seeing that buffer's next-link
@@ -258,6 +278,7 @@ impl<'a> Pool<'a> {
                 return Ok(BufSlot {
                     header: self.header,
                     buf: self.buf_ptr(head),
+                    buf_size: self.buf_size,
                     idx: head,
                     _slot: PhantomData,
                 });
@@ -423,6 +444,7 @@ impl<'a> PoolResolver<'a> {
         BufSlot {
             header: self.header,
             buf,
+            buf_size: self.buf_size,
             idx,
             _slot: PhantomData,
         }
@@ -438,13 +460,16 @@ impl<'a> PoolResolver<'a> {
 /// - Dropping without `free` leaks the buffer until the pool
 ///   is re-initialized (the abandon analog of the ring's
 ///   guards, with the opposite consequence).
-pub struct BufSlot<'p, T> {
+pub struct BufSlot<'p, T: ?Sized> {
     /// The pool's control block (for the free CAS).
     header: &'p PoolHeader,
     /// Base of the owned buffer. Raw, and references are
     /// minted per access — same aliasing rationale as the
     /// ring guards.
     buf: *mut u8,
+    /// Snapshot of the pool's buffer size, the length a
+    /// `BufSlot<[u8]>` derefs to.
+    buf_size: u32,
     /// This buffer's index (the value free pushes).
     idx: u32,
     /// The guard acts as a `&mut T` into the region.
@@ -454,7 +479,7 @@ pub struct BufSlot<'p, T> {
 // SAFETY: the guard owns its buffer exclusively (the pop
 // removed it from every shared structure); free's CAS is the
 // only shared-state touch and is properly ordered.
-unsafe impl<T: Send> Send for BufSlot<'_, T> {}
+unsafe impl<T: ?Sized + Send> Send for BufSlot<'_, T> {}
 
 impl<T> Deref for BufSlot<'_, T> {
     type Target = T;
@@ -477,7 +502,28 @@ impl<T> DerefMut for BufSlot<'_, T> {
     }
 }
 
-impl<T> BufSlot<'_, T> {
+impl Deref for BufSlot<'_, [u8]> {
+    type Target = [u8];
+    /// Read access to the whole buffer as bytes.
+    fn deref(&self) -> &[u8] {
+        // SAFETY: buf is the base of a buffer of buf_size bytes
+        // inside the validated region, any byte pattern is a
+        // valid u8, and the pop gave this guard sole ownership
+        // until free.
+        unsafe { core::slice::from_raw_parts(self.buf, self.buf_size as usize) }
+    }
+}
+
+impl DerefMut for BufSlot<'_, [u8]> {
+    /// Write access to the whole buffer as bytes.
+    fn deref_mut(&mut self) -> &mut [u8] {
+        // SAFETY: as in deref; &mut self gives exclusivity of
+        // the minted slice.
+        unsafe { core::slice::from_raw_parts_mut(self.buf, self.buf_size as usize) }
+    }
+}
+
+impl<T: ?Sized> BufSlot<'_, T> {
     /// The owning pool's header address — matched against a
     /// registry entry's [`PoolResolver::header_ptr`] by
     /// [`PoolRegistry::into_desc`](crate::PoolRegistry::into_desc).
@@ -488,6 +534,14 @@ impl<T> BufSlot<'_, T> {
     /// This buffer's index (the descriptor payload).
     pub(crate) fn idx(&self) -> u32 {
         self.idx
+    }
+
+    /// The buffer's base as the pool's own raw pointer, for a
+    /// holder that lays its own structure over the buffer and
+    /// shares it between threads, so every access derives from
+    /// one pointer rather than from a `&mut` borrow of the guard.
+    pub(crate) fn as_mut_ptr(&self) -> *mut u8 {
+        self.buf
     }
 
     /// Push the buffer back onto the pool's free-stack.
@@ -641,7 +695,7 @@ mod tests {
         // be rejected (the two kinds must never cross-attach).
         // 2 slots: the ring header (4 lines) + 2×64 fits the
         // pool-sized test region.
-        crate::Ring::init(&mut r.0, TEST_CACHE_LINE_SIZE, 2).unwrap();
+        crate::spsc::v2::Ring::init(&mut r.0, TEST_CACHE_LINE_SIZE, 2).unwrap();
         let err = unsafe { Pool::attach(r.0.as_mut_ptr(), r.0.len()) }
             .err()
             .unwrap();
@@ -932,6 +986,56 @@ mod tests {
             .unwrap();
         buf_slot.free();
         held.for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn alloc_bytes_spans_the_buffer() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
+        let mut a = pool.alloc_bytes().unwrap();
+        let mut b = pool.alloc::<Msg>().unwrap();
+        b.seq = 0x1111;
+        // The whole buffer, line-aligned.
+        assert_eq!(a.len(), CACHE_LINE_SIZE);
+        assert_eq!(a.as_ptr() as usize % CACHE_LINE_SIZE, 0);
+        a.fill(0xAB);
+        // Writes stay in their own buffer: the neighbor is intact.
+        assert_eq!(b.seq, 0x1111);
+        // A zero-copy cast over the bytes sees what was written.
+        let first = u64::read_from_prefix(&a[..]).unwrap().0;
+        assert_eq!(first, u64::from_ne_bytes([0xAB; 8]));
+        a.free();
+        b.free();
+        // Bytes and typed guards share the one free-stack.
+        let all: [_; 4] = core::array::from_fn(|_| pool.alloc_bytes().unwrap());
+        assert_eq!(pool.alloc::<Msg>().err().unwrap(), Exhausted);
+        all.into_iter().for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn alloc_bytes_holds_a_ring() {
+        // A layout sized at runtime: a v2 ring laid over a pool
+        // buffer, its region exactly one buffer.
+        use crate::spsc::v2::{Ring, region_size};
+        const BUF: usize = 8 * CACHE_LINE_SIZE;
+        const DEPTH: u32 = 4;
+        #[repr(C, align(64))]
+        struct Region8([u8; size_of::<PoolHeader>() + 2 * BUF]);
+        let mut r = Region8([0; size_of::<PoolHeader>() + 2 * BUF]);
+        assert!(region_size(TEST_CACHE_LINE_SIZE, DEPTH) <= BUF as u64);
+
+        let mut pool = Pool::init(&mut r.0, BUF as u32, 2).unwrap();
+        let mut seg = pool.alloc_bytes().unwrap();
+        let (mut prod, mut cons) = Ring::init(&mut seg, TEST_CACHE_LINE_SIZE, DEPTH)
+            .unwrap()
+            .split();
+        let mut slot = prod.reserve_slot_with::<u64>(|_| false).unwrap();
+        *slot = 42;
+        slot.commit();
+        let slot = cons.reserve_slot_with::<u64>(|_| false).unwrap();
+        assert_eq!(*slot, 42);
+        slot.release();
+        seg.free();
     }
 
     #[test]

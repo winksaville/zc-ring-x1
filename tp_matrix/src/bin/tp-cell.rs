@@ -19,6 +19,9 @@ use tprobe::fmt::fmt_commas;
 const TOP_ABOUT: &str = concat!(
     "tp-cell ",
     env!("CARGO_PKG_VERSION"),
+    " (zc-ring-x1 ",
+    env!("ZC_RING_X1_VERSION"),
+    ")",
     " - run one phase-probed ring round-trip cell"
 );
 
@@ -32,18 +35,26 @@ enum FlavorArg {
     /// The SPSC v2 in-slot seq ring (same surface, the seq in
     /// its slot)
     SpscV2,
+    /// The SPSC v3 ring of segments (same surface, `--segments`
+    /// per ring, the depth each segment's)
+    SpscV3,
     /// The MPSC v0 ring at 1p/1c (`send_with` producers)
     MpscV0,
     /// The MPSC v1 equality-seq ring at 1p/1c (same surface,
     /// runs at depth 1)
     MpscV1,
-    /// All five, in that order
+    /// All six, in that order
     All,
 }
 
 /// The tp-cell CLI.
 #[derive(Parser, Debug)]
-#[command(name = "tp-cell", version, about = TOP_ABOUT, max_term_width = 80)]
+#[command(
+    name = "tp-cell",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (zc-ring-x1 ", env!("ZC_RING_X1_VERSION"), ")"),
+    about = TOP_ABOUT,
+    max_term_width = 80
+)]
 struct Cli {
     /// Ring flavor(s) to run
     ///
@@ -89,6 +100,7 @@ fn main() {
         FlavorArg::SpscV0 => &[Flavor::SpscV0],
         FlavorArg::SpscV1 => &[Flavor::SpscV1],
         FlavorArg::SpscV2 => &[Flavor::SpscV2],
+        FlavorArg::SpscV3 => &[Flavor::SpscV3],
         FlavorArg::MpscV0 => &[Flavor::MpscV0],
         FlavorArg::MpscV1 => &[Flavor::MpscV1],
         FlavorArg::All => &FLAVORS,
@@ -103,8 +115,15 @@ fn main() {
                 );
                 continue;
             }
-            let res = run_cell(flavor, cfg.duration, cfg.pin, depth);
+            let res = run_cell(flavor, cfg.duration, cfg.pin, depth, cfg.segments);
             report(flavor.as_str(), &cfg, depth, res.probes);
+            if let Some(n) = res.switches {
+                println!(
+                    "  segment switches: {} ({:.3}/RT)",
+                    fmt_commas(n),
+                    n as f64 / res.rts.max(1) as f64
+                );
+            }
             match &res.fills {
                 Some(f) => println!(
                     "  fill counters: lcl_cache={} ({:.3} xfills/RT)  lcl_l2={}  lcl_dram={}  [RTs={}]\n",
@@ -132,6 +151,10 @@ fn main() {
             ("lcl_l2", "demand fills served from the core's own L2"),
             ("lcl_dram", "demand fills served from local DRAM"),
             ("RTs", "round trips completed in the duration"),
+            (
+                "segment switches",
+                "spsc-v3 only: switches across both rings, and per round trip",
+            ),
         ],
     );
 }

@@ -100,6 +100,9 @@ pub struct Cfg {
     pub ticks: bool,
     /// Fractional digits on report value columns.
     pub decimals: usize,
+    /// Segments per ring for the segmented flavors, the others
+    /// ignoring it.
+    pub segments: u32,
 }
 
 /// The CLI flags shared by the probed measurement binaries,
@@ -143,6 +146,18 @@ pub struct CommonArgs {
         value_parser = parse_depth
     )]
     pub depth: Vec<u32>,
+
+    /// Segments per ring for the segmented flavor, spsc-v3, 1 to
+    /// 32. The depth is then each segment's
+    ///
+    /// Other flavors ignore it.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 2,
+        value_parser = parse_segments
+    )]
+    pub segments: u32,
 }
 
 impl CommonArgs {
@@ -155,8 +170,22 @@ impl CommonArgs {
             pin,
             ticks: self.ticks,
             decimals: self.decimals,
+            segments: self.segments,
         }
     }
+}
+
+/// clap value parser for `--segments`: 1 to 32, the most a
+/// segmented ring holds.
+pub fn parse_segments(s: &str) -> Result<u32, String> {
+    let n: u32 = s
+        .trim()
+        .parse()
+        .map_err(|_| format!("segments is not a number: `{s}`"))?;
+    if !(1..=32).contains(&n) {
+        return Err(format!("segments must be 1 to 32, got {n}"));
+    }
+    Ok(n)
 }
 
 /// clap value parser for one `--depth` element: a power of two

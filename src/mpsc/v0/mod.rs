@@ -65,7 +65,7 @@ const MPSC_MIN_CAPACITY: u32 = 2;
 pub(crate) const TOMBSTONE: u32 = 1 << 31;
 
 /// Control block at offset 0 of an MPSC region — same
-/// four-line shape as the SPSC [`Header`](crate::Header), but
+/// four-line shape as the SPSC [`Header`](crate::spsc::v0::Header), but
 /// its own type: the layouts evolve independently and the
 /// index-ownership story differs.
 ///
@@ -331,7 +331,7 @@ fn validate_mpsc_geometry(slot_size: u32, capacity: u32) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Ring;
+    use crate::spsc::v2::{Header, Ring};
 
     /// Test region: header + seq line (4 × 4 B padded to 64) +
     /// 4 slots × 1 line.
@@ -403,7 +403,7 @@ mod tests {
             Error::TooSmall
         );
         // An SPSC-sized region (no seq line) is too small here.
-        let spsc_bytes = size_of::<crate::Header>() + 4 * 64;
+        let spsc_bytes = size_of::<Header>() + 4 * 64;
         assert_eq!(
             MpscRing::init(&mut r.0[..spsc_bytes], 64, 4).err().unwrap(),
             Error::TooSmall
@@ -435,14 +435,16 @@ mod tests {
             .unwrap();
         assert_eq!(err, Error::BadMagic);
         MpscRing::init(&mut r.0, 64, 4).unwrap();
-        let ring = unsafe { MpscRing::attach(r.0.as_mut_ptr(), r.0.len()) }.unwrap();
+        // Taken once after init: each `as_mut_ptr()` borrows the
+        // whole region, and a second one would invalidate `ring`'s
+        // header, which the test goes on to write through.
+        let (base, len) = (r.0.as_mut_ptr(), r.0.len());
+        let ring = unsafe { MpscRing::attach(base, len) }.unwrap();
         assert_eq!(ring.slot_size, 64);
         assert_eq!(ring.capacity, 4);
         // A different recorded cache line is rejected.
         ring.header.cache_line_size.store(128, Ordering::Relaxed);
-        let err = unsafe { MpscRing::attach(r.0.as_mut_ptr(), r.0.len()) }
-            .err()
-            .unwrap();
+        let err = unsafe { MpscRing::attach(base, len) }.err().unwrap();
         assert_eq!(err, Error::BadCacheLine);
         // A recorded capacity under the floor is rejected too,
         // so a region another build wrote at 1 is not attached.
@@ -450,9 +452,7 @@ mod tests {
             .cache_line_size
             .store(CACHE_LINE_SIZE as u32, Ordering::Relaxed);
         ring.header.capacity.store(1, Ordering::Relaxed);
-        let err = unsafe { MpscRing::attach(r.0.as_mut_ptr(), r.0.len()) }
-            .err()
-            .unwrap();
+        let err = unsafe { MpscRing::attach(base, len) }.err().unwrap();
         assert_eq!(err, Error::BadCapacity);
     }
 

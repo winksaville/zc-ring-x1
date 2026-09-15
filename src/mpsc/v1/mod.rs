@@ -64,7 +64,7 @@ const MPSC_MAX_CAPACITY: u32 = 1 << 30;
 pub(crate) const TOMBSTONE: u32 = 1 << 31;
 
 /// Control block at offset 0 of an MPSC region — same
-/// four-line shape as the SPSC [`Header`](crate::Header), but
+/// four-line shape as the SPSC [`Header`](crate::spsc::v0::Header), but
 /// its own type: the layouts evolve independently and the
 /// index-ownership story differs.
 ///
@@ -330,7 +330,7 @@ fn validate_mpsc_geometry(slot_size: u32, capacity: u32) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Ring;
+    use crate::spsc::v2::{Header, Ring};
 
     /// Test region: header + seq line (4 × 4 B padded to 64) +
     /// 4 slots × 1 line.
@@ -396,7 +396,7 @@ mod tests {
             Error::TooSmall
         );
         // An SPSC-sized region (no seq line) is too small here.
-        let spsc_bytes = size_of::<crate::Header>() + 4 * 64;
+        let spsc_bytes = size_of::<Header>() + 4 * 64;
         assert_eq!(
             MpscRing::init(&mut r.0[..spsc_bytes], 64, 4).err().unwrap(),
             Error::TooSmall
