@@ -1101,6 +1101,21 @@ fn switch_cost(
     rows.append(&mut pair);
 }
 
+/// Print a legend entry wrapped at 80 columns, `- ` on its
+/// first line and two spaces under it on the rest.
+fn legend(text: &str) {
+    let mut line = String::from("-");
+    for word in text.split_whitespace() {
+        if line.len() + 1 + word.len() > 80 {
+            println!("{line}");
+            line = String::from(" ");
+        }
+        line.push(' ');
+        line.push_str(word);
+    }
+    println!("{line}");
+}
+
 /// Run the segment stress and print it as one table: the burst
 /// on one thread and the lagging consumer at each placement, at
 /// [`STRESS_SEGMENTS`] segments of DEPTH, then the switch cost
@@ -1183,30 +1198,30 @@ fn segment_stress(smt: PinPair, far: PinPair) {
     );
     stress_table(&rows);
     println!();
-    println!(
-        "- line: the ring and the shape of the run. burst 1t: one thread fills every segment with \
+    legend(&format!(
+        "line: the ring and the shape of the run. burst 1t: one thread fills every segment with \
          the consumer idle, then drains, until the messages are moved. lagging 2t: the producer \
          streams while the consumer reads two segments' worth between {}us pauses, so the producer \
          runs ahead across segments at every pause. stream 2t: both spinning, the two_t loops' \
          shape.",
         LAG_PAUSE.as_micros()
-    );
-    println!(
-        "- shape: segments x slots per segment. The first rows are the stress shape; the switch \
+    ));
+    legend(
+        "shape: segments x slots per segment. The first rows are the stress shape; the switch \
          cost rows are the same 32 slots as one segment, which never switches, and as 32 segments \
-         of one slot, which switches on nearly every message."
+         of one slot, which switches on nearly every message.",
     );
-    println!(
-        "- ns/msg: elapsed over the messages moved, `-` where the line's pace is the consumer's \
+    legend(&format!(
+        "ns/msg: elapsed over the messages moved, `-` where the line's pace is the consumer's \
          pauses. segs: segments the producer wrote into, of the ring's. switches: segment \
          switches, the producer's count, which the consumer's matched. sw/msg: switches per \
          message, the burst's 3 per {} at the stress shape.",
         STRESS_SEGMENTS * DEPTH
-    );
-    println!(
-        "- switch ns: the cost of one switch, the gap in ns/msg between the two shapes over the gap \
+    ));
+    legend(
+        "switch ns: the cost of one switch, the gap in ns/msg between the two shapes over the gap \
          in sw/msg, on the 32x1 row. Single-threaded it is the instructions alone; streaming across \
-         cores it includes the cold segment crossing."
+         cores it includes the cold segment crossing.",
     );
 }
 

@@ -59,6 +59,7 @@ validate` passes.
 - [feat: every ring in the demo's one_msg lines and a segment stress][9] (done)
 - [perf: mpsc v2 on the 7600X and a native build][10] (done)
 - [feat: the demo's segment stress as a table with a switch cost][12] (done)
+- [fix: wrap the segment stress legend][13] (done)
 - [feat: segmented queue MPSC v2 closing][6]
 
 #### Deliberation
@@ -282,6 +283,14 @@ cost of one segment switch was not measured anywhere.
   - The burst, the lagging consumer, and a new spinning stream take segments and depth as
     parameters, so the switch-cost rows reuse them.
 
+##### fix: wrap the segment stress legend
+
+The stress table's legend printed each entry as one line, past any terminal's width.
+
+* Four entries, each one long line.
+  - A wrapper breaks them at 80 columns with the continuation lines indented under the entry, and
+    the depth sweep's banner line, the other long one, is left as it was.
+
 ##### feat: segmented queue MPSC v2 closing
 
 Closing out the cycle.
@@ -500,4 +509,5 @@ _None._
 [9]: #feat-every-ring-in-the-demos-one_msg-lines-and-a-segment-stress
 [10]: #perf-mpsc-v2-on-the-7600x-and-a-native-build
 [12]: #feat-the-demos-segment-stress-as-a-table-with-a-switch-cost
+[13]: #fix-wrap-the-segment-stress-legend
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
