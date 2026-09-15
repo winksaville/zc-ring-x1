@@ -80,7 +80,7 @@ at segment depth 1 while the producer runs ahead. `vc-x1 validate` passes.
 - [feat: spsc v3 segment chain][3] (done)
 - [fix: the two tests Miri rejects][7] (done)
 - [test: spsc v3 across segment counts and depths][8] (done)
-- [feat: spsc v3 in the measurement tools][4]
+- [feat: spsc v3 in the measurement tools][4] (done)
 - [feat: segmented queue SPSC v3 closing][6]
 
 #### Deliberation
@@ -246,10 +246,21 @@ The tools measured every ring but v3, so nothing could say what v3 costs against
 * What the first runs showed.
   - Where no switch happens, the demo's one-thread loop, v3 ran about 24 ns per message against
     v2's 7.5, so the cost is on v3's fast path, not in switching. That goes to a Todo entry.
-* The sweep folds in here: segment depth from 1 up across the three pinned placements, the round
-  trip for a consumer that keeps up and the stream for a producer that runs ahead, into a new
-  design-note section with the "carried to MPSC" list and the verdict on the design, and the 7600X
-  pasted in by the user.
+* A slow v3 row could mean switching or a slow fast path, and the tables could not tell which.
+  - v3's rows add `switches/RT` in `tp-matrix`, `switches/msg` in `tp-stream`, and a switch line in
+    `tp-cell`, from the endpoints' counters, `-` for every other flavor.
+* Two builds of a tool read the same, `tp-matrix 0.1.0`, so a stale install on the 7600X looked
+  current.
+  - A `tp_matrix` build script passes zc-ring-x1's version into every tool's banner and `-V`,
+    `tp-matrix 0.1.0 (zc-ring-x1 0.16.0-5)`.
+* What v3 costs against v2 was not measured.
+  - The sweep, `tp-matrix` and `tp-stream` at depths 1, 8, 64, and 1024 with two segments, ran
+    twice on the 3900X and, over ssh with binaries built here, twice on the 7600X. It is the new
+    design-note section [SPSC v3: ring of segments](notes/ring-buffer-design.md#spsc-v3-ring-of-segments),
+    with the design, the "carried to MPSC" list, the tables, and the verdict.
+  - The design works, switching zero times when the consumer keeps up and exactly as predicted at
+    depth 1, and a switch is cheap. But where no switch happens v3 streams 2 to 4 times slower
+    than v2, so the fast path, not the segments, keeps v3 from matching v2.
 
 ##### feat: segmented queue SPSC v3 closing
 

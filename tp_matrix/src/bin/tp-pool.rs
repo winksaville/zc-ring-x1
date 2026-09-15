@@ -20,12 +20,20 @@ use tp_runner::topo::{Placement, discover_placements};
 const TOP_ABOUT: &str = concat!(
     "tp-pool ",
     env!("CARGO_PKG_VERSION"),
+    " (zc-ring-x1 ",
+    env!("ZC_RING_X1_VERSION"),
+    ")",
     " - run the pool-message sweep, one table per placement"
 );
 
 /// The tp-pool CLI.
 #[derive(Parser, Debug)]
-#[command(name = "tp-pool", version, about = TOP_ABOUT, max_term_width = 80)]
+#[command(
+    name = "tp-pool",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (zc-ring-x1 ", env!("ZC_RING_X1_VERSION"), ")"),
+    about = TOP_ABOUT,
+    max_term_width = 80
+)]
 struct Cli {
     /// Pool sizes (buffers preallocated) to run, comma-separated,
     /// each a column

@@ -1068,6 +1068,150 @@ travel on one line.
     with 0.14 fills, twice v0's rate. At the SMT pair, where
     no line crosses, v0 keeps its 2x over every seq protocol.
 
+## SPSC v3: ring of segments
+
+The fourth SPSC protocol, `spsc::v3`, a sibling of v0 through
+v2 and, since the cycle `feat: segmented queue SPSC v3`, the
+crate's default `Ring`. A v2 ring is fixed-length, so a
+producer that outruns its consumer finds it Full. v3 is a ring
+of up to 32 segments, each a ring of its own, and when the
+consumer keeps up only one is in use. The others are insurance
+for a producer that runs ahead, and switching between them is
+meant to be the only cost v3 adds. It is a design built to be
+measured, and one that falls short leads to a v4.
+
+- **Segments**: `Ring::init(pool, slot_size, seg_capacity,
+  seg_count)` takes every segment from the application's pool
+  with `Pool::alloc_bytes` and initializes each: a header line,
+  then `seg_capacity` slots opening with v2's in-slot seq word.
+  `segment_size` is what the pool's buffers must hold. Nothing
+  allocates, frees, or re-initializes while the ring runs, and
+  the pool is borrowed only during `init`.
+- **The seq word**: 32 bits, so v3 builds wherever v0 through
+  v2 do. The low 26 bits hold v2's claimable `pos`, committed
+  `pos + M + 1`, and released `pos + M`, and the high bits a
+  MOVED flag and the next segment's number, so one load tells
+  the consumer empty, a message, or a message and then segment
+  `k`. The width caps a segment at `2^24` slots and a ring at
+  32 segments.
+- **Switching**: the producer decides at its own commit, the
+  one moment it alone writes the slot's word. When the next
+  slot is not claimable it takes a free segment and commits the
+  message with MOVED. A slot seen claimable stays claimable
+  until the producer claims it, so that look-ahead replaces the
+  next reserve's load. The consumer, after a MOVED message,
+  releases it, gives the old segment back, and follows.
+- **Free segments without CAS**: the producer flips a
+  segment's bit in a private word when it takes it, the
+  consumer a bit in a shared word, in segment 0's header, when
+  it gives one back. A segment is free where the two agree, and
+  `trailing_zeros` finds one.
+- **Reuse**: each side keeps a private resume position per
+  segment, and both leave a segment at the same slot, so a
+  reused segment's seqs are already claimable.
+- **Limits**: no `attach`, the ring's state spanning a pool and
+  its segments. Code that needs a single region names
+  `spsc::v2::Ring`.
+- **Counters**: `Producer::switches` and `Consumer::switches`
+  count switches on the switch path only, and `segment` names
+  the current one. `examples/spsc_v3_segments.rs` runs every
+  segment count from 1 to 32 at depths 1, 8, 64, and 1024.
+- **Carried to MPSC**, for a segmented MPSC as its own
+  implementation: producers racing to take a segment need a CAS
+  where v3's single producer does not, a segment must be sealed
+  before the switch so no late claim lands in it, and a slow
+  producer may still hold a segment being given back, so
+  reclamation is the hard part.
+- **Prediction, on record before measuring**: with the consumer
+  keeping up, v3 matches v2 at the same segment depth, both
+  loading one seq per message on each side. We thought segment
+  depth 1 with the producer ahead would run within twice v2's
+  cost per message.
+- **Measured (2026-09-15, 3900X and 7600X, the rung `feat: spsc
+  v3 in the measurement tools`, `tp-matrix` and `tp-stream` 1 s
+  cells at depths 1, 8, 64, and 1024, two segments, each sweep
+  run twice)**. The runs agreed within 10% but for the marked
+  (`*`) cells, whose means moved more than 15% between runs. The
+  7600X has no cross-CCX placement, its six cores sharing one
+  L3.
+  - Streaming, the producer running ahead: ns per message v2 /
+    v3, and v3's switches per message:
+
+    | 3900X     | d=1                  | d=8                  | d=64                 | d=1024               |
+    |-----------|---------------------:|---------------------:|---------------------:|---------------------:|
+    | 0,1 CCX   |  63.1 / 64.0 (0.637) |  8.1 / 18.4 (0.003)  |  4.9 / 16.1 (0.000)  |  5.2 / 21.6 (0.000)  |
+    | 0,3 x-CCX | 193.7 / 237.4 (0.604)| 31.5 / 56.4 (0.000)  | 13.4 / 20.9 (0.000)  |  8.2 / 29.4 (0.001)  |
+    | 0,12 SMT  |  34.8 / 36.3 (0.513) |  8.2 / 20.8 (0.002)  |  8.1 / 21.1 (0.003)  |  8.1 / 21.4 (0.001)  |
+    | 7600X     |                      |                      |                      |                      |
+    | 0,1 CCX   |  40.0 / 52.4 (0.504) |  7.6 / 13.5 (0.001)  |  3.0 / 11.6 (0.004)  |  7.4 / 9.0 (0.001)   |
+    | 0,6 SMT   |  22.1 / 35.2 (0.500) |  4.7 / 16.3 (0.074)  |  4.4 / 15.2 (0.013)  |  4.4 / 15.0 (0.001)  |
+
+  - The round trip, one message in flight so the consumer keeps
+    up: main's send and the worker's receive, means in ns, v2 /
+    v3, and v3's switches per round trip, 3900X:
+
+    | placement | depth | m.send v2 / v3 | w.recv v2 / v3 | xfills/RT v2 / v3 | switches/RT |
+    |-----------|------:|---------------:|---------------:|------------------:|------------:|
+    | 0,1 CCX   |     1 |    8.5 / 26.8* |   83.3 / 115.7 |     4.004 / 8.085 |       2.000 |
+    | 0,1 CCX   |     8 |     9.0 / 12.1 |  112.1 / 113.9 |     3.487 / 3.287 |       0.000 |
+    | 0,1 CCX   |    64 |     9.6 / 12.2 |  122.3 / 115.9 |     2.774 / 2.157 |       0.000 |
+    | 0,1 CCX   |  1024 |     9.3 / 12.3 |  117.5 / 115.0 |     2.270 / 2.024 |       0.000 |
+    | 0,3 x-CCX |     1 |  8.4* / 125.2* |  271.1 / 387.8 |     4.027 / 8.181 |       2.000 |
+    | 0,3 x-CCX |    64 |     8.5 / 12.9 |  336.2 / 344.5 |     2.828 / 2.336 |       0.000 |
+    | 0,12 SMT  |     1 |     8.6 / 26.3 |   77.3 / 121.6 |   0.0004 / 0.0010 |       2.000 |
+    | 0,12 SMT  |    64 |     8.6 / 18.1 |   76.5 / 115.8 |   0.0005 / 0.0007 |       0.000 |
+
+    and 7600X:
+
+    | placement | depth | m.send v2 / v3 | w.recv v2 / v3 | switches/RT |
+    |-----------|------:|---------------:|---------------:|------------:|
+    | 0,1 CCX   |     1 |     7.1 / 17.8 |   59.2 / 141.4 |       2.000 |
+    | 0,1 CCX   |     8 |     6.8 / 10.8 |   60.4 / 115.7 |       0.000 |
+    | 0,1 CCX   |    64 |     6.6 / 10.3 |   89.3 / 111.7 |       0.000 |
+    | 0,1 CCX   |  1024 |     6.7 / 10.4 |   82.5 / 111.8 |       0.000 |
+    | 0,6 SMT   |     1 |     6.8 / 18.5 |   57.9 / 109.5 |       2.000 |
+    | 0,6 SMT   |    64 |     6.8 / 14.7 |   56.8 / 89.1  |       0.000 |
+
+- **Readings**:
+  - The design does what it says. With the consumer keeping up,
+    the round trip at depth 8 and up switches 0.000 times on
+    both machines, and at depth 1 exactly twice per round trip,
+    once per ring. Streaming at depth 8 and up, the producer
+    running ahead, it switches at most 0.074 times per message.
+  - The prediction fails on the fast path, not on switching.
+    Where no switch happens, v3 streams 2 to 4 times slower than
+    v2, 16.1 against 4.9 ns per message on the 3900X's CCX at
+    depth 64 and 11.6 against 3.0 on the 7600X, and its sends in
+    the round trip run 3 to 4 ns slower, twice that at the SMT
+    pair. Its receives match v2's across the 3900X's CCX but run
+    25 to 90% slower at the SMT pairs and on the 7600X.
+  - A switch is cheap against the ring it replaces. At depth 1,
+    where the stream switches about every other message, v3
+    streams within 2% of v2 across the 3900X's CCX, 64.0 against
+    63.1, and within 35% on the 7600X, inside the prediction's
+    twice. In the round trip a switch doubles the lines moved,
+    8 against 4 per round trip, and triples the send.
+  - Found while building the tools, and deferred to the Todo
+    entry `SPSC v3 fast path`: `commit` and `release` copied the
+    ring's whole segment table, about 280 bytes, on every
+    message. Borrowing it took the 3900X's CCX stream at depth
+    64 from 18.4 to 10.7 ns and the SMT pair from 21.8 to 14.3,
+    so the copy is more than half the gap, and the rest is not
+    yet found.
+  - The 7600X streams differently, not its counters: v2 at
+    depth 64 reads 2.0 lines per message across its CCX against
+    0.13 on the 3900X, yet its round trips read the expected
+    line counts, v0 12, v1 8, and v2 4 per round trip, as on the
+    3900X. We think the 3900X's prefetcher pulls consecutive
+    slot lines ahead of demand and the 7600X's does not at that
+    depth. Its fill columns are left out of the stream table
+    above only for width.
+- **Verdict (2026-09-15)**: the segment design works and its
+  switch is cheap, but v3 as built does not match v2 when the
+  consumer keeps up, so the default ring costs more than v2 on
+  every path that never needs a second segment. The fast-path
+  Todo entry is the next step, measured against these tables.
+
 ## MPSC v1: equality-seq ring
 
 The second MPSC protocol, `mpsc::v1`, a sibling of v0 under

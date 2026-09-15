@@ -109,6 +109,9 @@ pub enum Flavor {
     /// The SPSC v2 in-slot seq ring (same surface, the seq at
     /// the front of its slot).
     SpscV2,
+    /// The SPSC v3 ring of segments over a pool (same surface,
+    /// the depth each segment's, the segment count a knob).
+    SpscV3,
     /// The MPSC v0 ring at 1p/1c (`send_with` producers).
     MpscV0,
     /// The MPSC v1 equality-seq ring at 1p/1c (same surface,
@@ -117,10 +120,11 @@ pub enum Flavor {
 }
 
 /// Every flavor, in report order.
-pub const FLAVORS: [Flavor; 5] = [
+pub const FLAVORS: [Flavor; 6] = [
     Flavor::SpscV0,
     Flavor::SpscV1,
     Flavor::SpscV2,
+    Flavor::SpscV3,
     Flavor::MpscV0,
     Flavor::MpscV1,
 ];
@@ -132,6 +136,7 @@ impl Flavor {
             Flavor::SpscV0 => "spsc-v0",
             Flavor::SpscV1 => "spsc-v1",
             Flavor::SpscV2 => "spsc-v2",
+            Flavor::SpscV3 => "spsc-v3",
             Flavor::MpscV0 => "mpsc-v0",
             Flavor::MpscV1 => "mpsc-v1",
         }
@@ -181,6 +186,9 @@ pub struct CellResult {
     pub rts: u64,
     /// Fill counters, when the platform provides them.
     pub fills: Option<FillCounts>,
+    /// Segment switches across both rings, for the segmented
+    /// flavor, `None` for the others.
+    pub switches: Option<u64>,
 }
 
 /// The three per-cell fill counters, opened before the worker
@@ -294,12 +302,14 @@ fn instrumented_recv(
 /// open the fill counters, drive `dur` worth of round trips at
 /// `flavor` and ring `depth` with the worker on `pin.1`, and
 /// return probes + counters. The caller's thread affinity is
-/// left as the cell set it.
+/// left as the cell set it. `segments` is the segmented flavor's
+/// count per ring, ignored by the others.
 pub fn run_cell(
     flavor: Flavor,
     dur: Duration,
     pin: Option<(usize, usize)>,
     depth: u32,
+    segments: u32,
 ) -> CellResult {
     match pin {
         Some((main_cpu, _)) => pin_to_cpu(main_cpu),
@@ -308,40 +318,105 @@ pub fn run_cell(
     #[cfg(target_os = "linux")]
     let fills = Fills::open();
     let worker = pin.map(|(_, w)| w);
-    let probes = match flavor {
-        Flavor::SpscV0 => run_spsc_v0(dur, worker, depth),
-        Flavor::SpscV1 => run_spsc_v1(dur, worker, depth),
-        Flavor::SpscV2 => run_spsc_v2(dur, worker, depth),
-        Flavor::MpscV0 => run_mpsc_v0(dur, worker, depth),
-        Flavor::MpscV1 => run_mpsc_v1(dur, worker, depth),
+    let (probes, switches) = match flavor {
+        Flavor::SpscV0 => run_spsc_v0(dur, worker, depth, segments),
+        Flavor::SpscV1 => run_spsc_v1(dur, worker, depth, segments),
+        Flavor::SpscV2 => run_spsc_v2(dur, worker, depth, segments),
+        Flavor::SpscV3 => run_spsc_v3(dur, worker, depth, segments),
+        Flavor::MpscV0 => (run_mpsc_v0(dur, worker, depth), None),
+        Flavor::MpscV1 => (run_mpsc_v1(dur, worker, depth), None),
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(Fills::finish);
     #[cfg(not(target_os = "linux"))]
     let fills = None;
     let rts = probes[0].count();
-    CellResult { probes, rts, fills }
+    CellResult {
+        probes,
+        rts,
+        fills,
+        switches,
+    }
 }
 
-/// Define an SPSC cell body over the ring at `$ring`, its
-/// regions sized by `$size(slot_size, depth)`: two rings, both
-/// ends `reserve_slot_with` under the [`spin`] policy (recv
-/// sites instrumented). The SPSC versions share the endpoint
-/// surface and differ by path, so one body serves them all and
-/// the A/B measures the protocol alone.
+/// A producer's segment switches, for the flavors that have
+/// segments: `None` from a single-region ring.
+trait SegmentSwitches {
+    /// Switches so far, or `None` when the ring has no segments.
+    fn segment_switches(&self) -> Option<u64>;
+}
+
+impl SegmentSwitches for zc_ring_x1::spsc::v0::Producer<'_> {
+    fn segment_switches(&self) -> Option<u64> {
+        None
+    }
+}
+
+impl SegmentSwitches for zc_ring_x1::spsc::v1::Producer<'_> {
+    fn segment_switches(&self) -> Option<u64> {
+        None
+    }
+}
+
+impl SegmentSwitches for zc_ring_x1::spsc::v2::Producer<'_> {
+    fn segment_switches(&self) -> Option<u64> {
+        None
+    }
+}
+
+impl SegmentSwitches for zc_ring_x1::spsc::v3::Producer<'_> {
+    fn segment_switches(&self) -> Option<u64> {
+        Some(self.switches())
+    }
+}
+
+/// Bind one SPSC ring's `$tx` and `$rx` endpoints, one-line
+/// slots at `$depth`, the storage held in `$store` (and, for a
+/// ring of segments, the pool in `$pool`) so it outlives them.
+///
+/// - `single $ring, $size`: a ring over one region sized by
+///   `$size(slot_size, depth)`, `$segments` unused.
+/// - `segmented`: a v3 ring of `$segments` segments, each
+///   `$depth` slots, over a pool holding exactly those segments.
+macro_rules! spsc_pair {
+    ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr,
+     single $ring:path, $size:path) => {
+        let _ = $segments;
+        let slot = CACHE_LINE_SIZE as u32;
+        let mut $store = LineBuf::new($size(slot, $depth));
+        let (mut $tx, mut $rx) = <$ring>::init($store.as_mut_bytes(), slot, $depth)
+            .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
+            .split();
+    };
+    ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr, segmented) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let buf = zc_ring_x1::spsc::v3::segment_size(slot, $depth);
+        let mut $store = LineBuf::new(
+            size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * $segments as u64,
+        );
+        let mut $pool = zc_ring_x1::Pool::init($store.as_mut_bytes(), buf as u32, $segments)
+            .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
+        let (mut $tx, mut $rx) = zc_ring_x1::spsc::v3::Ring::init(&mut $pool, slot, $depth, $segments)
+            .unwrap() // OK: the pool holds exactly the segments, sized by segment_size
+            .split();
+    };
+}
+
+/// Define an SPSC cell body over the ring pair `$pair` builds (see
+/// `spsc_pair`): two rings, both ends `reserve_slot_with` under
+/// the [`spin`] policy (recv sites instrumented). The SPSC
+/// versions share the endpoint surface and differ by path, so one
+/// body serves them all and the A/B measures the protocol alone.
 macro_rules! spsc_cell {
-    ($name:ident, $ring:path, $size:path, $flavor:expr) => {
-        fn $name(dur: Duration, worker_cpu: Option<usize>, depth: u32) -> [TProbe; 8] {
-            use $ring as Ring;
-            let slot = CACHE_LINE_SIZE as u32;
-            let mut req_region = LineBuf::new($size(slot, depth));
-            let mut resp_region = LineBuf::new($size(slot, depth));
-            let (mut req_tx, mut req_rx) = Ring::init(req_region.as_mut_bytes(), slot, depth)
-                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
-                .split();
-            let (mut resp_tx, mut resp_rx) = Ring::init(resp_region.as_mut_bytes(), slot, depth)
-                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
-                .split();
+    ($name:ident, $flavor:expr, $($pair:tt)+) => {
+        fn $name(
+            dur: Duration,
+            worker_cpu: Option<usize>,
+            depth: u32,
+            segments: u32,
+        ) -> ([TProbe; 8], Option<u64>) {
+            spsc_pair!(req_tx, req_rx, req_store, req_pool, depth, segments, $($pair)+);
+            spsc_pair!(resp_tx, resp_rx, resp_store, resp_pool, depth, segments, $($pair)+);
 
             std::thread::scope(|s| {
                 let worker = s.spawn(move || {
@@ -380,7 +455,7 @@ macro_rules! spsc_cell {
                         slot.commit();
                         send_probe.record(ticks::read_ticks().wrapping_sub(s));
                     }
-                    (recv, send_probe)
+                    (recv, send_probe, resp_tx.segment_switches())
                 });
 
                 let mut send_probe =
@@ -420,17 +495,25 @@ macro_rules! spsc_cell {
                     .expect("spin never gives up");
                 *slot = STOP;
                 slot.commit();
-                let (worker_recv, worker_send) = worker.join().expect("worker panicked");
-                [
-                    send_probe,
-                    worker_recv.phase,
-                    worker_recv.spin,
-                    worker_recv.attempts,
-                    worker_send,
-                    recv.phase,
-                    recv.spin,
-                    recv.attempts,
-                ]
+                let (worker_recv, worker_send, resp_switches) =
+                    worker.join().expect("worker panicked");
+                let switches = req_tx
+                    .segment_switches()
+                    .zip(resp_switches)
+                    .map(|(req, resp)| req + resp);
+                (
+                    [
+                        send_probe,
+                        worker_recv.phase,
+                        worker_recv.spin,
+                        worker_recv.attempts,
+                        worker_send,
+                        recv.phase,
+                        recv.spin,
+                        recv.attempts,
+                    ],
+                    switches,
+                )
             })
         }
     };
@@ -438,22 +521,23 @@ macro_rules! spsc_cell {
 
 spsc_cell!(
     run_spsc_v0,
-    zc_ring_x1::spsc::v0::Ring,
-    v0_region_size,
-    Flavor::SpscV0
+    Flavor::SpscV0,
+    single zc_ring_x1::spsc::v0::Ring,
+    v0_region_size
 );
 spsc_cell!(
     run_spsc_v1,
-    zc_ring_x1::spsc::v1::Ring,
-    zc_ring_x1::spsc::v1::region_size,
-    Flavor::SpscV1
+    Flavor::SpscV1,
+    single zc_ring_x1::spsc::v1::Ring,
+    zc_ring_x1::spsc::v1::region_size
 );
 spsc_cell!(
     run_spsc_v2,
-    zc_ring_x1::spsc::v2::Ring,
-    zc_ring_x1::spsc::v2::region_size,
-    Flavor::SpscV2
+    Flavor::SpscV2,
+    single zc_ring_x1::spsc::v2::Ring,
+    zc_ring_x1::spsc::v2::region_size
 );
+spsc_cell!(run_spsc_v3, Flavor::SpscV3, segmented);
 
 /// Define an MPSC cell body over the ring at `$ring`, its
 /// regions sized by `$size(slot_size, depth)`: two rings at
@@ -585,6 +669,9 @@ pub struct StreamResult {
     /// Fill counters over the whole stream, when the platform
     /// provides them.
     pub fills: Option<FillCounts>,
+    /// Segment switches, for the segmented flavor, `None` for the
+    /// others.
+    pub switches: Option<u64>,
 }
 
 /// Messages between the producer's wall-clock checks, as
@@ -610,22 +697,35 @@ pub fn run_stream(
     dur: Duration,
     pin: Option<(usize, usize)>,
     depth: u32,
+    segments: u32,
 ) -> StreamResult {
     unpin_current();
     #[cfg(target_os = "linux")]
     let fills = Fills::open();
-    let (msgs, secs) = match flavor {
-        Flavor::SpscV0 => stream_spsc_v0(dur, pin, depth),
-        Flavor::SpscV1 => stream_spsc_v1(dur, pin, depth),
-        Flavor::SpscV2 => stream_spsc_v2(dur, pin, depth),
-        Flavor::MpscV0 => stream_mpsc_v0(dur, pin, depth),
-        Flavor::MpscV1 => stream_mpsc_v1(dur, pin, depth),
+    let (msgs, secs, switches) = match flavor {
+        Flavor::SpscV0 => stream_spsc_v0(dur, pin, depth, segments),
+        Flavor::SpscV1 => stream_spsc_v1(dur, pin, depth, segments),
+        Flavor::SpscV2 => stream_spsc_v2(dur, pin, depth, segments),
+        Flavor::SpscV3 => stream_spsc_v3(dur, pin, depth, segments),
+        Flavor::MpscV0 => {
+            let (msgs, secs) = stream_mpsc_v0(dur, pin, depth);
+            (msgs, secs, None)
+        }
+        Flavor::MpscV1 => {
+            let (msgs, secs) = stream_mpsc_v1(dur, pin, depth);
+            (msgs, secs, None)
+        }
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(Fills::finish);
     #[cfg(not(target_os = "linux"))]
     let fills = None;
-    StreamResult { msgs, secs, fills }
+    StreamResult {
+        msgs,
+        secs,
+        fills,
+        switches,
+    }
 }
 
 /// The consumer side of a streaming cell: drain `recv` until
@@ -643,22 +743,22 @@ fn drain_stream(mut recv: impl FnMut() -> u64) -> u64 {
     }
 }
 
-/// Define an SPSC streaming cell body over the ring at `$ring`,
-/// its region sized by `$size(slot_size, depth)`: one ring,
-/// the producer spawned on `pin.0`, the consumer on `pin.1`.
-/// Returns the messages moved and the seconds.
+/// Define an SPSC streaming cell body over the ring `$pair` builds
+/// (see `spsc_pair`): one ring, the producer spawned on `pin.0`,
+/// the consumer on `pin.1`. Returns the messages moved and the
+/// seconds.
 macro_rules! spsc_stream {
-    ($name:ident, $ring:path, $size:path) => {
-        fn $name(dur: Duration, pin: Option<(usize, usize)>, depth: u32) -> (u64, f64) {
-            use $ring as Ring;
-            let slot = CACHE_LINE_SIZE as u32;
-            let mut region = LineBuf::new($size(slot, depth));
-            let (mut tx, mut rx) = Ring::init(region.as_mut_bytes(), slot, depth)
-                .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
-                .split();
+    ($name:ident, $($pair:tt)+) => {
+        fn $name(
+            dur: Duration,
+            pin: Option<(usize, usize)>,
+            depth: u32,
+            segments: u32,
+        ) -> (u64, f64, Option<u64>) {
+            spsc_pair!(tx, rx, store, pool, depth, segments, $($pair)+);
             let start = Instant::now();
-            let msgs = std::thread::scope(|s| {
-                s.spawn(move || {
+            let (msgs, switches) = std::thread::scope(|s| {
+                let producer = s.spawn(move || {
                     if let Some((p, _)) = pin {
                         pin_to_cpu(p);
                     }
@@ -681,6 +781,7 @@ macro_rules! spsc_stream {
                         .expect("spin never gives up");
                     *slot = STOP;
                     slot.commit();
+                    tx.segment_switches()
                 });
                 let consumer = s.spawn(move || {
                     if let Some((_, c)) = pin {
@@ -695,24 +796,26 @@ macro_rules! spsc_stream {
                         v
                     })
                 });
-                consumer.join().expect("consumer panicked")
+                let msgs = consumer.join().expect("consumer panicked");
+                (msgs, producer.join().expect("producer panicked"))
             });
-            (msgs, start.elapsed().as_secs_f64())
+            (msgs, start.elapsed().as_secs_f64(), switches)
         }
     };
 }
 
-spsc_stream!(stream_spsc_v0, zc_ring_x1::spsc::v0::Ring, v0_region_size);
+spsc_stream!(stream_spsc_v0, single zc_ring_x1::spsc::v0::Ring, v0_region_size);
 spsc_stream!(
     stream_spsc_v1,
-    zc_ring_x1::spsc::v1::Ring,
+    single zc_ring_x1::spsc::v1::Ring,
     zc_ring_x1::spsc::v1::region_size
 );
 spsc_stream!(
     stream_spsc_v2,
-    zc_ring_x1::spsc::v2::Ring,
+    single zc_ring_x1::spsc::v2::Ring,
     zc_ring_x1::spsc::v2::region_size
 );
+spsc_stream!(stream_spsc_v3, segmented);
 
 /// Define an MPSC streaming cell body over the ring at `$ring`,
 /// its region sized by `$size(slot_size, depth)`: one ring at

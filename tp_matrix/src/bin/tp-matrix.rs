@@ -23,12 +23,20 @@ use tprobe::{TProbe, ticks};
 const TOP_ABOUT: &str = concat!(
     "tp-matrix ",
     env!("CARGO_PKG_VERSION"),
+    " (zc-ring-x1 ",
+    env!("ZC_RING_X1_VERSION"),
+    ")",
     " - run the full measurement matrix, markdown tables out"
 );
 
 /// The tp-matrix CLI.
 #[derive(Parser, Debug)]
-#[command(name = "tp-matrix", version, about = TOP_ABOUT, max_term_width = 80)]
+#[command(
+    name = "tp-matrix",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (zc-ring-x1 ", env!("ZC_RING_X1_VERSION"), ")"),
+    about = TOP_ABOUT,
+    max_term_width = 80
+)]
 struct Cli {
     #[command(flatten)]
     common: CommonArgs,
@@ -66,6 +74,15 @@ fn stat_cell(p: &TProbe, cfg: &Cfg) -> String {
 
 /// `xfills/RT` cell: 3 decimals, or 4 when the value is tiny
 /// (the SMT cells), `-` when counters were unavailable.
+/// `switches/RT` cell for the segmented flavor, `-` for the
+/// single-region ones.
+fn switches_cell(res: &CellResult) -> String {
+    match res.switches {
+        Some(n) => format!("{:.3}", n as f64 / res.rts.max(1) as f64),
+        None => "-".to_string(),
+    }
+}
+
 fn fills_cell(res: &CellResult) -> String {
     match &res.fills {
         Some(f) => {
@@ -133,9 +150,10 @@ fn main() {
     let placements = discover_placements();
     let unit = if cfg.ticks { "tk" } else { "ns" };
     println!(
-        "{} cells, {:.1}s each{}",
+        "{} cells, {:.1}s each, spsc-v3 with {} segments{}",
         placements.len() * FLAVORS.len() * cfg.depths.len(),
         cfg.duration.as_secs_f64(),
+        cfg.segments,
         if cli.verbose {
             ""
         } else {
@@ -161,7 +179,7 @@ fn main() {
                     placement.label,
                     flavor.as_str()
                 );
-                let res = run_cell(flavor, cfg.duration, placement.pin, depth);
+                let res = run_cell(flavor, cfg.duration, placement.pin, depth, cfg.segments);
                 cells.push((placement, flavor, depth, res));
             }
         }
@@ -186,6 +204,7 @@ fn main() {
                 stat_cell(&r.probes[M_ATT], &cfg),
                 rts_cell(r),
                 fills_cell(r),
+                switches_cell(r),
             ]
         })
         .collect();
@@ -205,6 +224,7 @@ fn main() {
             "m.att",
             "RTs",
             "xfills/RT",
+            "switches/RT",
         ],
         &rows,
     );
@@ -237,7 +257,7 @@ fn main() {
             ),
             (
                 "depth",
-                "slots per ring. One message is ever in flight, so depth changes which seq words share a cache line and, at 1, whether the ring has any slack",
+                "slots per ring, per segment for spsc-v3. One message is ever in flight, so depth changes which seq words share a cache line and, at 1, whether the ring has any slack, and at 1 spsc-v3 switches segments on every message",
             ),
             ("m.send", &send("main")),
             ("w.recv", &recv("the worker")),
@@ -252,6 +272,10 @@ fn main() {
                 "round trips completed in the cell's duration, in millions",
             ),
             ("xfills/RT", &format!("{XFILLS_MEANING}, per round trip")),
+            (
+                "switches/RT",
+                "segment switches across both rings per round trip, spsc-v3 only: 0 while every message fits its segment, 2 when each ring switches on every message",
+            ),
         ],
     );
 }
