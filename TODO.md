@@ -54,7 +54,7 @@ validate` passes.
 - [feat: segmented queue MPSC v2 opening][1] (done)
 - [docs: mpsc v2 design and prediction][2] (done)
 - [feat: mpsc v2 segment chain][3] (done)
-- [test: mpsc v2 across segment counts, depths, and producers][4]
+- [test: mpsc v2 across segment counts, depths, and producers][4] (done)
 - [feat: mpsc v2 in the measurement tools][5]
 - [feat: segmented queue MPSC v2 closing][6]
 
@@ -160,8 +160,24 @@ v2 existed only as a design, and the crate's MPSC rings could not grow past one 
 
 ##### test: mpsc v2 across segment counts, depths, and producers
 
-Passing tests over a few shapes are not seeing it work, so switch counters, a matrix over segment
-counts, depths, and producer counts, and an example that shows the switches.
+Multiple segments under several producers were shown working only by tests over a few chosen
+shapes.
+
+* The tests covered a handful of segment counts, depths, and producer counts.
+  - Three tests run every count from 1 to 32 at depths 1, 8, 64, and 1024: filling every segment
+    with the consumer idle and draining, bursts of every size up to capacity, and a stream from
+    one, two, and four producer threads with per-producer order checked. Both ends count the same
+    switches, a filled ring used every segment, and afterwards every segment but the current one
+    is free. Under Miri they run a corner of the matrix, and pass.
+* Nothing showed a switch happening under contention.
+  - `examples/mpsc_v2_segments.rs` runs the same matrix and prints a fill table and a stream table
+    per producer count. Filled, a ring of n segments used all n with n - 1 switches at every
+    depth. Streaming 100,000 messages at depth 1, one producer switched on nearly every message
+    from three segments up, two producers on about nine in ten, and four on six to eight in ten,
+    since a producer that finds the slot unread while another is mid-fill waits on the policy
+    rather than switching. At depth 8 and up a few hundred switches per run at most.
+  - Its nanoseconds are a hundred thousand messages on unpinned threads, a sign of life rather
+    than a measurement, which the tools rung makes.
 
 ##### feat: mpsc v2 in the measurement tools
 

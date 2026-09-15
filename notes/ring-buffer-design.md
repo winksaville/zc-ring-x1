@@ -1464,7 +1464,11 @@ until v2 matches it where no switch happens.
   closure send with tombstone on unwind, and an `MpscConsumer`
   with `reserve_slot_with` and its guard. Both carry
   `switches` and `segment` as v3's endpoints do, a producer's
-  being its own handle's counts.
+  being the ring's, since a switch is the ring's move rather
+  than any one handle's. `examples/mpsc_v2_segments.rs` runs
+  every segment count from 1 to 32 at depths 1, 8, 64, and
+  1024, filled and then streamed from one, two, and four
+  producers.
 - **Trust**: as v1's, with the header words joining the
   untrusted set. A seal naming a segment the ring does not
   have reads as Empty, a scribbled claim word masks to a valid
