@@ -56,6 +56,7 @@ validate` passes.
 - [feat: mpsc v2 segment chain][3] (done)
 - [test: mpsc v2 across segment counts, depths, and producers][4] (done)
 - [feat: mpsc v2 in the measurement tools][5] (done)
+- [feat: every ring in the demo's one_msg lines and a segment stress][9] (done)
 - [feat: segmented queue MPSC v2 closing][6]
 
 #### Deliberation
@@ -104,6 +105,11 @@ validate` passes.
 - The user's waiver on 2026-09-15, "you have permission to complete the rungs before close-out and
   then we can test and tweak together": it covers the opening push and every rung push before the
   closing, their work and description reviews included. The closing push and Land are outside it.
+- A rung inserted before the closing, the user's call on 2026-09-15 after reading the demo's
+  output: every ring in the one_msg lines, the depth sweep at one segment so it measures the fast
+  path alone, and a segment stress block, since nothing in the demo showed a switch. Inside the
+  cycle's subject, so a rung rather than a Todo entry, and under the waiver as a rung before the
+  closing.
 - `## Waiting` is `_None._`, nothing to promote.
 
 #### Ladder details
@@ -210,6 +216,25 @@ The tools measured every MPSC ring but v2, so nothing could say what v2 costs ag
     depth 8 up, we think from the seq word sharing the slot line the consumer spins on.
   - The 7600X is not yet run: the sweep there goes over ssh with binaries built here, and the host
     is the user's to reach. It is the one open item of the acceptance check.
+
+##### feat: every ring in the demo's one_msg lines and a segment stress
+
+The demo's one_msg lines stopped at spsc-v2 and mpsc-v0, its depth sweep ran the segmented rings
+with two segments so a switch and the fast path mixed, and nothing in it stressed the segments.
+
+* Two rings had no one_msg line, and the MPSC lines did not say which version they ran.
+  - spsc-v3 and mpsc-v2 run at every placement, and the MPSC lines are `mpsc0_`, `mpsc1_`, and
+    `mpsc2_`, the 2p+1c line `mpsc1_` since it runs the crate default.
+* The sweep and the one_msg lines could not tell a switch from the fast path.
+  - Both run the segmented rings at one segment, so they never switch and measure the fast path
+    alone. The pair builders take the segment count as a parameter for that.
+* Nothing in the demo showed a switch.
+  - A segment stress block, last, for spsc-v3 and mpsc-v2 at four segments of 64: a burst on one
+    thread that fills every segment then drains, three switches a round, and a lagging consumer at
+    each placement that reads two segments' worth between pauses. Every line uses all four segments
+    and both ends count the same switches: per pause two for mpsc-v2, which switches at full, and
+    one and a half for spsc-v3, which switches at its look-ahead.
+  - The lagging line prints no rate, since its pace is the consumer's pauses, not the ring's.
 
 ##### feat: segmented queue MPSC v2 closing
 
@@ -426,4 +451,5 @@ _None._
 [4]: #test-mpsc-v2-across-segment-counts-depths-and-producers
 [5]: #feat-mpsc-v2-in-the-measurement-tools
 [6]: #feat-segmented-queue-mpsc-v2-closing
+[9]: #feat-every-ring-in-the-demos-one_msg-lines-and-a-segment-stress
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
