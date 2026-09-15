@@ -21,10 +21,12 @@
 //!   placement and at depths 1, 2, 8, and 64, one table per
 //!   placement, so depth and protocol can be told apart, the
 //!   segmented rings again at one segment.
-//! - The segment stress, last: spsc-v3 and mpsc-v2 at four
-//!   segments, a burst that fills every segment and drains on
-//!   one thread, and a lagging consumer at each placement, so
-//!   the switch cost is its own line.
+//! - The segment stress, last, one table with a legend: spsc-v3
+//!   and mpsc-v2 at four segments, a burst that fills every
+//!   segment and drains on one thread, a lagging consumer at
+//!   each placement, and the cost of one switch measured at
+//!   depth 1 as a difference at equal capacity, 32 segments of
+//!   one slot against one segment of 32.
 //! - Part 2, the pool: an allocator thread allocs and
 //!   fills `BufSlot`s and hands them to a freer thread.
 //!   "send" today is moving the guard (see the README's
@@ -61,11 +63,6 @@ const SWEEP_SEGMENTS: u32 = 1;
 /// Segments per ring in the segment stress, where switching is
 /// the point.
 const STRESS_SEGMENTS: u32 = 4;
-
-/// Messages the lagging consumer reads between its pauses:
-/// two segments' worth at DEPTH, so the producer runs ahead
-/// across segments at every pause.
-const LAG_BURST: u64 = 2 * DEPTH as u64;
 
 /// The lagging consumer's pause between bursts.
 const LAG_PAUSE: Duration = Duration::from_micros(20);
@@ -841,40 +838,82 @@ const STREAM_FLAVORS: [StreamFlavor; 7] = [
     },
 ];
 
-/// Print a segment stress line: msgs/sec and ns/msg as
-/// [`report`] when the line's pace is the ring's, then the
-/// segments the producer wrote into and the switches both ends
-/// counted, per message.
-fn report_segments(label: &str, secs: Option<f64>, used: u32, switches: (u64, u64)) {
-    match secs {
-        Some(secs) => report(label, secs),
-        None => println!("{label:<46} paced by the consumer's pauses"),
+/// One row of the segment stress table.
+struct StressRow {
+    /// The line: ring, shape, thread count.
+    line: String,
+    /// Where its threads sat.
+    placement: String,
+    /// Segments times depth.
+    shape: String,
+    /// Elapsed ns per message, `None` for a line paced by the
+    /// consumer's pauses.
+    ns: Option<f64>,
+    /// Segments the producer wrote into, of the ring's.
+    used: (u32, u32),
+    /// Switches the producer counted, the consumer agreeing.
+    switches: u64,
+    /// The cost of one switch in ns, on the row that measures
+    /// it.
+    switch_ns: Option<f64>,
+}
+
+impl StressRow {
+    /// Switches per message.
+    fn per_msg(&self) -> f64 {
+        self.switches as f64 / COUNT as f64
     }
+}
+
+/// Print the stress rows as one markdown table.
+fn stress_table(rows: &[StressRow]) {
     println!(
-        "{:<46} segments used {used}/{STRESS_SEGMENTS}, switches {} producer / {} consumer ({:.3}/msg)",
-        "",
-        commas(switches.0),
-        commas(switches.1),
-        switches.0 as f64 / COUNT as f64
+        "| {:<17} | {:<16} | {:>6} | {:>7} | {:>5} | {:>8} | {:>6} | {:>9} |",
+        "line", "placement", "shape", "ns/msg", "segs", "switches", "sw/msg", "switch ns"
     );
+    println!(
+        "|{}|{}|{}:|{}:|{}:|{}:|{}:|{}:|",
+        "-".repeat(19),
+        "-".repeat(18),
+        "-".repeat(7),
+        "-".repeat(8),
+        "-".repeat(6),
+        "-".repeat(9),
+        "-".repeat(7),
+        "-".repeat(10)
+    );
+    for r in rows {
+        println!(
+            "| {:<17} | {:<16} | {:>6} | {:>7} | {:>5} | {:>8} | {:>6.3} | {:>9} |",
+            r.line,
+            r.placement,
+            r.shape,
+            r.ns.map_or("-".to_string(), |ns| format!("{ns:.1}")),
+            format!("{}/{}", r.used.0, r.used.1),
+            commas(r.switches),
+            r.per_msg(),
+            r.switch_ns.map_or("-".to_string(), |ns| format!("{ns:.1}")),
+        );
+    }
 }
 
 /// The burst: one thread, pinned to core 0, fills the whole
-/// ring with the consumer idle and then drains it, and again
-/// until COUNT messages have moved. Every fill crosses every
-/// segment, so this is the switch cost with no thread in the
-/// way. Returns seconds, segments used, and both switch counts.
+/// ring of `segments` by `depth` with the consumer idle and then
+/// drains it, and again until COUNT messages have moved. Every
+/// fill crosses every segment, so this is the switch cost with
+/// no thread in the way. Returns seconds, segments used, and
+/// both switch counts.
 macro_rules! burst_1t {
     ($name:ident, $send:ident, $recv:ident, $($pair:tt)+) => {
-        fn $name() -> (f64, u32, (u64, u64)) {
-            let capacity = (STRESS_SEGMENTS * DEPTH) as u64;
+        fn $name(segments: u32, depth: u32) -> (f64, u32, (u64, u64)) {
+            let capacity = (segments * depth) as u64;
             std::thread::scope(|s| {
                 s.spawn(move || {
                     pin_to_cpu(0);
                     // Built here so its segments belong to this
                     // thread's pool, as the one_msg loops build
                     // theirs on the thread that runs them.
-                    $($pair)+!(producer, consumer, store, pool, DEPTH, segmented STRESS_SEGMENTS);
+                    $($pair)+!(producer, consumer, store, pool, depth, segmented segments);
                     let mut used = 1u32 << producer.segment();
                     let mut next = 0u64;
                     let start = Instant::now();
@@ -904,15 +943,16 @@ macro_rules! burst_1t {
 }
 
 /// The lagging consumer: the producer streams COUNT messages
-/// spinning, the consumer reads [`LAG_BURST`] and pauses
+/// spinning, the consumer reads two segments' worth and pauses
 /// [`LAG_PAUSE`], so the producer runs ahead across segments at
 /// every pause and the ring is Full only when every segment is.
 /// Its pace is the consumer's pauses, so it returns no time:
 /// segments used and both switch counts.
 macro_rules! lagging_2t {
     ($name:ident, $send:ident, $recv:ident, $($pair:tt)+) => {
-        fn $name(pin: PinPair) -> (u32, (u64, u64)) {
-            $($pair)+!(producer, consumer, store, pool, DEPTH, segmented STRESS_SEGMENTS);
+        fn $name(pin: PinPair, segments: u32, depth: u32) -> (u32, (u64, u64)) {
+            let burst = 2 * depth as u64;
+            $($pair)+!(producer, consumer, store, pool, depth, segmented segments);
             let (used, sent) = std::thread::scope(|s| {
                 let producer = s.spawn(move || {
                     if let Some((p, _)) = pin {
@@ -932,7 +972,7 @@ macro_rules! lagging_2t {
                     }
                     let mut i = 0u64;
                     while i < COUNT {
-                        let n = LAG_BURST.min(COUNT - i);
+                        let n = burst.min(COUNT - i);
                         for j in i..i + n {
                             $recv!(consumer, j);
                         }
@@ -947,6 +987,45 @@ macro_rules! lagging_2t {
                 concat!(stringify!($name), ": not drained")
             );
             (used.count_ones(), (sent, consumer.switches()))
+        }
+    };
+}
+
+/// The stream: the producer and the consumer on their own
+/// threads, both spinning, COUNT messages through a ring of
+/// `segments` by `depth`, the two_t loops' shape with the
+/// switches counted. Returns seconds, segments used, and both
+/// switch counts.
+macro_rules! stream_2t {
+    ($name:ident, $send:ident, $recv:ident, $($pair:tt)+) => {
+        fn $name(pin: PinPair, segments: u32, depth: u32) -> (f64, u32, (u64, u64)) {
+            $($pair)+!(producer, consumer, store, pool, depth, segmented segments);
+            let start = Instant::now();
+            let (used, sent) = std::thread::scope(|s| {
+                let producer = s.spawn(move || {
+                    if let Some((p, _)) = pin {
+                        pin_to_cpu(p);
+                    }
+                    let mut used = 1u32 << producer.segment();
+                    for i in 0..COUNT {
+                        $send!(producer, i);
+                        used |= 1 << producer.segment();
+                    }
+                    (used, producer.switches())
+                });
+                let consumer = &mut consumer;
+                s.spawn(move || {
+                    if let Some((_, c)) = pin {
+                        pin_to_cpu(c);
+                    }
+                    for i in 0..COUNT {
+                        $recv!(consumer, i);
+                    }
+                });
+                producer.join().unwrap() // OK: a panic in the loop is the demo's failure
+            });
+            let secs = start.elapsed().as_secs_f64();
+            (secs, used.count_ones(), (sent, consumer.switches()))
         }
     };
 }
@@ -983,23 +1062,77 @@ burst_1t!(spsc3_burst_1t, spsc_send, ring_recv, spsc_pair);
 burst_1t!(mpsc2_burst_1t, mpsc_send, ring_recv, mpsc_pair);
 lagging_2t!(spsc3_lagging_2t, spsc_send, ring_recv, spsc_pair);
 lagging_2t!(mpsc2_lagging_2t, mpsc_send, ring_recv, mpsc_pair);
+stream_2t!(spsc3_stream_2t, spsc_send, ring_recv, spsc_pair);
+stream_2t!(mpsc2_stream_2t, mpsc_send, ring_recv, mpsc_pair);
 
-/// Run the segment stress: the burst on one thread, then the
-/// lagging consumer at each placement, for spsc-v3 and mpsc-v2
-/// at [`STRESS_SEGMENTS`] segments of DEPTH.
+/// The two shapes the switch cost is a difference between: the
+/// same 32 slots as one segment, which never switches, and as 32
+/// segments of one slot, which switches on nearly every message.
+const COST_SHAPES: [(u32, u32); 2] = [(1, 32), (32, 1)];
+
+/// Run a pair of [`COST_SHAPES`] lines through `run`, push both
+/// rows, and put the cost of one switch, the gap in ns per
+/// message over the gap in switches per message, on the second.
+fn switch_cost(
+    rows: &mut Vec<StressRow>,
+    line: &str,
+    placement: &str,
+    mut run: impl FnMut(u32, u32) -> (f64, u32, (u64, u64)),
+) {
+    let mut pair: Vec<StressRow> = COST_SHAPES
+        .iter()
+        .map(|&(segments, depth)| {
+            let (secs, used, (sent, seen)) = run(segments, depth);
+            assert_eq!(sent, seen, "{line}: switch counts differ");
+            StressRow {
+                line: line.to_string(),
+                placement: placement.to_string(),
+                shape: format!("{segments}x{depth}"),
+                ns: Some(secs * 1e9 / COUNT as f64),
+                used: (used, segments),
+                switches: sent,
+                switch_ns: None,
+            }
+        })
+        .collect();
+    let (a, b) = (&pair[0], &pair[1]);
+    let cost = (b.ns.unwrap_or(0.0) - a.ns.unwrap_or(0.0)) / (b.per_msg() - a.per_msg()); // OK: both ns are Some, set just above
+    pair[1].switch_ns = Some(cost);
+    rows.append(&mut pair);
+}
+
+/// Run the segment stress and print it as one table: the burst
+/// on one thread and the lagging consumer at each placement, at
+/// [`STRESS_SEGMENTS`] segments of DEPTH, then the switch cost
+/// at depth 1, single-threaded and streaming across cores.
 fn segment_stress(smt: PinPair, far: PinPair) {
     println!(
-        "segment stress: {} messages per line, {STRESS_SEGMENTS} segments of {DEPTH} slots. The \
-         burst fills every segment then drains, and the lagging consumer reads {LAG_BURST} \
-         messages between {}us pauses",
-        commas(COUNT),
-        LAG_PAUSE.as_micros()
+        "segment stress: {} messages per line; spsc-v3 and mpsc-v2 at {STRESS_SEGMENTS} segments \
+         of {DEPTH} slots, then the switch cost at depth 1",
+        commas(COUNT)
     );
     println!();
-    let (secs, used, sw) = spsc3_burst_1t();
-    report_segments("spsc3_burst_1t (core 0):", Some(secs), used, sw);
-    let (secs, used, sw) = mpsc2_burst_1t();
-    report_segments("mpsc2_burst_1t (core 0):", Some(secs), used, sw);
+    let mut rows = Vec::new();
+    let shape = format!("{STRESS_SEGMENTS}x{DEPTH}");
+    for (line, run) in [
+        (
+            "spsc3 burst 1t",
+            spsc3_burst_1t as fn(u32, u32) -> (f64, u32, (u64, u64)),
+        ),
+        ("mpsc2 burst 1t", mpsc2_burst_1t),
+    ] {
+        let (secs, used, (sent, seen)) = run(STRESS_SEGMENTS, DEPTH);
+        assert_eq!(sent, seen, "{line}: switch counts differ");
+        rows.push(StressRow {
+            line: line.to_string(),
+            placement: "core 0".to_string(),
+            shape: shape.clone(),
+            ns: Some(secs * 1e9 / COUNT as f64),
+            used: (used, STRESS_SEGMENTS),
+            switches: sent,
+            switch_ns: None,
+        });
+    }
     let mut placements = vec![("unpinned".to_string(), None)];
     if let Some((p, c)) = far {
         placements.push((format!("diff cores {p}+{c}"), far));
@@ -1007,13 +1140,74 @@ fn segment_stress(smt: PinPair, far: PinPair) {
     if let Some((p, c)) = smt {
         placements.push((format!("same core {p}+{c}"), smt));
     }
-    for (label, pin) in placements {
-        println!();
-        let (used, sw) = spsc3_lagging_2t(pin);
-        report_segments(&format!("spsc3_lagging_2t ({label}):"), None, used, sw);
-        let (used, sw) = mpsc2_lagging_2t(pin);
-        report_segments(&format!("mpsc2_lagging_2t ({label}):"), None, used, sw);
+    for (placement, pin) in &placements {
+        for (line, run) in [
+            (
+                "spsc3 lagging 2t",
+                spsc3_lagging_2t as fn(PinPair, u32, u32) -> (u32, (u64, u64)),
+            ),
+            ("mpsc2 lagging 2t", mpsc2_lagging_2t),
+        ] {
+            let (used, (sent, seen)) = run(*pin, STRESS_SEGMENTS, DEPTH);
+            assert_eq!(sent, seen, "{line}: switch counts differ");
+            rows.push(StressRow {
+                line: line.to_string(),
+                placement: placement.clone(),
+                shape: shape.clone(),
+                ns: None,
+                used: (used, STRESS_SEGMENTS),
+                switches: sent,
+                switch_ns: None,
+            });
+        }
     }
+    switch_cost(&mut rows, "spsc3 burst 1t", "core 0", spsc3_burst_1t);
+    switch_cost(&mut rows, "mpsc2 burst 1t", "core 0", mpsc2_burst_1t);
+    // The stream across cores at the far placement, or unpinned
+    // when the machine has no second core to find.
+    let (placement, pin) = match far {
+        Some((p, c)) => (format!("diff cores {p}+{c}"), far),
+        None => ("unpinned".to_string(), None),
+    };
+    switch_cost(
+        &mut rows,
+        "spsc3 stream 2t",
+        &placement,
+        |segments, depth| spsc3_stream_2t(pin, segments, depth),
+    );
+    switch_cost(
+        &mut rows,
+        "mpsc2 stream 2t",
+        &placement,
+        |segments, depth| mpsc2_stream_2t(pin, segments, depth),
+    );
+    stress_table(&rows);
+    println!();
+    println!(
+        "- line: the ring and the shape of the run. burst 1t: one thread fills every segment with \
+         the consumer idle, then drains, until the messages are moved. lagging 2t: the producer \
+         streams while the consumer reads two segments' worth between {}us pauses, so the producer \
+         runs ahead across segments at every pause. stream 2t: both spinning, the two_t loops' \
+         shape.",
+        LAG_PAUSE.as_micros()
+    );
+    println!(
+        "- shape: segments x slots per segment. The first rows are the stress shape; the switch \
+         cost rows are the same 32 slots as one segment, which never switches, and as 32 segments \
+         of one slot, which switches on nearly every message."
+    );
+    println!(
+        "- ns/msg: elapsed over the messages moved, `-` where the line's pace is the consumer's \
+         pauses. segs: segments the producer wrote into, of the ring's. switches: segment \
+         switches, the producer's count, which the consumer's matched. sw/msg: switches per \
+         message, the burst's 3 per {} at the stress shape.",
+        STRESS_SEGMENTS * DEPTH
+    );
+    println!(
+        "- switch ns: the cost of one switch, the gap in ns/msg between the two shapes over the gap \
+         in sw/msg, on the 32x1 row. Single-threaded it is the instructions alone; streaming across \
+         cores it includes the cold segment crossing."
+    );
 }
 
 /// Where a sweep row's threads sit.

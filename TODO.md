@@ -58,6 +58,7 @@ validate` passes.
 - [feat: mpsc v2 in the measurement tools][5] (done)
 - [feat: every ring in the demo's one_msg lines and a segment stress][9] (done)
 - [perf: mpsc v2 on the 7600X and a native build][10] (done)
+- [feat: the demo's segment stress as a table with a switch cost][12] (done)
 - [feat: segmented queue MPSC v2 closing][6]
 
 #### Deliberation
@@ -111,6 +112,10 @@ validate` passes.
   path alone, and a segment stress block, since nothing in the demo showed a switch. Inside the
   cycle's subject, so a rung rather than a Todo entry, and under the waiver as a rung before the
   closing.
+- A second rung inserted before the closing, the user's call on 2026-09-15 at the closing's
+  review: the stress block as a table with a legend, and the cost of one switch measured at depth
+  1 as a difference at equal capacity, 32 segments of 1 against 1 segment of 32. The closing's
+  edits were set aside as `tmp/closing.patch` and redone after it.
 - `## Waiting` is `_None._`, nothing to promote.
 
 #### Ladder details
@@ -254,6 +259,28 @@ from the binaries built here had never been asked.
     points at its fast path again and is noted in the section.
   - The 7600X's earlier known-hosts line was stale, so the runs used a scratch known-hosts file,
     and the tree went over as a git archive of the bookmark, so the 7600X never touched GitHub.
+
+##### feat: the demo's segment stress as a table with a switch cost
+
+The stress block's lines did not align, nothing said what its per-message figure meant, and the
+cost of one segment switch was not measured anywhere.
+
+* Lines that did not align, and a figure nobody could read.
+  - The block is one markdown table, line, placement, shape, ns/msg, segments used, switches,
+    switches per message, and switch ns, with a legend under it saying what each column is and
+    where the 0.012 comes from, three switches per 256 messages at the stress shape.
+* The cost of one switch was unmeasured.
+  - Measured as a difference at equal capacity so slack does not change: the same 32 slots as one
+    segment, which never switches, and as 32 segments of one slot, which switches on nearly every
+    message. The gap in ns per message over the gap in switches per message is one switch. On the
+    3900X, single-threaded on core 0, spsc-v3's switch costs 6.5 ns and mpsc-v2's 14.4, the two
+    read-modify-writes and the seal. Streaming across cores at 0+3 it is 137 and 267 ns: a switch
+    moves the seal, the in-use word, and the claim word between the cores on top of the slot line,
+    so at depth 1 across cores the switch is most of the cost. The lagging lines keep their shape
+    and print no rate.
+* The stress builders were fixed at the stress shape.
+  - The burst, the lagging consumer, and a new spinning stream take segments and depth as
+    parameters, so the switch-cost rows reuse them.
 
 ##### feat: segmented queue MPSC v2 closing
 
@@ -472,4 +499,5 @@ _None._
 [6]: #feat-segmented-queue-mpsc-v2-closing
 [9]: #feat-every-ring-in-the-demos-one_msg-lines-and-a-segment-stress
 [10]: #perf-mpsc-v2-on-the-7600x-and-a-native-build
+[12]: #feat-the-demos-segment-stress-as-a-table-with-a-switch-cost
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
