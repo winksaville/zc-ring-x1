@@ -147,8 +147,8 @@ pub struct CommonArgs {
     )]
     pub depth: Vec<u32>,
 
-    /// Segments per ring for the segmented flavor, spsc-v3, 1 to
-    /// 32. The depth is then each segment's
+    /// Segments per ring for the segmented flavors, spsc-v3 and
+    /// mpsc-v2, 1 to 32. The depth is then each segment's
     ///
     /// Other flavors ignore it.
     #[arg(

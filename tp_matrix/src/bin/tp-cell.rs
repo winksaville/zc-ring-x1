@@ -43,7 +43,10 @@ enum FlavorArg {
     /// The MPSC v1 equality-seq ring at 1p/1c (same surface,
     /// runs at depth 1)
     MpscV1,
-    /// All six, in that order
+    /// The MPSC v2 ring of segments at 1p/1c (same surface,
+    /// `--segments` per ring, the depth each segment's)
+    MpscV2,
+    /// All seven, in that order
     All,
 }
 
@@ -103,6 +106,7 @@ fn main() {
         FlavorArg::SpscV3 => &[Flavor::SpscV3],
         FlavorArg::MpscV0 => &[Flavor::MpscV0],
         FlavorArg::MpscV1 => &[Flavor::MpscV1],
+        FlavorArg::MpscV2 => &[Flavor::MpscV2],
         FlavorArg::All => &FLAVORS,
     };
     for &flavor in flavors {
@@ -153,7 +157,7 @@ fn main() {
             ("RTs", "round trips completed in the duration"),
             (
                 "segment switches",
-                "spsc-v3 only: switches across both rings, and per round trip",
+                "spsc-v3 and mpsc-v2 only: switches across both rings, and per round trip",
             ),
         ],
     );
