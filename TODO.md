@@ -17,7 +17,111 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### feat: segmented queue MPSC v2
+
+#### Problem
+
+Every MPSC ring is one fixed region, so a producer that outruns the consumer finds it Full. SPSC v3
+answered that with a ring of segments, and its design note carries a list for MPSC: producers racing
+for a segment need a CAS, a segment must be sealed before the switch so no late claim lands in it,
+and a slow producer may still hold a segment being given back, so reclamation is the hard part.
+
+#### Solution
+
+`mpsc::v2`, a sibling of v0 and v1 under the same module layout, over v3's segments: up to 32 taken
+from the application's pool at `init`, each a ring of its own, no attach, and nothing in v0 or v1
+changed so the three bench against each other. One 32-bit claim word, the segment number and the
+position, is CAS-claimed by every producer as v1 claims its index, and a stale view fails the CAS,
+so the claim word is the seal. A producer at a full segment takes a free one by CAS on a
+producer-shared taken word and moves the claim word to it, writing MOVED, the next segment, and the
+end position into the old segment's header. The consumer runs v1's loop within a segment and reads
+the seal word only when a slot is neither committed nor tombstoned, so its fast path is v1's one
+load. A segment is given back only after the consumer passes its end position, by which time every
+claim in it has committed, so nothing is reclaimed under a producer.
+
+#### Acceptance check
+
+Tests stream far more messages than one segment holds through several segments at depths 1 to 1024
+with one, two, and four producers, and afterwards every segment but the current one is free. A
+threaded stress with two or three segments and several producers forces switches, seals, a
+tombstone before a seal, and a producer waiting with no free segment. The whole library passes under
+Miri. The diff touches nothing under `src/mpsc/v0` and `src/mpsc/v1`. The sweep in the design note
+shows v2 against v1 at one producer on the 3900X and the 7600X with switches per message. `vc-x1
+validate` passes.
+
+#### Ladder
+
+- [feat: segmented queue MPSC v2 opening][1] (done)
+- [docs: mpsc v2 design and prediction][2]
+- [feat: mpsc v2 segment chain][3]
+- [test: mpsc v2 across segment counts, depths, and producers][4]
+- [feat: mpsc v2 in the measurement tools][5]
+- [feat: segmented queue MPSC v2 closing][6]
+
+#### Deliberation
+
+- The claim word is the seal, the plan's design, the user's go on 2026-09-15: one packed word of
+  segment and position replaces v1's producer index, so a claim can never land in a segment the
+  ring has left and the send path pays nothing for sealing.
+  - The alternative weighed: a producer index per segment plus a current-segment word, which
+    needs a seal bit in every segment's index word and a stale-segment check on every send.
+- The switch is two CASes on a rare path: one on the taken word to own a free segment among
+  producers, one on the claim word to move the ring. A lost claim CAS flips the taken bit back and
+  retries, not a policy call, and Full means no segment is free.
+- The seal lives in a header word, never in a slot word: v3 retired the consumer's second look
+  because a flag set in the slot word outside the commit raced the release store. In a header word
+  it races nothing, and the consumer loads it only on the empty path.
+- Reclamation falls out of the seal: a slow producer holds a claimed slot, never a segment, and the
+  consumer gives a segment back only after passing its end position.
+- Word layout as v3's, 26 seq bits and 32 segments, with v1's tombstone at bit 31, so v2 builds on
+  the 32-bit `no_std` targets.
+- `MpscRing` stays v1 this cycle, the plan's recommendation: the v3 verdict is that the default ring
+  now costs more on every path that never needs a second segment. The Todo entry `MPSC v2 as the
+  default` holds the flip, conditioned on v2 matching v1 with no switch.
+- A design rung before code, the plan's recommendation: v3 designed in conversation, and this design
+  has more moving parts, so the note section is reviewed as text first, with the prediction on
+  record before measuring.
+- The tools run every MPSC flavor at one producer and one consumer, so v2's rows compare with v1's
+  directly. A producer-count flag is the Todo entry `Multi-producer measurement`.
+- The segment table is borrowed on every path, never copied, v3's fast-path finding applied from the
+  start.
+- 0.17.0, a minor bump, as v3's: a new queue layer.
+- No `-dev` rename: the demo's name is unchanged by the cycle, as in the earlier cycles.
+- The user's waiver on 2026-09-15, "you have permission to complete the rungs before close-out and
+  then we can test and tweak together": it covers the opening push and every rung push before the
+  closing, their work and description reviews included. The closing push and Land are outside it.
+- `## Waiting` is `_None._`, nothing to promote.
+
+#### Ladder details
+
+##### feat: segmented queue MPSC v2 opening
+
+The cycle's setup commit: publish the bookmark, clear `## Closed`, move the Todo entry into this
+block, file the two follow-on Todo entries, and bump the version to 0.17.0-0.
+
+##### docs: mpsc v2 design and prediction
+
+The design note has v3's list of what MPSC needs and no MPSC v2 section, so the protocol is settled
+in prose before code, with the prediction on record.
+
+##### feat: mpsc v2 segment chain
+
+v2 exists only as a design, so build it: the ring over pool segments, the packed claim word, the
+switch, the seal, the consumer's second look, with unit tests, under Miri.
+
+##### test: mpsc v2 across segment counts, depths, and producers
+
+Passing tests over a few shapes are not seeing it work, so switch counters, a matrix over segment
+counts, depths, and producer counts, and an example that shows the switches.
+
+##### feat: mpsc v2 in the measurement tools
+
+The tools measure v0 and v1 and not v2, so nothing can say what v2 costs against v1: add the flavor,
+sweep both machines, and write the tables and verdict into the note.
+
+##### feat: segmented queue MPSC v2 closing
+
+Closing out the cycle.
 
 ## Waiting
 
@@ -81,6 +185,19 @@ message against v2's 7.5.
 v0 through v2 can, since a ring's whole state is in its region. v3's state spans a pool and a chain
 of segments, so attach needs a control block in the region recording both sides' current segment.
 Wait for a user that needs it, and until then name `spsc::v2::Ring`.
+
+### MPSC v2 as the default
+
+`MpscRing` is v1 while `Ring` is v3, so the crate's SPSC default is segmented and its MPSC default
+is not. Flip the re-export to `mpsc::v2` once v2 matches v1 where no switch happens, measured in the
+tools, since the v3 verdict on 2026-09-15 was that a segmented default that does not match costs
+every path that never needs a second segment.
+
+### Multi-producer measurement
+
+The tools run every MPSC flavor at one producer and one consumer, so a claim word contended by
+several producers is never measured. A `--producers N` flag for `tp-matrix` and `tp-stream` would
+run N pinned producers into one consumer, and v2's switch would then be measured under contention.
 
 ### Demo pin-pair picker
 
@@ -199,270 +316,14 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### feat: segmented queue SPSC v3
-
-#### Problem
-
-Every SPSC ring is fixed-length, so a full ring fails the send. The segment chain designed in [SPSC
-v1: seam-word ring](notes/ring-buffer-design.md#spsc-v1-seam-word-ring) waited for a ring worth
-building on, and v2 cleared that bar on 2026-09-07.
-
-#### Solution
-
-Done as designed, then measured. `spsc::v3` is a ring of up to 32 segments taken from the
-application's pool at `init`, each a ring of its own, and the crate's default `Ring`. A 32-bit seq
-word carries v2's seq values and, on the producer's last message in a segment, a MOVED flag with the
-next segment's number, so the consumer learns everything from one load. Free segments are found
-without CAS through a producer-private and a consumer-shared bit word, and each side resumes a reused
-segment where both left it. The design and its measurements are in [SPSC v3: ring of
-segments](notes/ring-buffer-design.md#spsc-v3-ring-of-segments).
-
-- Along the way the pool gained `Pool::alloc_bytes`, a buffer as a guard over its bytes, and two
-  pre-existing Miri failures were fixed, a test's pointer handling in MPSC v0 and a claim ordering in
-  MPSC v1 that let two producers claim one slot at capacity 1.
-- `switches()` and `segment()` on v3's endpoints, tests over every segment count from 1 to 32 at
-  depths 1 to 1024, and `examples/spsc_v3_segments.rs` show the segments switching.
-- The measurement tools and the demo run `spsc-v3` with `--segments`, report switches, and name the
-  zc-ring-x1 build in their banners.
-- The verdict: the segments switch only when needed and a switch is cheap, but with no switch v3 runs
-  2 to 4 times slower than v2. The fast path is the Todo entry `SPSC v3 fast path`.
-
-#### Acceptance check
-
-A test streams far more messages than one segment holds through a ring of several segments, at
-segment depth 1 and larger, and afterwards every segment but the current one is free, P and C
-agreeing on them. A threaded stress with two or three segments forces switches, MOVED hand-offs,
-and a producer waiting with no free segment. `Ring` at the crate root is v3. The sweep in the design
-note shows v3 matching v2 at the same segment depth while the consumer keeps up, and the switch cost
-at segment depth 1 while the producer runs ahead. `vc-x1 validate` passes.
-
-Failed (2026-09-15), on one item. The tests pass: streams far past one segment at depths 1 to 1024
-leave every segment but the current one free, the threaded stress switches and hands off MOVED
-messages, the producer waits with no free segment, and `Ring` at the crate root is v3. The sweep
-shows the switch cost at depth 1, within 2% of v2 across the 3900X's CCX. But v3 does not match v2
-while the consumer keeps up: with no switch it streams 2 to 4 times slower, and its round-trip sends
-run 3 to 4 ns slower. Why: v3's fast path, not its segments. `commit` and `release` copy the whole
-segment table on every message, more than half the gap, and the rest is not yet found. The Todo entry
-`SPSC v3 fast path` takes it, measured against the design note's tables. `vc-x1 validate` passes.
-
-#### Ladder
-
-- [feat: segmented queue SPSC v3 opening][1] (done)
-- [feat: pool buffers as bytes][2] (done)
-- [feat: spsc v3 segment chain][3] (done)
-- [fix: the two tests Miri rejects][7] (done)
-- [test: spsc v3 across segment counts and depths][8] (done)
-- [feat: spsc v3 in the measurement tools][4] (done)
-- [feat: segmented queue SPSC v3 closing][6] (done)
-
-#### Deliberation
-
-- A design, not a promise, the user's framing on 2026-09-14: v3 is built to be measured, and a
-  design that falls short leads to a v4 rather than a rework of v3.
-- Segments as insurance, the user's goal: with a consumer that keeps up, the ring lives in one
-  segment and costs what v2 costs, so every extra cost is kept to the switch.
-- Segments set up at `init`, the user's call, replacing the draft's allocate-on-Full: the whole cost
-  of creating segments is paid once, and running never allocates, frees, or re-initializes. A
-  queue's capacity is fixed at its segments, and memory is reserved while it is idle.
-- Each segment a ring of its own, the user's call, replacing the draft's v2 region per segment:
-  v2's four-line header is mostly fields a segment never reads, and v3 may borrow v2's slot
-  protocol without being v2.
-- One load for the consumer, the user's call: an earlier step had the consumer load a link, and
-  then a flag beside the seq, on each empty poll.
-  - The MOVED bit and next segment ride in the committed seq value, written only by the producer at
-    its own commit. A flag set in the word at any other time races the consumer's release store,
-    and without CAS a lost flag strands the consumer in a segment the producer has left.
-  - This retires the second look, found while checking the draft: that fix answered an empty read
-    going stale before the link was seen, and the MOVED commit carries the hand-off in the message
-    itself.
-- One bit per segment in two single-writer words, the user's call: a bounded segment count makes
-  the free set one word, finding a free segment one bit scan, and giving one back one bit flip,
-  with no CAS, so v3 stays load and store only like v0 through v2.
-- The v0 through v2 shape, the user's call on 2026-09-14: `spsc::v3::Ring` with `init`, `split`,
-  and the same endpoint and guard names, not the draft's `Queue`.
-- v3 is the crate default from its own rung, the user's call: one rung moves the call sites that
-  need v2's geometry to `spsc::v2::Ring`, rather than a late rung touching them again.
-- Segments from the application's pool, the user's call: a segment is an ordinary pool allocation,
-  taken as bytes since no compile-time type describes it.
-- `Header` leaves the crate root and `init` gains `Error::Exhausted` and `Error::BadSegmentCount`,
-  the user's calls: v3's segments carry no ring header, and a ring that cannot get all its segments
-  or asks for none or too many fails at `init`. The ring borrows the pool only during `init`, so no
-  endpoint lends it out.
-- A 32-bit seq word and at most 32 segments, the user's call when the 64 bits first designed met
-  the crate's 32-bit `no_std` targets, which have no 64-bit atomics: 26 seq bits cap a segment at
-  `2^24` slots, and only the consumer's give-back word is shared.
-- The Miri fixes as a rung after v3, the user's call on 2026-09-15: running the whole library under
-  Miri while checking v3 found two failures that predate it. They are fixed in this cycle rather
-  than logged, and after v3, since they are independent of it, so v3 pushes first with nothing set
-  aside.
-- v3's fast path tuned after this cycle, the user's call on 2026-09-15: the tools showed v3 three
-  times v2 with no switch in play, and the first cause found, a copy per message, is v3 code, not
-  tool code. This cycle makes multiple segments work, and a Todo entry holds the tuning.
-- Verification before measurement, the user's call on 2026-09-15: a test rung runs every segment
-  count at depths 1 to 1024 and shows the switches before the tools measure cost, since passing
-  tests over a few shapes are not seeing it work. It is inserted ahead of the tools rung, whose
-  edits wait in `tmp/tools-rung.patch`, and the old sweep rung folds into the tools rung.
-- MPSC will be its own implementation, and what v3 teaches goes into the design note for it.
-  - Carried to MPSC: producers racing to take a segment need CAS where v3's single producer does
-    not, a segment must be sealed before the switch so no late claim lands in it, and a slow
-    producer may still hold a segment being given back, so reclamation is the hard part.
-- No v3 `attach`, the user's call: attach is a ring's ability to join an existing region, not a
-  versioning question, and v3's state spans a pool and its segments. A Todo entry holds it.
-- 0.16.0, a minor bump, the user's call: a new queue layer and a new default.
-- No `-dev` rename: the demo's name is unchanged by the cycle, as in the earlier cycles.
-- Prediction, on record: with the consumer keeping up, v3 matches v2 at the same segment depth, both
-  loading one seq per message on each side. A switch costs the producer a load of C, a bit scan,
-  and a store of P, and the consumer a store of C and a cold segment. We think segment depth 1
-  with the producer ahead runs within twice v2's cost per message, the new segment's line being the
-  larger part.
-- Close-out and Land under the user's waiver on 2026-09-15, "close this puppy out you have
-  permission and land it on main": it covers the closing push and every step of Land, the trapezoid
-  reshape, the push of `main`, the install, and the bookmark's deletion.
-- The Overflow FIFO Todo entry is deleted as superseded: a sender-private pending list on Full was
-  the other answer to a full ring, and v3's segments are this cycle's answer.
-- No row in `notes/agent-files-size.md`: no agent-file changed, and the user's call at the last
-  close-out was to leave the file alone then.
-- `## Waiting` is `_None._`, nothing to promote.
-
-#### Ladder details
-
-##### feat: segmented queue SPSC v3 opening
-
-The cycle's setup commit: publish the bookmark, clear `## Closed`, move the Todo entry into this
-block, file the v3 attach Todo, and bump the version to 0.16.0-0.
-
-##### feat: pool buffers as bytes
-
-The pool handed out a buffer only as a guard typed at compile time, so a layout sized at runtime,
-such as a v2 ring inside a segment, had no way in.
-
-* Every allocation named a `T` whose size is fixed when the code compiles.
-  - `Pool::alloc_bytes` hands out a buffer as a `BufSlot<[u8]>`, which derefs to all of its bytes,
-    mutable like any other allocation. Typed views over the bytes are zero-copy casts.
-* `BufSlot` and the registry's `into_desc` required a sized `T`.
-  - Both take unsized views now, so a bytes guard frees and travels like a typed one.
-* A first design added `BufSlot::as_mut_bytes` and a raw buffer pointer on the resolver.
-  - Dropped with the user: a buffer is mutable by design, and bytes are one more kind of
-    allocation, not a special accessor. The consumer's bytes guard from an index comes with the
-    rung that needs it.
-
-##### feat: spsc v3 segment chain
-
-v3 existed only as a design, and the crate's default ring could not grow past one region.
-
-* A ring of segments to measure.
-  - `spsc::v3` builds the Solution's design: segments taken from the pool at `init`, the 32-bit
-    word with MOVED and the next segment, the producer's look-ahead at commit, the consumer's
-    one-load switch, and free segments found through the give-back word.
-  - Tests cover one segment as a plain ring, a full ring of segments, many laps in uneven bursts,
-    depth 1 switching on every commit, a producer waiting with no free segment, abandoned guards,
-    the wait policy, the u32 wrap, and a two-thread stream, which also passed 30 release runs.
-  - Under Miri all of v3's tests pass, and 97 of the library's 99. The two that fail do so on the
-    commit before this rung too, so they predate v3.
-* The crate default was v2.
-  - The crate-root `Ring` is v3 and `Header` leaves the root. Code that needs a single region, the
-    demo's descriptor rings and the pool, registry, and MPSC tests, names `spsc::v2::Ring`, and the
-    README example shows a ring of segments over a pool.
-* Laying a v2 ring over each segment would have needed `init` then `attach`, and a switch to
-  derive pointers from a guard's `&mut` borrow.
-  - Every segment address comes from the pool's own raw pointer, through a crate-private
-    `BufSlot::as_mut_ptr`, so both threads' accesses share one pointer origin.
-
-##### fix: the two tests Miri rejects
-
-Two tests failed under Miri with undefined behavior, on the commit before v3 as well as with it, so
-the library never passed a whole Miri run.
-
-* `mpsc::v0::tests::mpsc_attach_validates_header` wrote through a ring whose pointers it had
-  already invalidated.
-  - The fault was the test's: each `as_mut_ptr()` borrows the whole region, and it called it again
-    for its third attach and then wrote through the earlier ring's header. It now takes the pointer
-    once. v1's copy of the test stops before that write, which is why only v0 failed.
-* `mpsc::v1::tests::threaded_mpsc_two_producers_capacity_1` had two producers filling one slot.
-  - The fault was the ring's claim: it loaded and CASed `producer_idx` with `Relaxed`, which does
-    not promise a producer sees another's claim. Under Miri's weak memory model a stale re-read
-    and a CAS on it let two producers win one position, and at `M = 1`, where a committed value is
-    the next-but-one claimable value, that is a double fill. The claim's `producer_idx` accesses are
-    `SeqCst` now. Only the CAS and the re-read both being strict removed it: either alone still
-    raced.
-  - We think today's x86 builds never double-claimed, a CAS there being one locked instruction, but
-    the claim rested on a guarantee `Relaxed` does not give.
-* Result: the whole library, 99 tests, passes under Miri, and again under three more seeds. mpsc
-  v0's claim has the same `Relaxed` pattern and Miri does not reject it. We think v0's capacity
-  floor of 2 keeps its seq values from coinciding, and v0 is left unchanged as the historical
-  sibling.
-
-##### test: spsc v3 across segment counts and depths
-
-Multiple segments were shown working only by tests nobody watched, over a few chosen shapes.
-
-* Nothing showed a segment switch happening.
-  - Each endpoint counts its switches, on the switch path only, behind `switches()`, and names the
-    segment it is in behind `segment()`.
-* The tests covered a handful of segment counts and depths.
-  - Three tests run every count from 1 to 32 at depths 1, 8, 64, and 1024: filling every segment
-    with the consumer idle and draining, bursts of every size up to capacity, and a two-thread
-    stream. Order holds, both ends count the same switches, and a filled ring used every segment.
-    Under Miri they run a corner of the matrix, and pass.
-* Something to watch.
-  - `examples/spsc_v3_segments.rs` runs the same matrix and prints two tables. Filled, a ring of n
-    segments used all n with n - 1 switches at every depth. Streaming 100,000 messages, depth 1
-    switched on nearly every message once there were four or more segments, and depth 8 and up a
-    few hundred times per run.
-  - Its nanoseconds are a hundred thousand messages on unpinned threads, a sign of life rather
-    than a measurement, which the tools rung makes.
-
-##### feat: spsc v3 in the measurement tools
-
-The tools measured every ring but v3, so nothing could say what v3 costs against v2.
-
-* No tool could build a ring of segments.
-  - `tp-cell`, `tp-matrix`, `tp-stream`, and the demo's depth sweep run `spsc-v3`, each ring over a
-    pool holding exactly its segments. One macro per tool builds either a single-region ring or a
-    segmented one, so the cell bodies stay shared.
-  - `--segments N`, 1 to 32 and default 2, sets the count in the three tools, and the demo uses 2.
-    Depth is each segment's, and banners and legends say so.
-* What the first runs showed.
-  - Where no switch happens, the demo's one-thread loop, v3 ran about 24 ns per message against
-    v2's 7.5, so the cost is on v3's fast path, not in switching. That goes to a Todo entry.
-* A slow v3 row could mean switching or a slow fast path, and the tables could not tell which.
-  - v3's rows add `switches/RT` in `tp-matrix`, `switches/msg` in `tp-stream`, and a switch line in
-    `tp-cell`, from the endpoints' counters, `-` for every other flavor.
-* Two builds of a tool read the same, `tp-matrix 0.1.0`, so a stale install on the 7600X looked
-  current.
-  - A `tp_matrix` build script passes zc-ring-x1's version into every tool's banner and `-V`,
-    `tp-matrix 0.1.0 (zc-ring-x1 0.16.0-5)`.
-* What v3 costs against v2 was not measured.
-  - The sweep, `tp-matrix` and `tp-stream` at depths 1, 8, 64, and 1024 with two segments, ran
-    twice on the 3900X and, over ssh with binaries built here, twice on the 7600X. It is the new
-    design-note section [SPSC v3: ring of segments](notes/ring-buffer-design.md#spsc-v3-ring-of-segments),
-    with the design, the "carried to MPSC" list, the tables, and the verdict.
-  - The design works, switching zero times when the consumer keeps up and exactly as predicted at
-    depth 1, and a switch is cheap. But where no switch happens v3 streams 2 to 4 times slower
-    than v2, so the fast path, not the segments, keeps v3 from matching v2.
-
-##### feat: segmented queue SPSC v3 closing
-
-The design went from an allocate-on-Full chain of v2 regions to fixed segments set up at `init` with
-one-load switching, in conversation before any code, and the code then matched the design on the
-first working build. What the plan did not foresee came from checking and seeing.
-
-* Whole-suite Miri runs had not been done, so two undefined-behavior failures predated the cycle.
-  - Running all of Miri while checking v3 found them, and a rung fixed them.
-* Passing tests were not seeing it work, and the first measurement confused switching with a slow
-  fast path.
-  - A test rung with switch counters and a watchable example came before the tools, and the tools
-    report switches, which separated the two costs.
-
-Close-out shape: trapezoid, the default, under the user's waiver.
+_None._
 
 # References
 
-[1]: #feat-segmented-queue-spsc-v3-opening
-[2]: #feat-pool-buffers-as-bytes
-[3]: #feat-spsc-v3-segment-chain
-[4]: #feat-spsc-v3-in-the-measurement-tools
-[6]: #feat-segmented-queue-spsc-v3-closing
-[7]: #fix-the-two-tests-miri-rejects
-[8]: #test-spsc-v3-across-segment-counts-and-depths
+[1]: #feat-segmented-queue-mpsc-v2-opening
+[2]: #docs-mpsc-v2-design-and-prediction
+[3]: #feat-mpsc-v2-segment-chain
+[4]: #test-mpsc-v2-across-segment-counts-depths-and-producers
+[5]: #feat-mpsc-v2-in-the-measurement-tools
+[6]: #feat-segmented-queue-mpsc-v2-closing
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
