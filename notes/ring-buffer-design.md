@@ -1379,15 +1379,15 @@ until v2 matches it where no switch happens.
 - **Segments**: `MpscRing::init(pool, slot_size,
   seg_capacity, seg_count)` takes every segment from the pool
   with `Pool::alloc_bytes` and initializes each: a header of
-  four lines, then `seg_capacity` slots opening with v1's seq
+  three lines, then `seg_capacity` slots opening with v1's seq
   word. `segment_size` is what the pool's buffers must hold.
   Nothing allocates, frees, or re-initializes while the ring
   runs, the pool is borrowed only during `init`, and there is
-  no `attach`, as v3 has none. The header lines, one word
-  each: the segment's seal, and in segment 0 only, the claim
-  word, the producers' taken word, and the consumer's
-  give-back word. The claim word is the contended line, so it
-  is alone on its line. There is no user line, as in v3.
+  no `attach`, as v3 has none. The header lines: the segment's
+  seal, and in segment 0 only, the claim word, and the in-use
+  word beside the switch count. The claim word is the
+  contended line, so it is alone on its line. There is no user
+  line, as in v3.
 - **Words**: 32 bits everywhere, so v2 builds wherever v1
   does. A position is 26 bits, as v3's seq values are, and the
   slot's seq word holds v1's values in those bits, claimable
@@ -1406,41 +1406,54 @@ until v2 matches it where no switch happens.
   or the tombstone on unwind.
 - **Switching**: a producer whose claim finds the slot
   unreleased and the claim word unmoved is at a full segment,
-  where v1 runs its policy. It reads the taken and give-back
-  words, and a segment is free where they agree. With none
-  free the policy runs, and Full means the ring waits in place
-  as one ring does. With one, it takes the lowest by a CAS on
-  the taken word, which serializes producers switching at
-  once, clears the segment's seal, and CASes the claim word
-  from its view to the new segment at its resume position. On
-  success it stores the seal into the old segment's header:
-  MOVED, the new segment, and the end position, the position
-  its view held. On failure another producer moved the ring
-  first, so it flips its taken bit back and retries with the
-  fresh claim word, no policy call, as a lost claim race is
-  none. A switch is two CASes and a store on a path taken only
-  at a full segment.
-- **The consumer**: single, CAS-free, v1's loop within a
-  segment, the tombstone skip included. When the slot at its
+  where v1 runs its policy. It reads the in-use word, one bit
+  per segment. With none clear the policy runs, and Full means
+  the ring waits in place as one ring does. With one, it takes
+  the lowest by a `fetch_or` of its bit, which serializes
+  producers switching at once and succeeds only where the bit
+  was clear, clears the segment's seal, and CASes the claim
+  word from its view to the new segment at its resume
+  position. On success it stores the seal into the old
+  segment's header: MOVED, the new segment, and the end
+  position, the position its view held. On failure another
+  producer moved the ring first, so it restores the seal,
+  clears its bit, and retries with the fresh claim word, no
+  policy call, as a lost claim race is none. A switch is two
+  read-modify-writes and a store on a path taken only at a
+  full segment.
+- **The consumer**: single, v1's loop within a segment, the
+  tombstone skip included, with no read-modify-write on its
+  fast path. When the slot at its
   position is neither committed nor tombstoned it takes a
   second look, at the segment's seal: MOVED with the end
   position equal to its own means the segment is done, since
   every claim in it lies before the end position and each has
-  committed or tombstoned. It flips the segment's bit in the
-  give-back word and continues in the named segment where it
-  left it. Otherwise the slot is not yet committed, and the
-  policy runs. The second look is on the empty path only, so
-  the fast path is v1's one load, and v3 retired its own
-  second look for a reason that does not reach here: a flag in
-  a slot word set outside the commit raced the release store,
-  and the seal is a header word the consumer never stores to.
+  committed or tombstoned. It clears the segment's bit in the
+  in-use word, its one read-modify-write, and continues in the
+  named segment where it left it. Otherwise the slot is not
+  yet committed, and the policy runs. The second look is on
+  the empty path only, so the fast path is v1's one load, and
+  a segment is given back at the reserve after its last
+  release rather than at that release, one poll later than v3
+  gives its back. v3 retired its own second look for a reason
+  that does not reach here: a flag in a slot word set outside
+  the commit raced the release store, and the seal is a header
+  word the consumer never stores to.
 - **Reclamation**: a slow producer holds a claimed slot, never
   a segment. The consumer gives a segment back only after
   passing its end position, and by then every claim in it has
   committed, so nothing is reclaimed under a producer. The
-  free set is v3's algebra, taken XOR given, with taken now
-  CAS-written by producers and given still the consumer's
-  alone.
+  free set is one in-use word, not v3's taken XOR given: that
+  parity is sound for one producer and not for several, found
+  by the two-producer stress on 2026-09-15. A producer that
+  slept with a stale view woke to the taken word reading the
+  same bits again and took a segment that was in fact free at
+  that instant, and a second producer then read the fresh
+  taken word beside a give-back word one consumer store
+  stale, the two parities agreed, and it took the segment the
+  first held with the ring inside it. One bit set by a
+  `fetch_or` and cleared by a `fetch_and` has no stale view to
+  agree with.
 - **Reuse**: both sides leave a segment at its end position,
   the consumer in a private resume array as v3's, and the next
   taker reads it from the seal it clears. A consumed segment
@@ -1458,7 +1471,8 @@ until v2 matches it where no switch happens.
   segment and position, and a claim that never commits wedges
   the segment as it wedges a v1 ring.
 - **Weighed and not taken**: a producer index per segment
-  with a current-segment word beside it. A stale current
+  with a current-segment word beside it, and v3's two parity
+  words for the free set, above. A stale current
   segment would let a claim land in a sealed segment, so every
   segment's index word would need a seal bit and every send a
   check of it. The packed word makes the seal implicit.
@@ -1468,9 +1482,10 @@ until v2 matches it where no switch happens.
   claim word for free, and its receive is v1's one load. So
   from depth 2 up we think v2 is within run noise of v1 at
   every placement in every instrument, and at depth 1, where
-  every message switches, within twice v1's cost. A switch
-  costs the producer two CASes and the seal store, and the
-  consumer one extra load, the give-back store, and a cold
+  a consumer one message behind makes every send switch,
+  within twice v1's cost. A switch costs the producer two
+  read-modify-writes and the seal store, and the consumer one
+  extra load, the give-back read-modify-write, and a cold
   segment.
 
 ## Messaging layer: pools and descriptor queues

@@ -74,7 +74,7 @@ const _: () = assert!(MAX_SEG_CAPACITY + 1 < SEQ_MASK);
 
 /// The seq value for free-running position `idx`, wrapped to
 /// [`SEQ_BITS`].
-fn seq_of(idx: u32) -> u32 {
+pub(crate) fn seq_of(idx: u32) -> u32 {
     idx & SEQ_MASK
 }
 
@@ -249,7 +249,11 @@ impl<'a> Ring<'a> {
 }
 
 /// Geometry checks for [`Ring::init`].
-fn validate_geometry(slot_size: u32, seg_capacity: u32, seg_count: u32) -> Result<(), Error> {
+pub(crate) fn validate_geometry(
+    slot_size: u32,
+    seg_capacity: u32,
+    seg_count: u32,
+) -> Result<(), Error> {
     if slot_size == 0 || !(slot_size as usize).is_multiple_of(CACHE_LINE_SIZE) {
         return Err(Error::BadSlotSize);
     }
@@ -264,7 +268,7 @@ fn validate_geometry(slot_size: u32, seg_capacity: u32, seg_count: u32) -> Resul
 
 /// Check `T` fits a slot's body, called once per
 /// `reserve_slot_with` (both endpoints), as v2 checks.
-fn check_body_type<T>(slot_size: u32) {
+pub(crate) fn check_body_type<T>(slot_size: u32) {
     assert!(
         size_of::<T>() <= slot_size as usize - SLOT_HEADER_BYTES,
         "T larger than the slot body"

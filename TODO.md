@@ -53,7 +53,7 @@ validate` passes.
 
 - [feat: segmented queue MPSC v2 opening][1] (done)
 - [docs: mpsc v2 design and prediction][2] (done)
-- [feat: mpsc v2 segment chain][3]
+- [feat: mpsc v2 segment chain][3] (done)
 - [test: mpsc v2 across segment counts, depths, and producers][4]
 - [feat: mpsc v2 in the measurement tools][5]
 - [feat: segmented queue MPSC v2 closing][6]
@@ -85,6 +85,14 @@ validate` passes.
   directly. A producer-count flag is the Todo entry `Multi-producer measurement`.
 - The segment table is borrowed on every path, never copied, v3's fast-path finding applied from the
   start.
+- One in-use word for the free set, not v3's two parity words, the finding of the code rung: two
+  producers with views one store apart can agree a segment in use is free. The design note's
+  section records the interleaving.
+  - The cost accepted: the consumer's give-back is a read-modify-write, on the switch path only.
+    Its fast path is still one load.
+- The give-back is one poll late, a consequence of the second look being on the empty path only: a
+  segment is given back at the reserve after its last release. The alternative, a seal load at
+  every release, is a load on the fast path, and the tools rung measures the path as it is.
 - 0.17.0, a minor bump, as v3's: a new queue layer.
 - No `-dev` rename: the demo's name is unchanged by the cycle, as in the earlier cycles.
 - The user's waiver on 2026-09-15, "you have permission to complete the rungs before close-out and
@@ -119,8 +127,36 @@ in prose before code.
 
 ##### feat: mpsc v2 segment chain
 
-v2 exists only as a design, so build it: the ring over pool segments, the packed claim word, the
-switch, the seal, the consumer's second look, with unit tests, under Miri.
+v2 existed only as a design, and the crate's MPSC rings could not grow past one region.
+
+* A ring of segments to measure.
+  - `mpsc::v2` builds the design: segments taken from the pool at `init` with a three-line header
+    each, the packed claim word CAS-claimed as v1's index, the switch at a full segment, the seal
+    in the old segment's header, the consumer's second look on the empty path, and reuse through
+    the seal's end position. v3's `seq_of`, `validate_geometry`, and `check_body_type` are shared.
+  - Tests cover one segment as a plain ring, a full ring of segments, many laps in uneven bursts,
+    depth 1 one message behind, a producer waiting with no free segment, the policies, an
+    abandoned read guard, a tombstone mid-segment and one before a seal, a stale seal on a reused
+    segment, the 26-bit wrap, and two, four, and shared-reference producers across threads. The
+    threaded tests passed 30 release runs, and the module passes under Miri.
+* The two-producer stress deadlocked, one run in three.
+  - v3's free set, a producer-private taken word against the consumer's give-back word, is sound
+    for one producer and not for several. A producer that slept with a stale view woke to the
+    taken word reading the same bits again and took a segment that was in fact free, and a second
+    producer read the fresh taken word beside a give-back word one consumer store stale, the two
+    parities agreed, and it took the segment the first held with the ring inside it. The free set
+    is one in-use word now: a take is a `fetch_or` that succeeds only where the bit was clear, and
+    the consumer's give-back a `fetch_and`, its one read-modify-write, on the switch path only.
+  - Found with a trace of every take, move, loss, and follow, dumped when the consumer stalled.
+* The seal's clear could wipe a live seal.
+  - A first cut cleared the new segment's seal after the claim CAS, and a producer delayed there
+    cleared a seal a later producer had already written into that segment. The clear comes before
+    the CAS, and a lost CAS restores the resume position it held.
+* A segment is given back one poll late.
+  - The consumer reads the seal only when a slot is neither committed nor tombstoned, so it gives
+    a segment back at the reserve after its last release, not at that release. At depth 1 a
+    consumer one message behind needs three segments where v3 needs two. The tests and the note
+    say so.
 
 ##### test: mpsc v2 across segment counts, depths, and producers
 
