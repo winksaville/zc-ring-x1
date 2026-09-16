@@ -11,7 +11,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /// The message. Any `#[repr(C)]` type the zerocopy traits accept,
 /// at most the slot body in size: `SLOT` less the crate's
-/// `SLOT_HEADER_BYTES`, 64 less 4 here.
+/// `SLOT_HEADER_BYTES`, 64 less 16 here, aligned to at most 16.
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 struct Msg {

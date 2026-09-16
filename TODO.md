@@ -51,7 +51,7 @@ every call the guide names exists in the crate, checked by listing the identifie
 - [docs: a user guide for SPSC v3 and MPSC v2 opening][1] (done)
 - [docs: the segment lifecycle in the design note][2] (done)
 - [docs: guide examples for SPSC v3 and MPSC v2][3] (done)
-- [docs: the user guide for SPSC v3 and MPSC v2][4]
+- [docs: the user guide for SPSC v3 and MPSC v2][4] (done)
 - [docs: README and module docs point at the guide][5]
 - [docs: a user guide for SPSC v3 and MPSC v2 closing][6]
 
@@ -122,6 +122,17 @@ reading the counters at the end, written to be quoted.
 The guide itself, `notes/user-guide.md`: what the rings are, choosing one, sizing, init and
 split, sending, receiving, policies, threads, the segment lifecycle, counters, limits, and
 errors, quoting the two examples.
+
+* A reader had the protocol and not the calls.
+  - Thirteen sections in the order a program is written: what the rings are, the message type,
+    sizing, init and split, sending, receiving, policies with Full and Empty, threads, the
+    lifecycle, the counters, the limits, an errors table, and the two programs' output.
+* The examples' comments said the slot header is 4 bytes.
+  - It is 16, `SLOT_HEADER_BYTES`, so a 64-byte slot carries 48, and the two comments and the
+    guide say so. Found while writing the sizing section against the source.
+* The acceptance check wants the guide and the examples to agree.
+  - A script lists every method and type the examples call and finds each in the guide, none
+    missing, and the guide's prose carries no semicolon.
 
 ##### docs: README and module docs point at the guide
 

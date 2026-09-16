@@ -11,7 +11,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /// The message. Any `#[repr(C)]` type the zerocopy traits accept,
 /// at most the slot body in size: `SLOT` less the crate's
-/// `SLOT_HEADER_BYTES`, 64 less 4 here.
+/// `SLOT_HEADER_BYTES`, 64 less 16 here, aligned to at most 16.
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 struct Msg {
@@ -20,7 +20,7 @@ struct Msg {
 }
 
 /// Bytes per slot, a cache-line multiple. One line holds the
-/// crate's 4-byte slot header and up to 60 bytes of message.
+/// crate's 16-byte slot header and up to 48 bytes of message.
 const SLOT: u32 = 64;
 
 /// Slots per segment, a power of two.
