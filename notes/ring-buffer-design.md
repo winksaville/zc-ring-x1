@@ -2193,6 +2193,110 @@ embedded next-link — the link is load-bearing for three
 states (free-stack, pending FIFO, future lists), so they
 must be laid out together when that header lands.
 
+## Measurement placements: the base cpu and its partners
+
+Every pinned measurement here, the demo's single-thread lines and the 2t placements of the demo
+and the tools, starts from a base cpu, `--base-cpu` since 0.17.1, and the partners are picked from
+the base's topology. This section records why the default base is the last physical core's first
+thread and why partners prefer first threads and high cpu numbers. Decided 2026-09-16, in the
+cycle `feat: the demo's base cpu and pin-pair picker`.
+
+### Where the kernel puts work
+
+Linux does not favor cpu 0 for user work. On fork and exec the scheduler runs its idlest-cpu
+search: it walks the sched domains from the top, takes the least loaded group, then the idlest
+cpu in it, and breaks ties toward the lowest cpu number. On a wakeup it tries the task's previous
+cpu or the waker's if idle, then scans the same L3 for an idle cpu in ascending order. Under
+light load, short-lived work and wakeups therefore pile onto the low-numbered cpus, and the
+high-numbered ones are rarely reached. Cpu 0 is noisier still as the boot cpu: the legacy timer
+interrupt, timer migration for unbound timers, RCU callbacks, and kernel threads with the
+default mask land there. Device interrupts are not the issue on these machines, since without
+`irqbalance` the kernel spreads MSI-X vectors across cpus.
+
+### The counts
+
+Per-cpu housekeeping on the 3900X after 3.5 hours up, `LOC` and `CAL` from `/proc/interrupts`,
+`SCHED` and `RCU` from `/proc/softirqs`. Cpu N and N+12 are SMT siblings, and the CCXs are 0 to
+2, 3 to 5, 6 to 8, and 9 to 11 with their siblings.
+
+| cpu | timer ticks | sched softirq | RCU softirq | function calls |
+|---:|---:|---:|---:|---:|
+| 0 | 1,560,256 | 1,021,188 | 216,670 | 1,295,783 |
+| 1 | 1,824,569 | 557,011 | 237,459 | 846,549 |
+| 2 | 1,110,485 | 432,517 | 108,673 | 743,820 |
+| 3 | 976,948 | 170,059 | 99,133 | 473,892 |
+| 4 | 516,865 | 112,977 | 71,676 | 359,730 |
+| 5 | 393,071 | 99,727 | 61,993 | 414,282 |
+| 6 | 209,793 | 60,003 | 45,120 | 272,310 |
+| 7 | 295,510 | 81,022 | 58,740 | 196,706 |
+| 8 | 268,064 | 61,596 | 54,457 | 200,067 |
+| 9 | 173,550 | 46,754 | 41,032 | 170,477 |
+| 10 | 122,279 | 35,107 | 31,547 | 126,697 |
+| 11 | 170,349 | 41,980 | 38,943 | 138,013 |
+| 12 | 1,302,048 | 251,105 | 174,672 | 497,943 |
+| 13 | 1,355,588 | 255,237 | 191,024 | 886,138 |
+| 14 | 848,691 | 151,062 | 89,014 | 591,527 |
+| 15 | 447,478 | 102,807 | 75,757 | 374,719 |
+| 16 | 354,980 | 89,251 | 62,858 | 319,907 |
+| 17 | 371,568 | 105,108 | 74,555 | 373,342 |
+| 18 | 207,637 | 60,397 | 47,987 | 190,014 |
+| 19 | 180,450 | 60,798 | 44,023 | 198,925 |
+| 20 | 164,924 | 44,033 | 41,010 | 168,244 |
+| 21 | 152,323 | 41,483 | 38,355 | 153,120 |
+| 22 | 97,997 | 28,561 | 26,492 | 121,589 |
+| 23 | 128,069 | 37,137 | 33,722 | 149,374 |
+
+The gradient is the ascending search: the first CCX and its siblings carry ten times the ticks
+of the last, within each CCX the first core is busiest, and each sibling roughly tracks its
+partner thread. Cpu 1 is not a quiet core, it is nearly cpu 0's equal.
+
+The 7600X after 21 hours up, siblings N and N+6, one L3 over all twelve:
+
+| cpu | timer ticks | sched softirq | RCU softirq | function calls |
+|---:|---:|---:|---:|---:|
+| 0 | 676,256 | 544,570 | 69,474 | 85,695 |
+| 1 | 322,523 | 110,332 | 56,299 | 71,021 |
+| 2 | 527,683 | 223,442 | 105,163 | 115,443 |
+| 3 | 453,497 | 212,167 | 103,092 | 106,847 |
+| 4 | 247,209 | 112,997 | 48,590 | 62,505 |
+| 5 | 200,569 | 99,859 | 46,699 | 57,260 |
+| 6 | 266,829 | 118,598 | 11,183 | 173,279 |
+| 7 | 633,807 | 226,201 | 129,955 | 52,516 |
+| 8 | 285,949 | 138,978 | 60,234 | 61,094 |
+| 9 | 251,317 | 115,777 | 57,153 | 52,647 |
+| 10 | 209,185 | 100,802 | 49,863 | 52,673 |
+| 11 | 234,554 | 119,945 | 52,373 | 45,029 |
+
+Flatter with one L3 and no CCX boundary to stop the scan, but the same shape: cpu 0 has five
+times the reschedules of cpu 5, and cores 4 and 5 with their siblings are the quiet end. Cpu 7,
+cpu 1's sibling, is busier than cpu 1, which we think is something pinned rather than the fill
+order.
+
+### The rule
+
+- The default base is the last physical core's first thread: cpu 11 on the 3900X, cpu 5 on the
+  7600X. The first cpu of the highest L3 group was considered and rejected, since on a one-L3
+  machine it is cpu 0 again.
+- Partners prefer a core's first thread over its second, and among those the highest cpu number.
+  The SMT partner is the base's own sibling. Two earlier orders were tried and dropped: the first
+  cpu going up from the base paired base 1 with cpu 0 for CCX, the first other core on the L3,
+  and cpus above the base first paired every base in the last CCX with cpu 12 for x-CCX, cpu 0's
+  sibling, and paired base 11 with cpu 21, cpu 9's second thread, for CCX.
+- What the rule gives:
+
+| machine | base | CCX | x-CCX | SMT |
+|---|---:|---|---|---|
+| 3900X | 11 (default) | 11,10 | 11,8 | 11,23 |
+| 3900X | 9 | 9,11 | 9,8 | 9,21 |
+| 3900X | 1 | 1,2 | 1,11 | 1,13 |
+| 7600X | 5 (default) | 5,4 | none | 5,11 |
+| 7600X | 1 | 1,5 | none | 1,7 |
+
+So the default pairs sit on the quiet end of each machine, and the x-CCX partner is the
+neighbouring CCX's quietest core. The real fix for calibrated numbers is `isolcpus` and
+`nohz_full` on a set of cores, a boot-line change and a separate decision, and the numbers here
+are eyeball numbers on a quiet base rather than isolated ones.
+
 ## Resolved questions
 
 - **Cross-process trust** — resolved in 0.3.0-4: the

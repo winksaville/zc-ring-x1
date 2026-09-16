@@ -5,8 +5,8 @@
 //! version-of-record so you know exactly which build you
 //! are testing, `-h`/`--help` the usage, and `--base-cpu <n>`
 //! sets the base, the cpu the single-thread lines pin to and
-//! every placement starts from, 1 by default since the kernel
-//! favors cpu 0.
+//! every placement starts from, the last core's first thread
+//! by default, the quiet end of the kernel's fill order.
 //!
 //! - Part 1, the ring: an SPSC pair moves typed messages
 //!   in place (reserve -> write -> commit, reserve -> read ->
@@ -161,6 +161,65 @@ fn parse_cpu_list(s: &str) -> Vec<usize> {
 /// `None` means the pair is unavailable / leave unpinned.
 type PinPair = Option<(usize, usize)>;
 
+/// A cpu's SMT sibling list from sysfs, the cpu alone when it
+/// cannot be read.
+#[cfg(target_os = "linux")]
+fn siblings_of(cpu: usize) -> Vec<usize> {
+    std::fs::read_to_string(format!(
+        "/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"
+    ))
+    .ok()
+    .map(|s| parse_cpu_list(&s))
+    .filter(|v| !v.is_empty())
+    .unwrap_or_else(|| vec![cpu])
+}
+
+/// A core's first thread: the lowest cpu in its sibling list.
+#[cfg(target_os = "linux")]
+fn is_first_thread(cpu: usize) -> bool {
+    siblings_of(cpu).iter().min() == Some(&cpu)
+}
+
+/// The online cpus from sysfs, empty when unreadable.
+#[cfg(target_os = "linux")]
+fn online_cpus() -> Vec<usize> {
+    std::fs::read_to_string("/sys/devices/system/cpu/online")
+        .ok()
+        .map(|s| parse_cpu_list(&s))
+        .unwrap_or_default()
+}
+
+/// Partner order: a core's first thread before its second, and
+/// the highest cpu number first. The scheduler's idlest-cpu
+/// search fills cpus from the bottom, so the top is the quiet
+/// end, and a first thread's partner thread is idler than a
+/// second thread's (design note, Measurement placements).
+#[cfg(target_os = "linux")]
+fn quiet_first(cpus: &[usize]) -> Vec<usize> {
+    let mut v: Vec<usize> = cpus.to_vec();
+    v.sort_by_key(|&c| (!is_first_thread(c), std::cmp::Reverse(c)));
+    v
+}
+
+/// The base cpu when `--base-cpu` is not given: the last
+/// physical core's first thread, the quiet end of the kernel's
+/// fill order, 11 on a 3900X and 5 on a 7600X. 0 when sysfs
+/// cannot be read.
+#[cfg(target_os = "linux")]
+fn default_base_cpu() -> usize {
+    online_cpus()
+        .into_iter()
+        .filter(|&c| is_first_thread(c))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Non-Linux stub: no topology, so 0 and nothing pins.
+#[cfg(not(target_os = "linux"))]
+fn default_base_cpu() -> usize {
+    0
+}
+
 /// Where a 2t run's threads sit: a label in the measurement
 /// tools' form, `<p>,<c> CCX`, `<p>,<c> x-CCX`, `<p>,<c> SMT`,
 /// or `unpinned`, and the pin behind it.
@@ -181,28 +240,16 @@ struct Placement {
 /// - `unpinned`: the scheduler's choice, always present.
 #[cfg(target_os = "linux")]
 fn discover_placements(base: usize) -> Vec<Placement> {
-    let read = |path: &str| std::fs::read_to_string(path).ok();
-    let siblings = read(&format!(
-        "/sys/devices/system/cpu/cpu{base}/topology/thread_siblings_list"
-    ))
-    .map(|s| parse_cpu_list(&s))
-    .unwrap_or_default();
-    let online = read("/sys/devices/system/cpu/online")
-        .map(|s| parse_cpu_list(&s))
-        .unwrap_or_default();
-    let l3 = read(&format!(
+    let siblings = siblings_of(base);
+    let online = online_cpus();
+    let l3 = std::fs::read_to_string(format!(
         "/sys/devices/system/cpu/cpu{base}/cache/index3/shared_cpu_list"
     ))
+    .ok()
     .map(|s| parse_cpu_list(&s))
     .unwrap_or_else(|| siblings.clone());
     let mut v = Vec::new();
-    // Candidates above the base first, then the rest, so the
-    // pairs from the default base leave cpu 0 alone.
-    let above_first = |cpus: &[usize]| -> Vec<usize> {
-        let (hi, lo): (Vec<usize>, Vec<usize>) = cpus.iter().partition(|&&c| c > base);
-        hi.into_iter().chain(lo).collect()
-    };
-    if let Some(c) = above_first(&l3)
+    if let Some(c) = quiet_first(&l3)
         .into_iter()
         .find(|&c| c != base && !siblings.contains(&c))
     {
@@ -211,7 +258,7 @@ fn discover_placements(base: usize) -> Vec<Placement> {
             pin: Some((base, c)),
         });
     }
-    if let Some(c) = above_first(&online).into_iter().find(|c| !l3.contains(c)) {
+    if let Some(c) = quiet_first(&online).into_iter().find(|c| !l3.contains(c)) {
         v.push(Placement {
             label: format!("{base},{c} x-CCX"),
             pin: Some((base, c)),
@@ -241,15 +288,11 @@ fn discover_placements(_base: usize) -> Vec<Placement> {
 
 /// The cpu every single-thread line pins to and every
 /// placement starts from: `--base-cpu`, default
-/// [`DEFAULT_BASE_CPU`]. Set once in
+/// [`default_base_cpu`]. Set once in
 /// `main` before any run, read at every pin, so the loops
 /// behind the macros and the flavor tables keep their
 /// signatures.
-static BASE_CPU: AtomicUsize = AtomicUsize::new(DEFAULT_BASE_CPU);
-
-/// The base cpu when `--base-cpu` is not given: 1, since the
-/// kernel favors cpu 0 and it runs noisier.
-const DEFAULT_BASE_CPU: usize = 1;
+static BASE_CPU: AtomicUsize = AtomicUsize::new(0);
 
 /// The base cpu, see [`BASE_CPU`].
 fn base_cpu() -> usize {
@@ -265,8 +308,9 @@ usage: zc-ring-x1-demo [--base-cpu <n>]
   --base-cpu <n>  the cpu the single-thread lines pin to and every 2t
                   placement starts from: CCX is <n> and a core on its L3,
                   x-CCX is <n> and a core outside it, SMT is <n> and its
-                  sibling. Default 1, since the kernel favors cpu 0
-                  and it runs noisier.
+                  sibling. The default is the last physical core's
+                  first thread, the quiet end of the kernel's fill
+                  order.
   -h, --help      print this and exit
   -V, --version   print the version-of-record and exit";
 
@@ -281,7 +325,7 @@ enum Args {
 /// without a value, or one that is not a number prints the
 /// usage to stderr and exits 1.
 fn parse_args(args: impl Iterator<Item = String>) -> Args {
-    let mut base_cpu = DEFAULT_BASE_CPU;
+    let mut base_cpu = default_base_cpu();
     let mut args = args.peekable();
     while let Some(a) = args.next() {
         match a.as_str() {

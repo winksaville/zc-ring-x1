@@ -40,11 +40,12 @@ default duration drops from 5 s to 1 s, and every README example run is re-done 
 #### Acceptance check
 
 `zc-ring-x1-demo --help` prints the usage and exits 0, `zc-ring-x1-demo --bogus` prints it and
-exits 1. On the 3900X the default demo run labels its 1t lines `core 1` and its pairs `1,2 CCX`,
-`1,3 x-CCX`, and `1,13 SMT`, and `--base-cpu 3` gives `3,4 CCX`, `3,6 x-CCX`, `3,15 SMT`. On the
-7600X the `x-CCX` rows are skipped as lacking. `tp-matrix`, `tp-stream`, and `tp-pool` take
-`--base-cpu` and label their placements from it the same way, and each README example run on both
-machines is at the new default, the tools at 1 s.
+exits 1. On the 3900X the default demo run labels its 1t lines `core 11` and its pairs
+`11,10 CCX`, `11,8 x-CCX`, and `11,23 SMT`, and `--base-cpu 9` gives `9,11 CCX`, `9,8 x-CCX`,
+`9,21 SMT`. On the 7600X the default is base 5 with `5,4 CCX` and `5,11 SMT`, and the `x-CCX`
+rows are skipped as lacking. `tp-matrix`, `tp-stream`, and `tp-pool` take `--base-cpu` and label
+their placements from it the same way, and each README example run on both machines is at the
+new default, the tools at 1 s.
 
 #### Ladder
 
@@ -53,6 +54,7 @@ machines is at the new default, the tools at 1 s.
 - [feat: same-L3, cross-L3, and SMT placements in the demo][3] (done)
 - [feat: a base cpu for the measurement tools][4] (done)
 - [perf: the demo and the tools off cpu 0 on both machines][5] (done)
+- [perf: a quiet default base and quiet partners][7] (done)
 - [feat: the demo's base cpu and pin-pair picker closing][6]
 
 #### Deliberation
@@ -79,6 +81,12 @@ machines is at the new default, the tools at 1 s.
   Both pickers try the cpus above the base first, then the rest, so base 3's `x-CCX` is `3,6`
   rather than `3,0`, and the acceptance check was corrected with it.
 - No `-dev` rename, as in the earlier cycles.
+- A quiet base is the last core, the user's call on 2026-09-16 after the housekeeping counts: the
+  scheduler's idlest-cpu search fills cpus from the bottom, so cpu 1 carries nearly cpu 0's timer
+  and reschedule load and the high-numbered cores ten times less. The default base is the last
+  physical core's first thread, 11 on the 3900X and 5 on the 7600X, and partners prefer a core's
+  first thread and the highest number, so the pairs stay at the quiet end. The rationale and the
+  counts are in the design note.
 - Waiver, the user's on 2026-09-16 at the opening's review: the work reviews, description reviews,
   and per-push approvals of the opening and the four work rungs are waived, the user reviewing on
   return. It does not cover the closing rung or Land.
@@ -159,6 +167,27 @@ and the tools', is re-done on the 3900X and the 7600X at the new defaults.
     x-CCX`, `1,13 SMT`, the 7600X at `1,2 CCX` and `1,7 SMT` with no x-CCX, and the tools
     snippets carry rows from the 3900X at 1 s. The 7600X has no rsync, so the tree went over by
     tar through ssh into `~/zc-ring-x1-run`, which can be deleted.
+
+##### perf: a quiet default base and quiet partners
+
+Base 1 is nearly as noisy as cpu 0, and the pickers' partners went up from the base, so base 9's
+x-CCX partner was cpu 12, cpu 0's sibling. The default base becomes the last physical core's first
+thread, partners prefer first threads and the highest number, the rationale goes into the design
+note, and the README examples are re-run.
+
+* Base 1 sits in cpu 0's CCX and draws the same scheduler traffic.
+  - The default is the last physical core's first thread, computed from sysfs at start, 11 on
+    the 3900X and 5 on the 7600X. The first cpu of the highest L3 group was rejected, since on
+    the one-L3 7600X it is cpu 0.
+* Partners went up from the base, so the last CCX's x-CCX partner was cpu 12, cpu 0's sibling.
+  - Both pickers order candidates first threads first and highest number first, so the pairs are
+    `11,10 CCX`, `11,8 x-CCX`, `11,23 SMT` and `5,4 CCX`, `5,11 SMT`. The rule, the counts, and
+    the rejected orders are in [Measurement placements](notes/ring-buffer-design.md#measurement-placements-the-base-cpu-and-its-partners).
+* The tools' placement column widened to ten characters with a two-digit base.
+  - The tools README's snippets carry the wider column, re-run on the 3900X with the demo blocks
+    on both machines.
+* The design note owes 130 prose semicolons, a rewrite rather than a repunctuation.
+  - Left for its own cycle, as the semicolon rule says, and raised at the close-out.
 
 ##### feat: the demo's base cpu and pin-pair picker closing
 
@@ -409,4 +438,5 @@ of this section, and the cycles before the rule in the frozen [notes/chores/](no
 [4]: #feat-a-base-cpu-for-the-measurement-tools
 [5]: #perf-the-demo-and-the-tools-off-cpu-0-on-both-machines
 [6]: #feat-the-demos-base-cpu-and-pin-pair-picker-closing
+[7]: #perf-a-quiet-default-base-and-quiet-partners
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
