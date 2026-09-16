@@ -12,9 +12,10 @@
 //!   in place (reserve -> write -> commit, reserve -> read ->
 //!   release), first both ends on one thread
 //!   (the ring's own cost), then one producer thread to
-//!   one consumer thread: unpinned, pinned to two different
-//!   physical cores, and pinned to one physical core's two
-//!   SMT siblings (shared L1/L2, when the CPU has SMT).
+//!   one consumer thread at each placement the machine has,
+//!   in the measurement tools' terms: CCX, two cores on one
+//!   L3, x-CCX, cores on different L3s, SMT, one core's two
+//!   hardware threads sharing its L1 and L2, and unpinned.
 //!   Every ring version runs beside it at each placement, the
 //!   `spsc1_` to `spsc3_` and `mpsc0_` to `mpsc2_` lines
 //!   (the MPSC ones by send_with closure fill), the segmented
@@ -160,28 +161,32 @@ fn parse_cpu_list(s: &str) -> Vec<usize> {
 /// `None` means the pair is unavailable / leave unpinned.
 type PinPair = Option<(usize, usize)>;
 
-/// Discover two cpu pairs for the pinned 2t runs from
-/// /sys/devices/system/cpu, both starting at `base`. `None`
-/// when the machine lacks the shape (or not Linux).
+/// Where a 2t run's threads sit: a label in the measurement
+/// tools' form, `<p>,<c> CCX`, `<p>,<c> x-CCX`, `<p>,<c> SMT`,
+/// or `unpinned`, and the pin behind it.
+struct Placement {
+    label: String,
+    pin: PinPair,
+}
+
+/// Discover the placements for the pinned 2t runs from
+/// /sys/devices/system/cpu, each starting at `base`, in the
+/// measurement tools' order, and only those the machine has:
 ///
-/// - `.0`: same physical core, `base` and its SMT sibling
-///   (shared L1/L2, the cheapest handoff).
-/// - `.1`: different physical cores, `base` and a core outside
-///   its L3 group when one exists (the farthest handoff),
-///   else any non-sibling core.
+/// - `CCX`: `base` and another core sharing its L3, the near
+///   cross-core handoff.
+/// - `x-CCX`: `base` and a core outside its L3, the far one.
+/// - `SMT`: `base` and its SMT sibling, one core's two
+///   hardware threads sharing L1 and L2, the cheapest.
+/// - `unpinned`: the scheduler's choice, always present.
 #[cfg(target_os = "linux")]
-fn discover_pin_pairs(base: usize) -> (PinPair, PinPair) {
+fn discover_placements(base: usize) -> Vec<Placement> {
     let read = |path: &str| std::fs::read_to_string(path).ok();
     let siblings = read(&format!(
         "/sys/devices/system/cpu/cpu{base}/topology/thread_siblings_list"
     ))
     .map(|s| parse_cpu_list(&s))
     .unwrap_or_default();
-    let smt = siblings
-        .iter()
-        .copied()
-        .find(|c| *c != base)
-        .map(|c| (base, c));
     let online = read("/sys/devices/system/cpu/online")
         .map(|s| parse_cpu_list(&s))
         .unwrap_or_default();
@@ -190,23 +195,43 @@ fn discover_pin_pairs(base: usize) -> (PinPair, PinPair) {
     ))
     .map(|s| parse_cpu_list(&s))
     .unwrap_or_else(|| siblings.clone());
-    let far = online
+    let mut v = Vec::new();
+    if let Some(c) = l3
         .iter()
         .copied()
-        .find(|c| !l3.contains(c))
-        .or_else(|| {
-            online
-                .iter()
-                .copied()
-                .find(|c| *c != base && !siblings.contains(c))
+        .find(|&c| c != base && !siblings.contains(&c))
+    {
+        v.push(Placement {
+            label: format!("{base},{c} CCX"),
+            pin: Some((base, c)),
         });
-    (smt, far.map(|c| (base, c)))
+    }
+    if let Some(c) = online.iter().copied().find(|c| !l3.contains(c)) {
+        v.push(Placement {
+            label: format!("{base},{c} x-CCX"),
+            pin: Some((base, c)),
+        });
+    }
+    if let Some(c) = siblings.iter().copied().find(|&c| c != base) {
+        v.push(Placement {
+            label: format!("{base},{c} SMT"),
+            pin: Some((base, c)),
+        });
+    }
+    v.push(Placement {
+        label: "unpinned".to_string(),
+        pin: None,
+    });
+    v
 }
 
-/// Non-Linux stub: no pinned runs.
+/// Non-Linux stub: unpinned only.
 #[cfg(not(target_os = "linux"))]
-fn discover_pin_pairs(_base: usize) -> (PinPair, PinPair) {
-    (None, None)
+fn discover_placements(_base: usize) -> Vec<Placement> {
+    vec![Placement {
+        label: "unpinned".to_string(),
+        pin: None,
+    }]
 }
 
 /// The cpu every single-thread line pins to and both pin
@@ -227,10 +252,10 @@ const USAGE: &str = "\
 usage: zc-ring-x1-demo [--base-cpu <n>]
        zc-ring-x1-demo -h | --help | -V | --version
 
-  --base-cpu <n>  the cpu the single-thread lines pin to and both pin
-                  pairs start from: the SMT sibling pair is <n> and its
-                  sibling, the diff-cores pair is <n> and a core outside
-                  its L3. Default 0, which the kernel favors, so a
+  --base-cpu <n>  the cpu the single-thread lines pin to and every 2t
+                  placement starts from: CCX is <n> and a core on its L3,
+                  x-CCX is <n> and a core outside it, SMT is <n> and its
+                  sibling. Default 0, which the kernel favors, so a
                   quieter core is a better bench.
   -h, --help      print this and exit
   -V, --version   print the version-of-record and exit";
@@ -295,7 +320,7 @@ fn pin_to_cpu(cpu: usize) {
 }
 
 /// Non-Linux stub: pinning is a no-op, so only the 1t runs
-/// reach it (discover_pin_pairs returns no pairs), present
+/// reach it (discover_placements is unpinned only), present
 /// so the demo compiles everywhere.
 #[cfg(not(target_os = "linux"))]
 fn pin_to_cpu(_cpu: usize) {}
@@ -1201,7 +1226,7 @@ fn legend(text: &str) {
 /// on one thread and the lagging consumer at each placement, at
 /// [`STRESS_SEGMENTS`] segments of DEPTH, then the switch cost
 /// at depth 1, single-threaded and streaming across cores.
-fn segment_stress(smt: PinPair, far: PinPair) {
+fn segment_stress(placements: &[Placement]) {
     println!(
         "segment stress: {} messages per line; spsc-v3 and mpsc-v2 at {STRESS_SEGMENTS} segments \
          of {DEPTH} slots, then the switch cost at depth 1",
@@ -1229,14 +1254,11 @@ fn segment_stress(smt: PinPair, far: PinPair) {
             switch_ns: None,
         });
     }
-    let mut placements = vec![("unpinned".to_string(), None)];
-    if let Some((p, c)) = far {
-        placements.push((format!("diff cores {p}+{c}"), far));
-    }
-    if let Some((p, c)) = smt {
-        placements.push((format!("same core {p}+{c}"), smt));
-    }
-    for (placement, pin) in &placements {
+    for Placement {
+        label: placement,
+        pin,
+    } in placements
+    {
         for (line, run) in [
             (
                 "spsc3 lagging 2t",
@@ -1260,12 +1282,17 @@ fn segment_stress(smt: PinPair, far: PinPair) {
     let one_t = format!("core {}", base_cpu());
     switch_cost(&mut rows, "spsc3 burst 1t", &one_t, spsc3_burst_1t);
     switch_cost(&mut rows, "mpsc2 burst 1t", &one_t, mpsc2_burst_1t);
-    // The stream across cores at the far placement, or unpinned
-    // when the machine has no second core to find.
-    let (placement, pin) = match far {
-        Some((p, c)) => (format!("diff cores {p}+{c}"), far),
-        None => ("unpinned".to_string(), None),
-    };
+    // The stream across cores at the farthest placement the
+    // machine has, x-CCX, else CCX, else unpinned.
+    let Placement {
+        label: placement,
+        pin,
+    } = placements
+        .iter()
+        .find(|p| p.label.ends_with(" x-CCX"))
+        .or_else(|| placements.iter().find(|p| p.label.ends_with(" CCX")))
+        .unwrap_or_else(|| &placements[placements.len() - 1]);
+    let (placement, pin) = (placement.clone(), *pin);
     switch_cost(
         &mut rows,
         "spsc3 stream 2t",
@@ -1323,16 +1350,10 @@ enum SweepPlacement {
 ///   the matching line agree up to run noise.
 /// - Depth 1 is lockstep: every message is its own handoff, so
 ///   streaming there costs what a round trip does.
-fn depth_sweep(smt: PinPair, far: PinPair) {
-    let mut placements = vec![
-        (format!("1t core {}", base_cpu()), SweepPlacement::OneT),
-        ("2t unpinned".to_string(), SweepPlacement::TwoT(None)),
-    ];
-    if let Some((p, c)) = far {
-        placements.push((format!("2t diff cores {p}+{c}"), SweepPlacement::TwoT(far)));
-    }
-    if let Some((p, c)) = smt {
-        placements.push((format!("2t same core {p}+{c}"), SweepPlacement::TwoT(smt)));
+fn depth_sweep(two_t: &[Placement]) {
+    let mut placements = vec![(format!("1t core {}", base_cpu()), SweepPlacement::OneT)];
+    for Placement { label, pin } in two_t {
+        placements.push((format!("2t {label}"), SweepPlacement::TwoT(*pin)));
     }
     let depth_list: Vec<String> = DEPTHS.iter().map(|d| d.to_string()).collect();
     println!(
@@ -1368,6 +1389,48 @@ fn depth_sweep(smt: PinPair, far: PinPair) {
     }
 }
 
+/// The 2t lines at one placement: every ring flavor, the
+/// composed flow, and the std channel, each labelled with the
+/// placement.
+fn two_t_lines(label: &str, pin: PinPair) {
+    report(
+        &format!("spsc_ring_one_msg_2t ({label}):"),
+        spsc_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("spsc1_ring_one_msg_2t ({label}):"),
+        spsc1_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("spsc2_ring_one_msg_2t ({label}):"),
+        spsc2_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("spsc3_ring_one_msg_2t ({label}):"),
+        spsc3_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("mpsc0_ring_one_msg_2t ({label}):"),
+        mpsc0_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("mpsc1_ring_one_msg_2t ({label}):"),
+        mpsc1_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("mpsc2_ring_one_msg_2t ({label}):"),
+        mpsc2_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("spsc_ring_one_pool_msg_2t ({label}):"),
+        spsc_ring_one_pool_msg_2t(pin),
+    );
+    report(
+        &format!("std_mpsc_one_pool_msg_2t ({label}):"),
+        std_mpsc_one_pool_msg_2t(pin),
+    );
+}
+
 /// Run both parts and print their throughput, then the depth
 /// sweep. `--base-cpu <n>` moves the base off cpu 0, `-h` /
 /// `--help` prints the usage, and `-V` / `--version` prints the
@@ -1384,7 +1447,7 @@ fn main() {
         "demo: {} messages each, depth {DEPTH}, base cpu {base}",
         commas(COUNT)
     );
-    let (smt, far) = discover_pin_pairs(base);
+    let placements = discover_placements(base);
 
     // Alloc/free baselines, then message flows: like
     // compares with like within each block.
@@ -1436,44 +1499,11 @@ fn main() {
         std_mpsc_one_pool_msg_1t(),
     );
 
-    // Two threads, scheduler-placed.
-    println!();
-    report(
-        "spsc_ring_one_msg_2t (unpinned):",
-        spsc_ring_one_msg_2t(None, DEPTH),
-    );
-    report(
-        "spsc1_ring_one_msg_2t (unpinned):",
-        spsc1_ring_one_msg_2t(None, DEPTH),
-    );
-    report(
-        "spsc2_ring_one_msg_2t (unpinned):",
-        spsc2_ring_one_msg_2t(None, DEPTH),
-    );
-    report(
-        "spsc3_ring_one_msg_2t (unpinned):",
-        spsc3_ring_one_msg_2t(None, DEPTH),
-    );
-    report(
-        "mpsc0_ring_one_msg_2t (unpinned):",
-        mpsc0_ring_one_msg_2t(None, DEPTH),
-    );
-    report(
-        "mpsc1_ring_one_msg_2t (unpinned):",
-        mpsc1_ring_one_msg_2t(None, DEPTH),
-    );
-    report(
-        "mpsc2_ring_one_msg_2t (unpinned):",
-        mpsc2_ring_one_msg_2t(None, DEPTH),
-    );
-    report(
-        "spsc_ring_one_pool_msg_2t (unpinned):",
-        spsc_ring_one_pool_msg_2t(None),
-    );
-    report(
-        "std_mpsc_one_pool_msg_2t (unpinned):",
-        std_mpsc_one_pool_msg_2t(None),
-    );
+    // Two threads at each placement the machine has.
+    for Placement { label, pin } in &placements {
+        println!();
+        two_t_lines(label, *pin);
+    }
 
     // Three threads (2 producers + 1 consumer): the
     // multi-producer line only the MPSC ring can run.
@@ -1482,105 +1512,11 @@ fn main() {
         mpsc1_ring_one_msg_3t(),
     );
 
-    // Two threads, different physical cores.
-    println!();
-    match far {
-        Some((p, c)) => {
-            report(
-                &format!("spsc_ring_one_msg_2t (diff cores {p}+{c}):"),
-                spsc_ring_one_msg_2t(far, DEPTH),
-            );
-            report(
-                &format!("spsc1_ring_one_msg_2t (diff cores {p}+{c}):"),
-                spsc1_ring_one_msg_2t(far, DEPTH),
-            );
-            report(
-                &format!("spsc2_ring_one_msg_2t (diff cores {p}+{c}):"),
-                spsc2_ring_one_msg_2t(far, DEPTH),
-            );
-            report(
-                &format!("spsc3_ring_one_msg_2t (diff cores {p}+{c}):"),
-                spsc3_ring_one_msg_2t(far, DEPTH),
-            );
-            report(
-                &format!("mpsc0_ring_one_msg_2t (diff cores {p}+{c}):"),
-                mpsc0_ring_one_msg_2t(far, DEPTH),
-            );
-            report(
-                &format!("mpsc1_ring_one_msg_2t (diff cores {p}+{c}):"),
-                mpsc1_ring_one_msg_2t(far, DEPTH),
-            );
-            report(
-                &format!("mpsc2_ring_one_msg_2t (diff cores {p}+{c}):"),
-                mpsc2_ring_one_msg_2t(far, DEPTH),
-            );
-            report(
-                &format!("spsc_ring_one_pool_msg_2t (diff cores {p}+{c}):"),
-                spsc_ring_one_pool_msg_2t(far),
-            );
-            report(
-                &format!("std_mpsc_one_pool_msg_2t (diff cores {p}+{c}):"),
-                std_mpsc_one_pool_msg_2t(far),
-            );
-        }
-        None => {
-            println!("2t diff-cores runs:");
-            println!("  skipped, only one core found");
-        }
-    }
-
-    // Two threads, one physical core (SMT siblings).
-    println!();
-    match smt {
-        Some((p, c)) => {
-            report(
-                &format!("spsc_ring_one_msg_2t (same core {p}+{c}):"),
-                spsc_ring_one_msg_2t(smt, DEPTH),
-            );
-            report(
-                &format!("spsc1_ring_one_msg_2t (same core {p}+{c}):"),
-                spsc1_ring_one_msg_2t(smt, DEPTH),
-            );
-            report(
-                &format!("spsc2_ring_one_msg_2t (same core {p}+{c}):"),
-                spsc2_ring_one_msg_2t(smt, DEPTH),
-            );
-            report(
-                &format!("spsc3_ring_one_msg_2t (same core {p}+{c}):"),
-                spsc3_ring_one_msg_2t(smt, DEPTH),
-            );
-            report(
-                &format!("mpsc0_ring_one_msg_2t (same core {p}+{c}):"),
-                mpsc0_ring_one_msg_2t(smt, DEPTH),
-            );
-            report(
-                &format!("mpsc1_ring_one_msg_2t (same core {p}+{c}):"),
-                mpsc1_ring_one_msg_2t(smt, DEPTH),
-            );
-            report(
-                &format!("mpsc2_ring_one_msg_2t (same core {p}+{c}):"),
-                mpsc2_ring_one_msg_2t(smt, DEPTH),
-            );
-            report(
-                &format!("spsc_ring_one_pool_msg_2t (same core {p}+{c}):"),
-                spsc_ring_one_pool_msg_2t(smt),
-            );
-            report(
-                &format!("std_mpsc_one_pool_msg_2t (same core {p}+{c}):"),
-                std_mpsc_one_pool_msg_2t(smt),
-            );
-        }
-        None => {
-            println!("2t same-core runs:");
-            println!("  skipped, no SMT sibling found");
-        }
-    }
-
     // The depth sweep, the ring flavors at every placement.
     println!();
-    depth_sweep(smt, far);
+    depth_sweep(&placements);
 
     // The segment stress, the segmented rings switching.
     println!();
-    segment_stress(smt, far);
+    segment_stress(&placements);
 }

@@ -440,20 +440,23 @@ zcr-mpsc-2t: zc-ring-x1 mpsc send_with round-trip (2 threads, spin) [duration=30
   like compares with like: alloc/free baselines (pool vs
   global allocator), then three message flows (raw ring,
   composed ring + pool descriptors, std channel + pool) at
-  each thread placement: single thread on core 0, two
-  threads unpinned, two SMT siblings sharing one physical
-  core, and two different physical cores (pairs discovered
-  from /sys at runtime, and each line names the cpus it ran
-  on). Eyeball numbers (single runs, no mean/stdev), not a
-  benchmark (calibrated measurement lives in iiac-perf).
-  Installable: `cargo install --path . --locked`, then
-  `zc-ring-x1-demo`, and `-V` prints the version-of-record so
-  you know which build you are testing. `--base-cpu <n>`
-  moves the base off cpu 0: the single-thread lines pin to
-  it and both pairs start from it, its SMT sibling and a
-  core outside its L3, since the kernel favors cpu 0 and a
-  quieter core benches better. `-h` prints the usage. An
-  example run on each machine, the 3900X (Zen 2, 12 cores over four CCXs)
+  each thread placement: single thread on the base cpu, then
+  two threads at each placement the machine has, in the
+  measurement tools' terms: CCX, two cores on one L3, x-CCX,
+  cores on different L3s, SMT, one core's two hardware
+  threads sharing its L1 and L2, and unpinned (pairs
+  discovered from /sys at runtime, each line naming its
+  cpus, and a placement the machine lacks is absent, the
+  7600X having no x-CCX). Eyeball numbers (single runs, no
+  mean/stdev), not a benchmark (calibrated measurement lives
+  in iiac-perf). Installable: `cargo install --path .
+  --locked`, then `zc-ring-x1-demo`, and `-V` prints the
+  version-of-record so you know which build you are
+  testing. `--base-cpu <n>` moves the base off cpu 0: the
+  single-thread lines pin to it and every pair starts from
+  it, since the kernel favors cpu 0 and a quieter core
+  benches better. `-h` prints the usage. An example run on
+  each machine, the 3900X (Zen 2, 12 cores over four CCXs)
   first, then the 7600X (Zen 4, six cores under one L3):
 
   ```text

@@ -50,7 +50,7 @@ machines is at the new default, the tools at 1 s.
 
 - [feat: the demo's base cpu and pin-pair picker opening][1] (done)
 - [feat: a base cpu flag and help for the demo][2] (done)
-- [feat: same-L3, cross-L3, and SMT placements in the demo][3]
+- [feat: same-L3, cross-L3, and SMT placements in the demo][3] (done)
 - [feat: a base cpu for the measurement tools][4]
 - [perf: the demo and the tools off cpu 0 on both machines][5]
 - [feat: the demo's base cpu and pin-pair picker closing][6]
@@ -112,6 +112,18 @@ default 0 in this rung, that every pin and both pairs start from, the labels nam
 The demo's two pairs, "diff cores" and "same core", are one experiment on the 3900X and another
 on the 7600X. The picker becomes the tools' one with a base: `CCX`, `x-CCX`, and `SMT`, each
 skipped where the machine lacks it, in the 2t lines, the depth sweep, and the segment stress.
+
+* The demo named its pairs by distance, "diff cores" and "same core", and the tools by cache.
+  - A `Placement` is a label in the tools' form and a pin, and the demo's picker is the tools'
+    discovery with a base: `CCX`, `x-CCX`, `SMT`, then `unpinned`, only those the machine has.
+    The 3900X gains a `CCX` pair, and the 7600X's `x-CCX` row is absent instead of mislabelled.
+* `main` held one block of nine lines per pair, and the sweep and the stress each rebuilt the
+  placement list from the two pairs.
+  - The nine lines are one function over a placement, `main` loops it, and the sweep and the
+    stress take the list. The stress's streaming rows sit at the farthest placement the machine
+    has, `x-CCX`, else `CCX`, else unpinned, where before they sat at the "far" pair.
+* The README's placement paragraph and the demo's usage said "SMT siblings" and "different cores".
+  - Both say the tools' terms.
 
 ##### feat: a base cpu for the measurement tools
 
