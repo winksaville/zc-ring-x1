@@ -53,6 +53,7 @@ every call the guide names exists in the crate, checked by listing the identifie
 - [docs: guide examples for SPSC v3 and MPSC v2][3] (done)
 - [docs: the user guide for SPSC v3 and MPSC v2][4] (done)
 - [docs: README and module docs point at the guide][5] (done)
+- [style: pay the prose semicolons in lib.rs and mpsc v2][7] (done)
 - [docs: a user guide for SPSC v3 and MPSC v2 closing][6]
 
 #### Deliberation
@@ -154,6 +155,18 @@ two module docs point at it.
   `src/mpsc/v2/mod.rs`.
   - Paid in the next rung, `style: pay the prose semicolons in lib.rs and mpsc v2`, the
     penultimate rung the prose rule asks for.
+
+##### style: pay the prose semicolons in lib.rs and mpsc v2
+
+The previous rung touched `src/lib.rs` and `src/mpsc/v2/mod.rs`, which carried nine prose
+semicolons between them, and the prose rule pays a touched file's semicolons in a penultimate
+rung of its own. Each is rewritten with a period, or a comma and a conjunction, and nothing else
+in either file changes.
+
+* Nine semicolons joined two claims or a claim and its continuation.
+  - Two became periods where each half stands alone, and seven a comma with "and", the rule's
+    two joins. No code span was touched, and a count over comment lines with code spans blanked
+    reads zero in both files.
 
 ##### docs: a user guide for SPSC v3 and MPSC v2 closing
 
@@ -408,4 +421,5 @@ of this section, and the cycles before the rule in the frozen [notes/chores/](no
 [4]: #docs-the-user-guide-for-spsc-v3-and-mpsc-v2
 [5]: #docs-readme-and-module-docs-point-at-the-guide
 [6]: #docs-a-user-guide-for-spsc-v3-and-mpsc-v2-closing
+[7]: #style-pay-the-prose-semicolons-in-librs-and-mpsc-v2
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
