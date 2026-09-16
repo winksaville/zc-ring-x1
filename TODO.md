@@ -17,7 +17,100 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### docs: a user guide for SPSC v3 and MPSC v2
+
+#### Problem
+
+Nothing in the repo tells a user how to use SPSC v3 and MPSC v2 end to end. The README's
+Overview shows one SPSC v3 send and receive and still says "SPSC only", the module docs describe
+the protocols rather than the calls, the MPSC v2 ring is reachable only by path with no example
+in the README, and the segmented rings' lifecycle, what a switch is, where a freed segment goes,
+what a drained ring looks like, is spread over protocol bullets in the design note. A reader in
+iiac-perf, or anyone, cannot pick the rings up from the documentation alone.
+
+#### Solution
+
+A user guide, `notes/user-guide.md`, that takes a reader from a pool to a running pair of
+endpoints for each ring: sizing the pool for segments, `init` and `split`, the producer's
+reserve-commit and `send_with`, the consumer's reserve-release, wait policies and `Full` and
+`Empty`, crossing threads, the segment lifecycle, the counters, the limits, and the errors, with
+two complete example programs the guide quotes and `cargo test` builds. The design note gains the
+segment lifecycle subsection under MPSC v2 with v3's differences, the README gains an MPSC v2
+paragraph and points at the guide, and the module docs point at it too.
+
+#### Acceptance check
+
+`cargo run --example guide_spsc_v3` and `cargo run --example guide_mpsc_v2` run clean and are
+built by `cargo clippy --all-targets`. Every call the two examples make is named in the guide, and
+every call the guide names exists in the crate, checked by listing the identifiers on both sides.
+`cargo doc --no-deps` reports no broken intra-doc link. The README's status line no longer says
+"SPSC only", and its segment paragraph and the v2 module doc link to the lifecycle subsection.
+
+#### Ladder
+
+- [docs: a user guide for SPSC v3 and MPSC v2 opening][1] (done)
+- [docs: the segment lifecycle in the design note][2]
+- [docs: guide examples for SPSC v3 and MPSC v2][3]
+- [docs: the user guide for SPSC v3 and MPSC v2][4]
+- [docs: README and module docs point at the guide][5]
+- [docs: a user guide for SPSC v3 and MPSC v2 closing][6]
+
+#### Deliberation
+
+- Grown from the Todo entry `Segment lifecycle in the design note`, the user's call on
+  2026-09-16: the lifecycle subsection alone leaves a reader assembling the API from module docs,
+  and the want is documentation that iiac-perf or anyone can use the two rings from.
+- A guide in `notes/`, not a README section: the README is the crate's front page and already
+  long, and the guide is a walk-through with two programs, a document of its own that the README
+  points at.
+- Two example programs rather than doc snippets: `cargo test` and `cargo clippy --all-targets`
+  build every example, so the guide's code cannot drift from the API, the convention the README's
+  own snippets already follow through `examples/readme.rs`.
+- Examples before the guide in the ladder: the guide quotes the programs, so the programs are
+  written and run first.
+- Waiver, the user's on 2026-09-16 at the opening: the work reviews, description reviews, and
+  per-push approvals of every rung through the closing are waived, the user reviewing the branch
+  before Land. It does not cover Land.
+
+#### Ladder details
+
+##### docs: a user guide for SPSC v3 and MPSC v2 opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move
+the Todo entry into this block, and bump the version-of-record.
+
+- `## Waiting` is `_None._`, nothing to promote.
+
+##### docs: the segment lifecycle in the design note
+
+The switching, give-back, and free set are protocol bullets in the SPSC v3 and MPSC v2 sections,
+and the lifecycle a reader asks about is assembled from them. A subsection under MPSC v2 states
+it: a switch only at a full segment, a freed segment back to the ring's free set and never to the
+pool, the segment the consumer ends in staying in use, the free set a bitmask taken lowest-first,
+and v3's three differences.
+
+##### docs: guide examples for SPSC v3 and MPSC v2
+
+No complete program shows either ring from pool to threads. Two examples, one per ring, each
+sizing a pool, initializing, splitting, moving messages across threads with a wait policy, and
+reading the counters at the end, written to be quoted.
+
+##### docs: the user guide for SPSC v3 and MPSC v2
+
+The guide itself, `notes/user-guide.md`: what the rings are, choosing one, sizing, init and
+split, sending, receiving, policies, threads, the segment lifecycle, counters, limits, and
+errors, quoting the two examples.
+
+##### docs: README and module docs point at the guide
+
+The README says "SPSC only" and shows no MPSC v2. Its status line is corrected, an MPSC v2
+paragraph joins the Overview, the segment paragraph links to the lifecycle subsection, the
+Testing list gains the two examples, the notes index lists the guide, and the crate root and the
+two module docs point at it.
+
+##### docs: a user guide for SPSC v3 and MPSC v2 closing
+
+Closing out the cycle.
 
 ## Waiting
 
@@ -33,19 +126,6 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 `###` heading, so a citation is a link to its anchor. Long-tail entries live in
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
-
-### Segment lifecycle in the design note
-
-The segmented rings' switching, give-back, and free set are documented as protocol bullets in the
-design note's SPSC v3 and MPSC v2 sections and the v2 module doc, but the lifecycle a reader
-asks about is assembled from them rather than stated: a switch happens only at a full segment,
-so no segment is left part-filled; a freed segment returns to the ring's free set, never to the
-pool; the segment the consumer ends in stays in use, so a drained ring is a fresh ring in another
-segment; and the free set is a bitmask taken lowest-first, not a queue. Write it as a short
-"segment lifecycle" subsection under MPSC v2, with v3's differences (switch decided at the commit,
-give-back at the MOVED release, the two-word free set), a sentence in the README's segment
-paragraph, and a pointer from the module doc. Docs only, single-step. Raised 2026-09-16 at the
-close-out of `feat: the demo's base cpu and pin-pair picker`.
 
 ### Paired columns in the tp_matrix tables
 
@@ -273,247 +353,12 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### feat: the demo's base cpu and pin-pair picker
-
-#### Problem
-
-The demo pins every single-thread line to cpu 0 and builds its two pin pairs from cpu0's
-topology, all of it hard-coded, and the measurement tools start from cpu 0 the same way. Cpu 0 is
-the kernel's favorite and runs noisier, so a bench there is not a good choice, and the demo has
-no way to move it, no `--help`, and no usage beyond `-V`. The demo's "diff cores" pair is the
-first cpu outside cpu0's L3, cross-L3 on the 3900X and same-L3 on the 7600X, so the two machines'
-lines with the same label were different experiments, while the tools already name their
-placements `CCX`, `x-CCX`, and `SMT`.
-
-#### Solution
-
-Done in six rungs. The demo takes `--base-cpu <n>`, `-h` / `--help`, and rejects an unknown
-argument with the usage, the base a process-wide atomic read at every pin. Its picker is the
-tools' one with a base: `CCX`, `x-CCX`, `SMT`, then `unpinned`, only those the machine has, and
-the 2t lines, the depth sweep, and the segment stress take the list. `tp-matrix`, `tp-stream`,
-and `tp-pool` take `--base-cpu` through `tp_runner`'s discovery, and the shared `-d` default is
-1 s. The default base went to 1 and then, on the housekeeping counts, to the last core's primary
-cpu, 11 on the 3900X and 5 on the 7600X, with partners ordered primary cpus first and highest
-number first, the rationale and both machines' counts in the design note's Measurement
-placements. A glossary in its Terminology fixes core, cpu, SMT siblings, primary and secondary
-cpu, cluster, and cache layers, and every README example run is re-done on both machines.
-
-#### Acceptance check
-
-`zc-ring-x1-demo --help` prints the usage and exits 0, `zc-ring-x1-demo --bogus` prints it and
-exits 1. On the 3900X the default demo run labels its 1t lines `core 11` and its pairs
-`11,10 CCX`, `11,8 x-CCX`, and `11,23 SMT`, and `--base-cpu 9` gives `9,11 CCX`, `9,8 x-CCX`,
-`9,21 SMT`. On the 7600X the default is base 5 with `5,4 CCX` and `5,11 SMT`, and the `x-CCX`
-rows are skipped as lacking. `tp-matrix`, `tp-stream`, and `tp-pool` take `--base-cpu` and label
-their placements from it the same way, and each README example run on both machines is at the
-new default, the tools at 1 s.
-
-Passed on 2026-09-16 at the closing: `--help` exits 0 and `--bogus` exits 1 on the installed demo.
-The 3900X default run in the README shows `core 11`, `11,10 CCX`, `11,8 x-CCX`, `11,23 SMT`, and
-`--base-cpu 9` gives `9,11 CCX`, `9,8 x-CCX`, `9,21 SMT`. The 7600X run shows base 5, `5,4 CCX`,
-`5,11 SMT`, and no x-CCX row. The three tools label from the base the same way, and every README
-example run is at the new defaults.
-
-#### Ladder
-
-- [feat: the demo's base cpu and pin-pair picker opening][1] (done)
-- [feat: a base cpu flag and help for the demo][2] (done)
-- [feat: same-L3, cross-L3, and SMT placements in the demo][3] (done)
-- [feat: a base cpu for the measurement tools][4] (done)
-- [perf: the demo and the tools off cpu 0 on both machines][5] (done)
-- [perf: a quiet default base and quiet partners][7] (done)
-- [docs: cores, cpus, and cache layers, the placement terms][8] (done)
-- [feat: the demo's base cpu and pin-pair picker closing][6] (done)
-
-#### Deliberation
-
-- Grown from a single-step cycle, `feat: the demo's base cpu flag and help`, at its work review on
-  2026-09-16: the user's vote was a ladder that does `Demo pin-pair picker` too, since the review
-  of a `1+3` pair showed the "diff cores" label hiding what the pick was. Nothing had pushed but the
-  bookmark, so the shape was still open, and the bookmark was retitled with the cycle.
-- Whole binary, not the segment stress alone, the user's call: the base is shared by the picker
-  and every pinned line, so a flag that reached one section would leave the rest on cpu 0.
-- The base as a process-wide atomic in the demo, set once in `main`: the single-thread loops sit
-  behind macros and function-pointer tables, so a parameter would change every signature.
-- Default base 1, tool-wide, the user's call, "for now": cpu 0 is the kernel's, and 1 is the
-  first cpu that is not. On the 3900X it gives `1,2 CCX`, `1,3 x-CCX`, `1,13 SMT`.
-- The tools' default duration 5 s to 1 s, tp-pool untouched: a cell is a fixed-duration spin at
-  millions of trips a second, so 1 s still has samples in the millions and the tables print
-  stdev, and `-d 5` stays for calm numbers. tp-pool already runs 0.1 s cells, median of three,
-  and its 108 s is the cell count.
-- Every README example run re-done in one rung, both machines: at the new defaults a machine's
-  set is about 30 s each for tp-matrix and tp-stream, 108 s for tp-pool, and a few minutes for
-  the demo, cheap enough that no table stays dated on cpu 0.
-- Pairs prefer cpus above the base: the first run at base 1 paired `1,0 CCX`, the first other
-  core on the L3 being cpu 0, so the default base had put a pair back on the cpu it was leaving.
-  Both pickers try the cpus above the base first, then the rest, so base 3's `x-CCX` is `3,6`
-  rather than `3,0`, and the acceptance check was corrected with it.
-- No `-dev` rename, as in the earlier cycles.
-- A quiet base is the last core, the user's call on 2026-09-16 after the housekeeping counts: the
-  scheduler's idlest-cpu search fills cpus from the bottom, so cpu 1 carries nearly cpu 0's timer
-  and reschedule load and the high-numbered cores ten times less. The default base is the last
-  core's primary cpu, 11 on the 3900X and 5 on the 7600X, and partners prefer a core's primary
-  cpu and the highest number, so the pairs stay at the quiet end. The rationale and the
-  counts are in the design note.
-- Placement terms, the user's on 2026-09-16 at the quiet-base rung's review: "first thread" and
-  "second thread" collide with software threads, and the repo had four spellings for one thing.
-  A core is the physical unit, a cpu what the kernel presents and pins to, a core's cpus its SMT
-  siblings, the lowest its primary cpu and the other its secondary, a cluster the cpus sharing a
-  cache layer, and caches are layers, L1, L2, L3. The glossary goes into the design note's
-  Terminology and the rename through code, usage, legends, and both READMEs. The rung also pays
-  the one prose semicolon `tp_runner/src/topo.rs` owed, the user's call, since it touches the
-  file anyway.
-- Waiver, the user's on 2026-09-16 at the opening's review: the work reviews, description reviews,
-  and per-push approvals of the opening and the four work rungs are waived, the user reviewing on
-  return. It does not cover the closing rung or Land.
-
-#### Ladder details
-
-##### feat: the demo's base cpu and pin-pair picker opening
-
-The cycle's setup commit: retitle and publish the bookmark, delete `## Closed`'s contents, move
-the Todo entry into this block, reset the continuation notes, and bump the version-of-record.
-
-- `## Waiting` is `_None._`, nothing to promote.
-- The single-step draft's flag work was set aside as a patch, `tmp/rung2.patch`, so this commit
-  carries the setup alone, and returns as the next rung.
-
-##### feat: a base cpu flag and help for the demo
-
-The demo hard-codes cpu 0 at every pin and in its picker, and has no usage. A `--base-cpu <n>`,
-default 0 in this rung, that every pin and both pairs start from, the labels naming it, plus
-`-h` / `--help` and the usage on an unknown argument.
-
-* The single-thread loops sit behind macros and function-pointer tables.
-  - The base is a process-wide atomic set once in `main` before any run and read at every pin,
-    so no loop's signature changes. The picker alone takes the base as a parameter.
-* The usage has to be the one text at three exits.
-  - One constant, printed to stdout on `-h` and to stderr, under an error line, on an unknown
-    argument, a missing value, or a value that is not a number. Parsing is a hand loop over the
-    arguments, since the demo has no clap dependency and three flags do not earn one.
-* Every label said `core 0`.
-  - The 1t lines, the sweep's `1t core N` heading, and the stress table's placement column print
-    the base, and the demo's header line names it.
-
-##### feat: same-L3, cross-L3, and SMT placements in the demo
-
-The demo's two pairs, "diff cores" and "same core", are one experiment on the 3900X and another
-on the 7600X. The picker becomes the tools' one with a base: `CCX`, `x-CCX`, and `SMT`, each
-skipped where the machine lacks it, in the 2t lines, the depth sweep, and the segment stress.
-
-* The demo named its pairs by distance, "diff cores" and "same core", and the tools by cache.
-  - A `Placement` is a label in the tools' form and a pin, and the demo's picker is the tools'
-    discovery with a base: `CCX`, `x-CCX`, `SMT`, then `unpinned`, only those the machine has.
-    The 3900X gains a `CCX` pair, and the 7600X's `x-CCX` row is absent instead of mislabelled.
-* `main` held one block of nine lines per pair, and the sweep and the stress each rebuilt the
-  placement list from the two pairs.
-  - The nine lines are one function over a placement, `main` loops it, and the sweep and the
-    stress take the list. The stress's streaming rows sit at the farthest placement the machine
-    has, `x-CCX`, else `CCX`, else unpinned, where before they sat at the "far" pair.
-* The README's placement paragraph and the demo's usage said "SMT siblings" and "different cores".
-  - Both say the tools' terms.
-
-##### feat: a base cpu for the measurement tools
-
-`tp_runner`'s placement discovery reads cpu0's topology. It takes a base, `tp-matrix`,
-`tp-stream`, and `tp-pool` grow `--base-cpu`, and the shared default duration drops to 1 s.
-
-* The discovery read cpu0's sysfs paths and wrote 0 into every label.
-  - It takes the base, reads that cpu's sibling list and L3 list, and the SMT pair is the base
-    and any sibling that is not it, where before it required the base to be the first sibling.
-* Three tools sweep placements and one pins explicitly.
-  - A `BaseCpuArg` beside `CommonArgs` in `tp_runner::topo`, flattened into `tp-matrix`,
-    `tp-stream`, and `tp-pool`, so `tp-cell` shows no flag it ignores. Its default is a constant
-    the next rung moves to 1.
-* The shared `-d` default was 5 s.
-  - It is 1 s, and its help says why 1 is enough and when 5 is wanted. `tp-pool` keeps its own
-    0.1 s and median of three.
-
-##### perf: the demo and the tools off cpu 0 on both machines
-
-The default base becomes 1 in the demo and the tools, and every README example run, the demo's
-and the tools', is re-done on the 3900X and the 7600X at the new defaults.
-
-* The default was 0 in two places, the demo's atomic and the tools' flag.
-  - Each is a `DEFAULT_BASE_CPU` constant at 1, the usage and the READMEs saying so.
-* The first run at base 1 paired `1,0 CCX`.
-  - Both pickers try the cpus above the base first, the deliberation's finding.
-* The README example runs were 0.15.8 on cpu 0, and the tools README's snippets were on cpu 0.
-  - The demo blocks are re-done on both machines at 0.17.1-4, the 3900X at `1,2 CCX`, `1,3
-    x-CCX`, `1,13 SMT`, the 7600X at `1,2 CCX` and `1,7 SMT` with no x-CCX, and the tools
-    snippets carry rows from the 3900X at 1 s. The 7600X has no rsync, so the tree went over by
-    tar through ssh into `~/zc-ring-x1-run`, which can be deleted.
-
-##### perf: a quiet default base and quiet partners
-
-Base 1 is nearly as noisy as cpu 0, and the pickers' partners went up from the base, so base 9's
-x-CCX partner was cpu 12, cpu 0's sibling. The default base becomes the last core's primary cpu,
-partners prefer primary cpus and the highest number, the rationale goes into the design
-note, and the README examples are re-run.
-
-* Base 1 sits in cpu 0's CCX and draws the same scheduler traffic.
-  - The default is the last core's primary cpu, computed from sysfs at start, 11 on
-    the 3900X and 5 on the 7600X. The first cpu of the highest L3 group was rejected, since on
-    the one-L3 7600X it is cpu 0.
-* Partners went up from the base, so the last CCX's x-CCX partner was cpu 12, cpu 0's sibling.
-  - Both pickers order candidates primary cpus first and highest number first, so the pairs are
-    `11,10 CCX`, `11,8 x-CCX`, `11,23 SMT` and `5,4 CCX`, `5,11 SMT`. The rule, the counts, and
-    the rejected orders are in [Measurement placements](notes/ring-buffer-design.md#measurement-placements-the-base-cpu-and-its-partners).
-* The tools' placement column widened to ten characters with a two-digit base.
-  - The tools README's snippets carry the wider column, re-run on the 3900X with the demo blocks
-    on both machines.
-* The design note owes 130 prose semicolons, a rewrite rather than a repunctuation.
-  - Left for its own cycle, as the semicolon rule says, and raised at the close-out.
-
-##### docs: cores, cpus, and cache layers, the placement terms
-
-The repo says "hardware thread", "SMT sibling", "logical CPU", and "first thread" for the same
-thing, and the last collides with software threads. A glossary in the design note's Terminology
-fixes core, cpu, SMT siblings, primary and secondary cpu, cluster, and cache layers, and the
-rename runs through the code, the usage texts, the legends, both READMEs, and the placements
-section. No number moves, so no re-run.
-
-* Four spellings for one thing, and one of them a software word.
-  - Six glossary entries in the design note's Terminology: core, cpu, SMT siblings with primary
-    and secondary cpu, cluster, cache layers, and bare metal, the last so the RP2350 has a place
-    without joining the tools. The tools' legend says "one core's two cpus", `tp-cell`'s help
-    says "cpu numbers", and the pickers' helper is `is_primary_cpu`.
-* The pickers' L3 grouping is the Zen shape and the note did not say so.
-  - The placements section says a part whose cluster shares L2 finds no CCX pair, and names the
-    kernel's cluster list as the fix when such a machine arrives.
-* `tp_runner/src/topo.rs` owed one prose semicolon.
-  - Paid, a comma and a conjunction.
-
-##### feat: the demo's base cpu and pin-pair picker closing
-
-Closing out the cycle. What closing taught:
-
-* The cycle grew twice past its plan, from a single-step flag to a ladder of six.
-  - Each growth came from a review of a number: a `1+3` pair showed the label hiding the pick,
-    a `1,0 CCX` pair showed the default undoing itself, and the housekeeping counts showed base 1
-    was no quieter than base 0. A placement is worth a table before it is worth a default.
-* Nothing outlives the block that is not already in the design note.
-  - The rationale, the counts, the rule, and the terms are in Measurement placements and
-    Terminology. The design note's own semicolons stay with `Sweep punctuation in the design
-    note`, updated with this cycle's count.
-* Land installs the tools too.
-  - `cargo install --path tp_matrix --locked` beside the root install, since the tools' pickers
-    changed and the installed ones are from the last cycle.
-
-- No size row, the user's call at the closing's review on 2026-09-16: no agent-file changed, so
-  `notes/agent-files-size.md` is not touched, a bend of the close-out's step 4 for this cycle
-  only.
-
-Close-out shape: trapezoid, the default.
-
 # References
 
-[1]: #feat-the-demos-base-cpu-and-pin-pair-picker-opening
-[2]: #feat-a-base-cpu-flag-and-help-for-the-demo
-[3]: #feat-same-l3-cross-l3-and-smt-placements-in-the-demo
-[4]: #feat-a-base-cpu-for-the-measurement-tools
-[5]: #perf-the-demo-and-the-tools-off-cpu-0-on-both-machines
-[6]: #feat-the-demos-base-cpu-and-pin-pair-picker-closing
-[7]: #perf-a-quiet-default-base-and-quiet-partners
-[8]: #docs-cores-cpus-and-cache-layers-the-placement-terms
+[1]: #docs-a-user-guide-for-spsc-v3-and-mpsc-v2-opening
+[2]: #docs-the-segment-lifecycle-in-the-design-note
+[3]: #docs-guide-examples-for-spsc-v3-and-mpsc-v2
+[4]: #docs-the-user-guide-for-spsc-v3-and-mpsc-v2
+[5]: #docs-readme-and-module-docs-point-at-the-guide
+[6]: #docs-a-user-guide-for-spsc-v3-and-mpsc-v2-closing
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
