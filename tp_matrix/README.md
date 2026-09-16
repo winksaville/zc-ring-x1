@@ -95,6 +95,15 @@ the table's width within 60 to 80 columns, so a pasted table
 can carry its own key. On a run without `-v`, the line under
 each banner says so.
 
+The three tools that sweep placements, `tp-matrix`,
+`tp-stream`, and `tp-pool`, take `--base-cpu N`, the cpu every
+placement starts from: CCX is it and a core on its L3, x-CCX
+it and a core outside, SMT it and its sibling. The default is
+0, and `tp-cell` pins explicitly with `--pin`. `-d` is 1 s a
+cell by default in `tp-cell`, `tp-matrix`, and `tp-stream`,
+samples enough for the mean and stdev at millions of trips a
+second, and a calmer number wants `-d 5`.
+
 ```sh
 $ tp-matrix -d 10                  # 28 cells x 10 s on a typical SMT machine, depth 8
 $ tp-matrix -d 5 --depth 1,2,8,64  # every cell again at each depth

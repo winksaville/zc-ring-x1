@@ -1,14 +1,29 @@
 //! CPU topology discovery for measurement placements: derive
-//! the interesting 2-thread pin pairs from /sys, anchored on
-//! cpu 0.
+//! the interesting 2-thread pin pairs from /sys, anchored on a
+//! base cpu, `--base-cpu` in the tools that sweep placements.
 //!
-//! - same cache domain (another core sharing cpu 0's L3);
-//! - cross cache domain (a core outside cpu 0's L3);
-//! - SMT siblings (cpu 0's hyper-thread, shared L1/L2);
-//! - unpinned (scheduler's choice).
+//! - same cache domain (another core sharing the base's L3)
+//! - cross cache domain (a core outside the base's L3)
+//! - SMT siblings (the base's hyper-thread, shared L1/L2)
+//! - unpinned (scheduler's choice)
 //!
 //! Pairs the machine doesn't have (no SMT, single L3 domain)
-//! are simply absent; non-Linux gets only the unpinned entry.
+//! are simply absent, and non-Linux gets only the unpinned
+//! entry.
+
+/// The base cpu when `--base-cpu` is not given.
+pub const DEFAULT_BASE_CPU: usize = 0;
+
+/// The `--base-cpu` flag, flattened into the tools that sweep
+/// placements (`tp-cell` pins explicitly with `--pin`).
+#[derive(clap::Args, Debug)]
+pub struct BaseCpuArg {
+    /// The cpu every placement starts from: CCX is it and a
+    /// core on its L3, x-CCX it and a core outside, SMT it and
+    /// its sibling
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_BASE_CPU)]
+    pub base_cpu: usize,
+}
 
 /// One placement cell: a display label and the `(main, worker)`
 /// pin pair (`None` = unpinned).
@@ -42,43 +57,46 @@ fn parse_cpu_list(s: &str) -> Vec<usize> {
     out
 }
 
-/// Discover the placement cells for this machine, in
-/// same-domain → cross-domain → SMT → unpinned order.
+/// Discover the placement cells for this machine from `base`,
+/// in same-domain -> cross-domain -> SMT -> unpinned order.
 #[cfg(target_os = "linux")]
-pub fn discover_placements() -> Vec<Placement> {
+pub fn discover_placements(base: usize) -> Vec<Placement> {
     let read = |path: &str| std::fs::read_to_string(path).ok();
-    let siblings = read("/sys/devices/system/cpu/cpu0/topology/thread_siblings_list")
-        .map(|s| parse_cpu_list(&s))
-        .unwrap_or_default();
+    let siblings = read(&format!(
+        "/sys/devices/system/cpu/cpu{base}/topology/thread_siblings_list"
+    ))
+    .map(|s| parse_cpu_list(&s))
+    .unwrap_or_default();
     let online = read("/sys/devices/system/cpu/online")
         .map(|s| parse_cpu_list(&s))
         .unwrap_or_default();
-    let l3 = read("/sys/devices/system/cpu/cpu0/cache/index3/shared_cpu_list")
-        .map(|s| parse_cpu_list(&s))
-        .unwrap_or_else(|| siblings.clone());
+    let l3 = read(&format!(
+        "/sys/devices/system/cpu/cpu{base}/cache/index3/shared_cpu_list"
+    ))
+    .map(|s| parse_cpu_list(&s))
+    .unwrap_or_else(|| siblings.clone());
 
     let mut v = Vec::new();
     if let Some(c) = l3
         .iter()
         .copied()
-        .find(|&c| c != 0 && !siblings.contains(&c))
+        .find(|&c| c != base && !siblings.contains(&c))
     {
         v.push(Placement {
-            label: format!("0,{c} CCX"),
-            pin: Some((0, c)),
+            label: format!("{base},{c} CCX"),
+            pin: Some((base, c)),
         });
     }
     if let Some(c) = online.iter().copied().find(|c| !l3.contains(c)) {
         v.push(Placement {
-            label: format!("0,{c} x-CCX"),
-            pin: Some((0, c)),
+            label: format!("{base},{c} x-CCX"),
+            pin: Some((base, c)),
         });
     }
-    if siblings.len() >= 2 && siblings[0] == 0 {
-        let sib = siblings[1];
+    if let Some(sib) = siblings.iter().copied().find(|&c| c != base) {
         v.push(Placement {
-            label: format!("0,{sib} SMT"),
-            pin: Some((0, sib)),
+            label: format!("{base},{sib} SMT"),
+            pin: Some((base, sib)),
         });
     }
     v.push(Placement {
@@ -88,9 +106,9 @@ pub fn discover_placements() -> Vec<Placement> {
     v
 }
 
-/// Non-Linux stub: no /sys topology — unpinned only.
+/// Non-Linux stub: no /sys topology, unpinned only.
 #[cfg(not(target_os = "linux"))]
-pub fn discover_placements() -> Vec<Placement> {
+pub fn discover_placements(_base: usize) -> Vec<Placement> {
     vec![Placement {
         label: "unpinned".to_string(),
         pin: None,

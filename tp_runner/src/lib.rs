@@ -110,13 +110,15 @@ pub struct Cfg {
 /// `Parser` struct.
 #[derive(clap::Args, Debug)]
 pub struct CommonArgs {
-    /// Wall-clock seconds per cell (each flavor × placement
-    /// combination runs this long)
+    /// Wall-clock seconds per cell (each flavor x placement
+    /// combination runs this long). A cell spins at millions
+    /// of trips a second, so 1 s is samples enough for the
+    /// mean and stdev, and a calmer number wants 5
     #[arg(
         short = 'd',
         long = "duration",
         value_name = "SECS",
-        default_value_t = 5.0
+        default_value_t = 1.0
     )]
     pub duration: f64,
 

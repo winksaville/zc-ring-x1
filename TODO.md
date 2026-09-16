@@ -51,7 +51,7 @@ machines is at the new default, the tools at 1 s.
 - [feat: the demo's base cpu and pin-pair picker opening][1] (done)
 - [feat: a base cpu flag and help for the demo][2] (done)
 - [feat: same-L3, cross-L3, and SMT placements in the demo][3] (done)
-- [feat: a base cpu for the measurement tools][4]
+- [feat: a base cpu for the measurement tools][4] (done)
 - [perf: the demo and the tools off cpu 0 on both machines][5]
 - [feat: the demo's base cpu and pin-pair picker closing][6]
 
@@ -129,6 +129,17 @@ skipped where the machine lacks it, in the 2t lines, the depth sweep, and the se
 
 `tp_runner`'s placement discovery reads cpu0's topology. It takes a base, `tp-matrix`,
 `tp-stream`, and `tp-pool` grow `--base-cpu`, and the shared default duration drops to 1 s.
+
+* The discovery read cpu0's sysfs paths and wrote 0 into every label.
+  - It takes the base, reads that cpu's sibling list and L3 list, and the SMT pair is the base
+    and any sibling that is not it, where before it required the base to be the first sibling.
+* Three tools sweep placements and one pins explicitly.
+  - A `BaseCpuArg` beside `CommonArgs` in `tp_runner::topo`, flattened into `tp-matrix`,
+    `tp-stream`, and `tp-pool`, so `tp-cell` shows no flag it ignores. Its default is a constant
+    the next rung moves to 1.
+* The shared `-d` default was 5 s.
+  - It is 1 s, and its help says why 1 is enough and when 5 is wanted. `tp-pool` keeps its own
+    0.1 s and median of three.
 
 ##### perf: the demo and the tools off cpu 0 on both machines
 
