@@ -24,6 +24,10 @@
 //!   slot is neither committed nor tombstoned, so its fast path
 //!   is v1's one load.
 //! - Gated with the rest of `mpsc` on `target_has_atomic = "32"`.
+//! - How to use it, from a pool to several producer threads, is
+//!   the user guide, `notes/user-guide.md`, and what happens to
+//!   the segments over a run is the design note's Segment
+//!   lifecycle subsection, both with `examples/guide_mpsc_v2.rs`.
 
 use core::marker::PhantomData;
 use core::mem::size_of;

@@ -52,7 +52,7 @@ every call the guide names exists in the crate, checked by listing the identifie
 - [docs: the segment lifecycle in the design note][2] (done)
 - [docs: guide examples for SPSC v3 and MPSC v2][3] (done)
 - [docs: the user guide for SPSC v3 and MPSC v2][4] (done)
-- [docs: README and module docs point at the guide][5]
+- [docs: README and module docs point at the guide][5] (done)
 - [docs: a user guide for SPSC v3 and MPSC v2 closing][6]
 
 #### Deliberation
@@ -140,6 +140,20 @@ The README says "SPSC only" and shows no MPSC v2. Its status line is corrected, 
 paragraph joins the Overview, the segment paragraph links to the lifecycle subsection, the
 Testing list gains the two examples, the notes index lists the guide, and the crate root and the
 two module docs point at it.
+
+* The README said "SPSC only" and showed no MPSC v2.
+  - The status line says SPSC and MPSC, in-process for the segmented rings and between
+    processes for the single-region ones, and the segment paragraph gains the MPSC v2 sibling by
+    path, the lifecycle link, and the guide link.
+* Nothing led from the code to the guide.
+  - The crate root links the guide by URL, the way it links the design note, and the two module
+    docs name it and the lifecycle subsection with their example, as plain text since rustdoc has
+    no path to a notes file.
+* `cargo doc --no-deps` with warnings as errors reports no broken link.
+* The files touched owe nine prose semicolons, seven in `src/lib.rs` and two in
+  `src/mpsc/v2/mod.rs`.
+  - Paid in the next rung, `style: pay the prose semicolons in lib.rs and mpsc v2`, the
+    penultimate rung the prose rule asks for.
 
 ##### docs: a user guide for SPSC v3 and MPSC v2 closing
 

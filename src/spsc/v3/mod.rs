@@ -30,6 +30,10 @@
 //!   seqs are already claimable where the producer picks up.
 //! - No `attach`: the ring's state spans a pool and its
 //!   segments, and the endpoints are in-process.
+//! - How to use it, from a pool to two threads, is the user
+//!   guide, `notes/user-guide.md`, and what happens to the
+//!   segments over a run is the design note's Segment lifecycle
+//!   subsection, both with `examples/guide_spsc_v3.rs`.
 
 use core::mem::{align_of, size_of};
 use core::sync::atomic::{AtomicU32, Ordering};

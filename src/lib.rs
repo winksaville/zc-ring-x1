@@ -23,7 +23,11 @@
 //!   Primitive modules hold versioned sibling implementations
 //!   (`spsc::v0`, …) behind per-module default-version
 //!   re-exports; this crate root re-exports the defaults.
+//! - How to use the segmented rings, [`Ring`] and
+//!   `mpsc::v2::MpscRing`, from a pool to two threads is the
+//!   [user guide], with two complete programs in `examples/`.
 //!
+//! [user guide]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/user-guide.md
 //! [notes/ring-buffer-design.md]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/ring-buffer-design.md
 
 #![cfg_attr(not(test), no_std)]
