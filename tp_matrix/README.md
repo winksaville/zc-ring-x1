@@ -99,7 +99,8 @@ The three tools that sweep placements, `tp-matrix`,
 `tp-stream`, and `tp-pool`, take `--base-cpu N`, the cpu every
 placement starts from: CCX is it and a core on its L3, x-CCX
 it and a core outside, SMT it and its sibling. The default is
-0, and `tp-cell` pins explicitly with `--pin`. `-d` is 1 s a
+1, since the kernel favors cpu 0 and it runs noisier, and
+`tp-cell` pins explicitly with `--pin`. `-d` is 1 s a
 cell by default in `tp-cell`, `tp-matrix`, and `tp-stream`,
 samples enough for the mean and stdev at millions of trips a
 second, and a calmer number wants `-d 5`.
@@ -113,8 +114,8 @@ tp-matrix 0.1.0 - run the full measurement matrix, markdown tables out
 ...
 | placement | flavor  | depth |   m.send |     w.recv |     w.spin | ... |  RTs | xfills/RT |
 |-----------|---------|------:|---------:|-----------:|-----------:|-----|-----:|----------:|
-| 0,1 CCX   | spsc-v0 |     8 | 22.3/6.0 | 132.5/13.9 |  111.4/8.6 | ... | 3.7M |    10.120 |
-| 0,1 CCX   | mpsc-v0 |     8 |  9.5/4.2 |  95.5/19.6 |   65.6/6.9 | ... | 5.2M |     6.617 |
+| 1,2 CCX   | spsc-v0 |     8 | 23.0/4.6 |  126.5/9.0 |  105.7/8.5 | ... | 4.7M |     9.927 |
+| 1,2 CCX   | mpsc-v0 |     8 |  8.5/3.5 |   84.5/5.5 |   67.6/4.9 | ... | 6.5M |     6.571 |
 
 - `placement`: the CPUs the two threads are pinned to and how they share caches:
   CCX two cores on one L3, x-CCX cores on different L3s, SMT one core's two
@@ -152,13 +153,13 @@ counters divided by the messages moved give the xfills per
 message while streaming, and `-v` adds the legend.
 
 ```sh
-$ tp-stream -d 5 --depth 1,2,8,64
+$ tp-stream --depth 1,2,8,64
 tp-stream 0.1.0 - run the streaming matrix, one markdown table out
 ...
 | placement | flavor  | depth | ns/msg |   msgs | xfills/msg |
 |-----------|---------|------:|-------:|-------:|-----------:|
-| 0,3 x-CCX | spsc-v1 |    64 |   37.4 | 133.8M |      0.491 |
-| 0,3 x-CCX | spsc-v2 |    64 |   14.3 | 350.1M |      0.132 |
+| 1,3 x-CCX | spsc-v1 |    64 |   31.4 |  31.9M |      0.384 |
+| 1,3 x-CCX | spsc-v2 |    64 |   14.0 |  71.5M |      0.125 |
 ```
 
 Two things the streaming number is sensitive to, found while
@@ -201,12 +202,12 @@ $ tp-pool                                  # pools 1,100,1000; depths 1,8,64,102
 $ tp-pool --pool 1,10,100 --depth 1,1024 -d 0.5 --repeat 5
 tp-pool 0.1.0 - run the pool-message sweep, one table per placement
 ...
-0,3 x-CCX: ns/msg
+1,3 x-CCX: ns/msg
 
 | flavor    | depth | pool=1 | pool=100 | pool=1000 |
 |-----------|-------|-------:|---------:|----------:|
-| spsc-v2   | 1024  |  504.2 |    214.9 |     215.0 |
-| cordyceps | -     |  615.0 |    213.7 |     217.2 |
+| spsc-v2   | 1024  |  496.4 |    218.6 |     216.7 |
+| cordyceps | -     |  599.0 |    213.0 |     211.5 |
 ```
 
 Each placement gets an `ns/msg` table and an `xfills/msg`

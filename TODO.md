@@ -41,7 +41,7 @@ default duration drops from 5 s to 1 s, and every README example run is re-done 
 
 `zc-ring-x1-demo --help` prints the usage and exits 0, `zc-ring-x1-demo --bogus` prints it and
 exits 1. On the 3900X the default demo run labels its 1t lines `core 1` and its pairs `1,2 CCX`,
-`1,3 x-CCX`, and `1,13 SMT`, and `--base-cpu 3` gives `3,4 CCX`, `3,0 x-CCX`, `3,15 SMT`. On the
+`1,3 x-CCX`, and `1,13 SMT`, and `--base-cpu 3` gives `3,4 CCX`, `3,6 x-CCX`, `3,15 SMT`. On the
 7600X the `x-CCX` rows are skipped as lacking. `tp-matrix`, `tp-stream`, and `tp-pool` take
 `--base-cpu` and label their placements from it the same way, and each README example run on both
 machines is at the new default, the tools at 1 s.
@@ -52,7 +52,7 @@ machines is at the new default, the tools at 1 s.
 - [feat: a base cpu flag and help for the demo][2] (done)
 - [feat: same-L3, cross-L3, and SMT placements in the demo][3] (done)
 - [feat: a base cpu for the measurement tools][4] (done)
-- [perf: the demo and the tools off cpu 0 on both machines][5]
+- [perf: the demo and the tools off cpu 0 on both machines][5] (done)
 - [feat: the demo's base cpu and pin-pair picker closing][6]
 
 #### Deliberation
@@ -74,6 +74,10 @@ machines is at the new default, the tools at 1 s.
 - Every README example run re-done in one rung, both machines: at the new defaults a machine's
   set is about 30 s each for tp-matrix and tp-stream, 108 s for tp-pool, and a few minutes for
   the demo, cheap enough that no table stays dated on cpu 0.
+- Pairs prefer cpus above the base: the first run at base 1 paired `1,0 CCX`, the first other
+  core on the L3 being cpu 0, so the default base had put a pair back on the cpu it was leaving.
+  Both pickers try the cpus above the base first, then the rest, so base 3's `x-CCX` is `3,6`
+  rather than `3,0`, and the acceptance check was corrected with it.
 - No `-dev` rename, as in the earlier cycles.
 - Waiver, the user's on 2026-09-16 at the opening's review: the work reviews, description reviews,
   and per-push approvals of the opening and the four work rungs are waived, the user reviewing on
@@ -145,6 +149,16 @@ skipped where the machine lacks it, in the 2t lines, the depth sweep, and the se
 
 The default base becomes 1 in the demo and the tools, and every README example run, the demo's
 and the tools', is re-done on the 3900X and the 7600X at the new defaults.
+
+* The default was 0 in two places, the demo's atomic and the tools' flag.
+  - Each is a `DEFAULT_BASE_CPU` constant at 1, the usage and the READMEs saying so.
+* The first run at base 1 paired `1,0 CCX`.
+  - Both pickers try the cpus above the base first, the deliberation's finding.
+* The README example runs were 0.15.8 on cpu 0, and the tools README's snippets were on cpu 0.
+  - The demo blocks are re-done on both machines at 0.17.1-4, the 3900X at `1,2 CCX`, `1,3
+    x-CCX`, `1,13 SMT`, the 7600X at `1,2 CCX` and `1,7 SMT` with no x-CCX, and the tools
+    snippets carry rows from the 3900X at 1 s. The 7600X has no rsync, so the tree went over by
+    tar through ssh into `~/zc-ring-x1-run`, which can be deleted.
 
 ##### feat: the demo's base cpu and pin-pair picker closing
 

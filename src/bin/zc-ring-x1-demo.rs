@@ -4,9 +4,9 @@
 //! `zc-ring-x1-demo`. `-V`/`--version` prints the
 //! version-of-record so you know exactly which build you
 //! are testing, `-h`/`--help` the usage, and `--base-cpu <n>`
-//! moves every pinned line off cpu 0 (the default), the base
-//! the single-thread lines pin to and both pin pairs start
-//! from.
+//! sets the base, the cpu the single-thread lines pin to and
+//! every placement starts from, 1 by default since the kernel
+//! favors cpu 0.
 //!
 //! - Part 1, the ring: an SPSC pair moves typed messages
 //!   in place (reserve -> write -> commit, reserve -> read ->
@@ -196,9 +196,14 @@ fn discover_placements(base: usize) -> Vec<Placement> {
     .map(|s| parse_cpu_list(&s))
     .unwrap_or_else(|| siblings.clone());
     let mut v = Vec::new();
-    if let Some(c) = l3
-        .iter()
-        .copied()
+    // Candidates above the base first, then the rest, so the
+    // pairs from the default base leave cpu 0 alone.
+    let above_first = |cpus: &[usize]| -> Vec<usize> {
+        let (hi, lo): (Vec<usize>, Vec<usize>) = cpus.iter().partition(|&&c| c > base);
+        hi.into_iter().chain(lo).collect()
+    };
+    if let Some(c) = above_first(&l3)
+        .into_iter()
         .find(|&c| c != base && !siblings.contains(&c))
     {
         v.push(Placement {
@@ -206,7 +211,7 @@ fn discover_placements(base: usize) -> Vec<Placement> {
             pin: Some((base, c)),
         });
     }
-    if let Some(c) = online.iter().copied().find(|c| !l3.contains(c)) {
+    if let Some(c) = above_first(&online).into_iter().find(|c| !l3.contains(c)) {
         v.push(Placement {
             label: format!("{base},{c} x-CCX"),
             pin: Some((base, c)),
@@ -234,12 +239,17 @@ fn discover_placements(_base: usize) -> Vec<Placement> {
     }]
 }
 
-/// The cpu every single-thread line pins to and both pin
-/// pairs start from: `--base-cpu`, default 0. Set once in
+/// The cpu every single-thread line pins to and every
+/// placement starts from: `--base-cpu`, default
+/// [`DEFAULT_BASE_CPU`]. Set once in
 /// `main` before any run, read at every pin, so the loops
 /// behind the macros and the flavor tables keep their
 /// signatures.
-static BASE_CPU: AtomicUsize = AtomicUsize::new(0);
+static BASE_CPU: AtomicUsize = AtomicUsize::new(DEFAULT_BASE_CPU);
+
+/// The base cpu when `--base-cpu` is not given: 1, since the
+/// kernel favors cpu 0 and it runs noisier.
+const DEFAULT_BASE_CPU: usize = 1;
 
 /// The base cpu, see [`BASE_CPU`].
 fn base_cpu() -> usize {
@@ -255,8 +265,8 @@ usage: zc-ring-x1-demo [--base-cpu <n>]
   --base-cpu <n>  the cpu the single-thread lines pin to and every 2t
                   placement starts from: CCX is <n> and a core on its L3,
                   x-CCX is <n> and a core outside it, SMT is <n> and its
-                  sibling. Default 0, which the kernel favors, so a
-                  quieter core is a better bench.
+                  sibling. Default 1, since the kernel favors cpu 0
+                  and it runs noisier.
   -h, --help      print this and exit
   -V, --version   print the version-of-record and exit";
 
@@ -271,7 +281,7 @@ enum Args {
 /// without a value, or one that is not a number prints the
 /// usage to stderr and exits 1.
 fn parse_args(args: impl Iterator<Item = String>) -> Args {
-    let mut base_cpu = 0;
+    let mut base_cpu = DEFAULT_BASE_CPU;
     let mut args = args.peekable();
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -1432,7 +1442,7 @@ fn two_t_lines(label: &str, pin: PinPair) {
 }
 
 /// Run both parts and print their throughput, then the depth
-/// sweep. `--base-cpu <n>` moves the base off cpu 0, `-h` /
+/// sweep. `--base-cpu <n>` sets the base, `-h` /
 /// `--help` prints the usage, and `-V` / `--version` prints the
 /// version-of-record and exits.
 fn main() {

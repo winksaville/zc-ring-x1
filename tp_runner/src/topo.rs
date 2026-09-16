@@ -11,8 +11,9 @@
 //! are simply absent, and non-Linux gets only the unpinned
 //! entry.
 
-/// The base cpu when `--base-cpu` is not given.
-pub const DEFAULT_BASE_CPU: usize = 0;
+/// The base cpu when `--base-cpu` is not given: 1, since the
+/// kernel favors cpu 0 and it runs noisier.
+pub const DEFAULT_BASE_CPU: usize = 1;
 
 /// The `--base-cpu` flag, flattened into the tools that sweep
 /// placements (`tp-cell` pins explicitly with `--pin`).
@@ -77,9 +78,14 @@ pub fn discover_placements(base: usize) -> Vec<Placement> {
     .unwrap_or_else(|| siblings.clone());
 
     let mut v = Vec::new();
-    if let Some(c) = l3
-        .iter()
-        .copied()
+    // Candidates above the base first, then the rest, so the
+    // pairs from the default base leave cpu 0 alone.
+    let above_first = |cpus: &[usize]| -> Vec<usize> {
+        let (hi, lo): (Vec<usize>, Vec<usize>) = cpus.iter().partition(|&&c| c > base);
+        hi.into_iter().chain(lo).collect()
+    };
+    if let Some(c) = above_first(&l3)
+        .into_iter()
         .find(|&c| c != base && !siblings.contains(&c))
     {
         v.push(Placement {
@@ -87,7 +93,7 @@ pub fn discover_placements(base: usize) -> Vec<Placement> {
             pin: Some((base, c)),
         });
     }
-    if let Some(c) = online.iter().copied().find(|c| !l3.contains(c)) {
+    if let Some(c) = above_first(&online).into_iter().find(|c| !l3.contains(c)) {
         v.push(Placement {
             label: format!("{base},{c} x-CCX"),
             pin: Some((base, c)),
