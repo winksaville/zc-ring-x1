@@ -24,6 +24,10 @@
 //!   slot is neither committed nor tombstoned, so its fast path
 //!   is v1's one load.
 //! - Gated with the rest of `mpsc` on `target_has_atomic = "32"`.
+//! - How to use it, from a pool to several producer threads, is
+//!   the user guide, `notes/user-guide.md`, and what happens to
+//!   the segments over a run is the design note's Segment
+//!   lifecycle subsection, both with `examples/guide_mpsc_v2.rs`.
 
 use core::marker::PhantomData;
 use core::mem::size_of;
@@ -551,7 +555,7 @@ mod tests {
         assert_eq!(cons.segment(), 1);
         assert_eq!(free_segments(&prod), 1);
         // A released slot in the current segment is claimable, so
-        // no switch; the next send finds it unread and switches.
+        // no switch. The next send finds it unread and switches.
         send(&prod, 2, 3);
         assert_eq!(prod.segment(), 1);
         assert_eq!(prod.switches(), 1);
@@ -747,7 +751,7 @@ mod tests {
             }
             let cons = &mut cons;
             s.spawn(move || {
-                // Global arrival order is claim order; only
+                // Global arrival order is claim order, and only
                 // per-producer FIFO is promised.
                 let mut next = vec![0u64; producers as usize];
                 for _ in 0..producers * count {

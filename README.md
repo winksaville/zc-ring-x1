@@ -50,10 +50,17 @@ in sync with `src/`.
 
 The crate-root `Ring` is `spsc::v3`, a ring of segments taken
 from a pool at `init`: with a consumer that keeps up it lives in
-one segment, and the others absorb a producer that runs ahead.
+one segment, and the others absorb a producer that runs ahead
+([Segment lifecycle](notes/ring-buffer-design.md#segment-lifecycle)).
 The points above describe the single-region rings, `spsc::v0`
 through `spsc::v2`, which stay available by path and keep
-`attach` and `user()`.
+`attach` and `user()`. The multi-producer sibling is
+`mpsc::v2::MpscRing`, the same ring of segments with any number
+of producers sending through a fill closure, reached by path
+since the crate-root `MpscRing` is still the single-region
+`mpsc::v1`. How to use the two segmented rings from a pool to
+two threads, with two complete programs, is the
+[user guide](notes/user-guide.md).
 
 ```rust
 use zc_ring_x1::{Pool, PoolHeader, Ring};
@@ -86,10 +93,11 @@ assert_eq!(msg.val, 42);
 msg.release(); // slot is free for reuse
 ```
 
-Status: an experiment. SPSC only. Attaching to an existing
-shared-memory region is `unsafe` (see `spsc::v2::Ring::attach`), and planned
-hardening and follow-ons are tracked in
-[TODO.md](TODO.md).
+Status: an experiment, SPSC and MPSC, in-process for the
+segmented rings and between processes for the single-region
+ones, where attaching to an existing shared-memory region is
+`unsafe` (see `spsc::v2::Ring::attach`). Planned hardening and
+follow-ons are tracked in [TODO.md](TODO.md).
 
 ## Message pool
 
@@ -434,6 +442,10 @@ zcr-mpsc-2t: zc-ring-x1 mpsc send_with round-trip (2 threads, spin) [duration=30
   example above
   ([examples/pool_readme.rs](examples/pool_readme.rs), same
   convention).
+- `cargo run --release --example guide_spsc_v3` and
+  `guide_mpsc_v2`: the [user guide](notes/user-guide.md)'s
+  two programs, one per segmented ring, a pool to two
+  threads and the counters at the end, same convention.
 - `cargo run --release`: the demo binary
   ([src/bin/zc-ring-x1-demo.rs](src/bin/zc-ring-x1-demo.rs)):
   a throughput scoreboard (msgs/sec and ns/msg) grouped so

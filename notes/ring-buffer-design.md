@@ -1676,6 +1676,46 @@ until v2 matches it where no switch happens.
   CAS loop, lock-free rather than wait-free, and stays out of an
   ISR until `Cheaper segment switches` brings it nearer v3's.
 
+### Segment lifecycle
+
+What happens to the segments over a ring's life, for SPSC v3 and MPSC v2 alike, stated once
+rather than assembled from the protocol bullets above. Written 2026-09-16 for the user guide
+([user-guide.md](user-guide.md)).
+
+- **Every segment is taken at `init`** from the application's pool, `seg_count` of them up to
+  32, and held for the life of the pool region. Nothing is allocated or freed while the ring
+  runs, and a segment given back goes to the ring's own free set, never to the pool. The
+  memory cost of a ring of segments is therefore fixed at `init`: `seg_count` buffers of
+  `segment_size`, most of them parked while the consumer keeps up.
+- **The ring lives in one segment at a time.** Both endpoints start in segment 0. With a consumer
+  that keeps up, no switch ever happens and the other segments are never touched.
+- **A switch happens only at a full segment.** The producer moves on when the next slot of the
+  current segment is still unread by the consumer, and only then, so no segment is ever left
+  part-filled: every slot of a segment the ring has left carried a message. The producer takes
+  the lowest free segment, and the free set is a bitmask, not a queue, so the give-back order
+  never matters and the same low segments are reused first.
+- **Full means no free segment.** When the current segment is full and every other segment is in
+  use, the ring waits in place as a single-region ring does, under the caller's policy, and
+  reports `Full` when the policy gives up. Nothing is dropped and nothing is lost.
+- **A segment is given back after the consumer passes its end.** The consumer drains a segment to
+  the point where the producer left it, clears the segment's bit, and continues in the segment
+  the producer named. Only then may a producer take it again, so nothing is reclaimed under a
+  producer, and a slow producer holds a claimed slot, never a segment.
+- **The segment the consumer ends in stays in use.** After a full drain the ring holds one segment
+  in use, the one where the producer's position is, and every other segment is free: a drained
+  ring is a fresh ring in another segment.
+- **The counters** count switches on the switch path only, so a run that never switched reads
+  `0`, and once the consumer has read everything sent the two sides' counts agree. `segment`
+  names the segment each side is in.
+
+The two rings differ in three mechanics, none of which changes the lifecycle above:
+
+| | SPSC v3 | MPSC v2 |
+|---|---|---|
+| Where the switch is decided | at the producer's commit, when the next slot is not claimable, and the message commits with MOVED in its slot word | at a producer's claim, when the slot is unreleased and the claim word unmoved, and the seal is a header word |
+| When the segment is given back | at the release of the MOVED message, one poll earlier | at the reserve after the last release, when the consumer reads the seal |
+| The free set | two words, the producer's taken bits and the consumer's given bits, free where they agree, no CAS | one in-use word, `fetch_or` to take and a clear to give back, since the parity trick is unsound for several producers |
+
 ## Messaging layer: pools and descriptor queues
 
 Design for the layer above the ring. The pool half is

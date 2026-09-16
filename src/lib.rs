@@ -9,21 +9,25 @@
 //!   (immutable geometry, producer index, consumer index, app
 //!   user words), followed by M slots of N bytes.
 //! - Indices are free-running `AtomicU32`s, masked only at slot
-//!   access; full is `p - c == M`, no sacrificial slot.
+//!   access, and full is `p - c == M`, no sacrificial slot.
 //! - Messages move in place: the producer writes through a
 //!   [`WriteSlot`] `&mut T`, the consumer reads through a
 //!   [`ReadSlot`] `&T` — zerocopy traits bound `T`, no
 //!   serialization step. Each side reserves at most one slot at
-//!   a time; the guard holds the endpoint borrow until commit /
+//!   a time, and the guard holds the endpoint borrow until commit /
 //!   release (or drop).
-//! - The SPSC protocol lives in the `spsc` module; a
+//! - The SPSC protocol lives in the `spsc` module, and a
 //!   multi-producer sibling, [`MpscRing`], lives in the
 //!   `mpsc` module (gated on CAS support) — see its module
 //!   docs for the claim/seq protocol and closure-send API.
 //!   Primitive modules hold versioned sibling implementations
 //!   (`spsc::v0`, …) behind per-module default-version
-//!   re-exports; this crate root re-exports the defaults.
+//!   re-exports, and this crate root re-exports the defaults.
+//! - How to use the segmented rings, [`Ring`] and
+//!   `mpsc::v2::MpscRing`, from a pool to two threads is the
+//!   [user guide], with two complete programs in `examples/`.
 //!
+//! [user guide]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/user-guide.md
 //! [notes/ring-buffer-design.md]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/ring-buffer-design.md
 
 #![cfg_attr(not(test), no_std)]
@@ -31,7 +35,7 @@
 use core::mem::{align_of, size_of};
 use core::sync::atomic::AtomicU32;
 
-// The MPSC ring needs CAS (the claim), so it is gated; the
+// The MPSC ring needs CAS (the claim), so it is gated. The
 // SPSC ring protocol stays load/store-only. (The pool's
 // free-stack also uses CAS and predates the gate — see
 // notes/bugs.md.)
@@ -50,8 +54,8 @@ pub use spsc::{Consumer, Producer, ReadSlot, Ring, WriteSlot};
 
 /// Cache-line size the layout is built around.
 ///
-/// - Slot size must be a multiple of this; slots and the region
-///   itself must be aligned to it.
+/// - Slot size must be a multiple of this, and slots and the
+///   region itself must be aligned to it.
 pub const CACHE_LINE_SIZE: usize = 64;
 
 /// Number of `AtomicU32` words in the header's app-owned
@@ -127,7 +131,7 @@ pub enum Error {
     Exhausted,
 }
 
-/// Check `T` fits a slot; called once per `reserve_slot_with`
+/// Check `T` fits a slot, called once per `reserve_slot_with`
 /// (both endpoints).
 ///
 /// - Panics on a type-geometry mismatch — that is a programming

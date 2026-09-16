@@ -19,6 +19,11 @@ Project design docs:
   pool-message sweep against cordyceps's intrusive MPSC
   (terminology, requirements, layout, API, validation), kept
   in sync with `src/`.
+- [user-guide.md](user-guide.md): how to use SPSC v3 and MPSC
+  v2 from a pool to two threads, sizing, init and split,
+  sending, receiving, wait policies, the segment lifecycle,
+  the counters, limits, and errors, with two complete
+  programs in `examples/`.
 - [../tp_matrix/README.md](../tp_matrix/README.md): the
   measurement tools, `tp-cell`, `tp-matrix`, the streaming
   `tp-stream`, and the pool-message sweep `tp-pool`, and what
