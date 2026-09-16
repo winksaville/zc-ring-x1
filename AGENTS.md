@@ -279,8 +279,8 @@ does all of it in its one commit, step 5 aside ([Cycle shape](#cycle-shape)):
    - move the block whole to `## Closed`, leaving `## In Progress` reading
      `_No cycle currently in progress._`.
 3. Validate: full validation, and update `notes/README.md` if functionality changed.
-4. Size: record the agent-files line count in `notes/agent-files-size.md`, smaller being the
-   quasi-goal.
+4. Size: when an agent-file changed, record the line count in `notes/agent-files-size.md`,
+   smaller being the quasi-goal. A cycle that touched none adds no row.
 5. Close-out shape ([Close-out shapes](agent-data/jj.md#close-out-shapes)):
    - choose with the user: trapezoid (the default) or keep separate
    - record the choice in the closing rung's subsection

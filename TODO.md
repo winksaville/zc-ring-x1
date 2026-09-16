@@ -34,17 +34,6 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
 
-### Size row only when an agent-file changed
-
-Close-out step 4 in `AGENTS.md` and the sentence in `notes/agent-files-size.md` both say the
-agent-files line count is recorded at every close-out, and the table grew "unchanged, no
-agent-file touched" rows that record nothing. The user's call on 2026-09-16: a row only when the
-cycle changed an agent-file, so the table is the history of the count and nothing else. Reword
-step 4 and the notes file's sentence, and since `AGENTS.md` is the set's copy the diff is a
-proposal to the payload ([Changing the agent-files](AGENTS.md#changing-the-agent-files)).
-Convention work, its own cycle. The rows since `agent-files(adoption): v0.2.4` were dropped at
-the close-out of `docs: a user guide for SPSC v3 and MPSC v2`.
-
 ### Paired columns in the tp_matrix tables
 
 `tp-matrix` prints each phase cell as `mean/stdev` in one column, and `tp-pool` prints two tables per
@@ -271,198 +260,53 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### docs: a user guide for SPSC v3 and MPSC v2
+### agent-files(proposal): v0.2.5
 
 #### Problem
 
-Nothing in the repo tells a user how to use SPSC v3 and MPSC v2 end to end. The README's
-Overview shows one SPSC v3 send and receive and still says "SPSC only", the module docs describe
-the protocols rather than the calls, the MPSC v2 ring is reachable only by path with no example
-in the README, and the segmented rings' lifecycle, what a switch is, where a freed segment goes,
-what a drained ring looks like, is spread over protocol bullets in the design note. A reader in
-iiac-perf, or anyone, cannot pick the rings up from the documentation alone.
+Close-out step 4 in `AGENTS.md` and the preamble of `notes/agent-files-size.md` both say the
+agent-files line count is recorded at every close-out, so the table grew "unchanged, no agent-file
+touched" rows that record nothing and every close-out paid an edit for one. The user's call on
+2026-09-16: a row only when the cycle changed an agent-file.
 
 #### Solution
 
-Done in five work rungs. `notes/user-guide.md` takes a reader from a pool to a running pair of
-endpoints for each ring in thirteen sections: what the rings are and which to pick, the message
-type and its bounds, sizing with `segment_size`, `init` and `split`, sending on each ring,
-receiving, wait policies with `Full` and `Empty`, threads, the segment lifecycle, the counters,
-the limits, an errors table, and the two programs' output. `examples/guide_spsc_v3.rs` and
-`examples/guide_mpsc_v2.rs` are the programs it quotes, five numbered steps each, built by every
-`cargo test` and `cargo clippy --all-targets`. The design note's MPSC v2 section gains a Segment
-lifecycle subsection with v3's three differences in a table. The README's status line no longer
-says "SPSC only", its Overview names MPSC v2 by path and links the lifecycle and the guide, its
-Testing list runs the two examples, the notes index lists the guide, and the crate root and the
-two module docs point at it. The two source files the pointers touched had their nine prose
-semicolons paid in a rung of their own.
+Done as one commit. Step 4 says the row is recorded when the cycle changed an agent-file and that
+a cycle which touched none adds no row, the notes file's preamble says the same, the close-out
+rationale gains the why, and the agent-files version marker is renamed to `v0.2.5`, this cycle
+being a proposal to the payload ([Changing the agent-files](AGENTS.md#changing-the-agent-files)).
+This cycle changes agent-files, so it adds a row, and `rationale.md` leaves the count.
 
 #### Acceptance check
 
-`cargo run --example guide_spsc_v3` and `cargo run --example guide_mpsc_v2` run clean and are
-built by `cargo clippy --all-targets`. Every call the two examples make is named in the guide, and
-every call the guide names exists in the crate, checked by listing the identifiers on both sides.
-`cargo doc --no-deps` reports no broken intra-doc link. The README's status line no longer says
-"SPSC only", and its segment paragraph and the v2 module doc link to the lifecycle subsection.
+`ls agent-data` shows `agent-files-v0.2.5` and no other marker. Step 4 and the preamble carry the
+condition, `grep -n "changed an agent-file"` finding both. The size table's last row is this
+cycle's, and the three "unchanged" rows dropped at the previous close-out stay gone. The diff
+against the payload is the proposal: `AGENTS.md`, `agent-data/rationale.md`, and the marker.
 
-Passed on 2026-09-16 at the closing. Both examples ran clean in release, 419 and 17 switches on
-that run, and `cargo clippy --all-targets` builds them. The identifier check found every call the
-examples make named in the guide and nothing missing, and every crate item the guide names in
-the crate, the two others being `Arc`, named as what the scoped threads avoid, and the examples'
-own `spin_then_yield`. `cargo doc --no-deps` with warnings as errors is clean. "SPSC only" is
-gone from the README, its segment paragraph links the lifecycle subsection, and the v2 module
-doc names it in plain text, since rustdoc has no path to a notes file.
+Passed on 2026-09-16 in the one commit.
 
 #### Ladder
 
-- [docs: a user guide for SPSC v3 and MPSC v2 opening][1] (done)
-- [docs: the segment lifecycle in the design note][2] (done)
-- [docs: guide examples for SPSC v3 and MPSC v2][3] (done)
-- [docs: the user guide for SPSC v3 and MPSC v2][4] (done)
-- [docs: README and module docs point at the guide][5] (done)
-- [style: pay the prose semicolons in lib.rs and mpsc v2][7] (done)
-- [docs: a user guide for SPSC v3 and MPSC v2 closing][6] (done)
+- agent-files(proposal): v0.2.5 (done)
 
 #### Deliberation
 
-- Grown from the Todo entry `Segment lifecycle in the design note`, the user's call on
-  2026-09-16: the lifecycle subsection alone leaves a reader assembling the API from module docs,
-  and the want is documentation that iiac-perf or anyone can use the two rings from.
-- A guide in `notes/`, not a README section: the README is the crate's front page and already
-  long, and the guide is a walk-through with two programs, a document of its own that the README
-  points at.
-- Two example programs rather than doc snippets: `cargo test` and `cargo clippy --all-targets`
-  build every example, so the guide's code cannot drift from the API, the convention the README's
-  own snippets already follow through `examples/readme.rs`.
-- Examples before the guide in the ladder: the guide quotes the programs, so the programs are
-  written and run first.
-- Waiver, the user's on 2026-09-16 at the opening: the work reviews, description reviews, and
-  per-push approvals of every rung through the closing are waived, the user reviewing the branch
-  before Land. It does not cover Land.
+- Single-step: two sentences, one rationale bullet, and a rename, with their record, are one
+  straightforward step.
+- The patch digit, v0.2.4 to v0.2.5, per Which digit in [Agent-files
+  version](agent-data/versioning.md#agent-files-version): a wording change to one step.
+- The rows since `agent-files(adoption): v0.2.4` were dropped at the previous close-out on the
+  user's call, so the table already reads as the new rule says, and this cycle's row follows it.
+- Bookmark named from the title's slug, `agent-files-proposal-v025`, the anchor algorithm
+  dropping the dots.
+- `rationale.md` leaves the count, the user's call at the review: the first draft grew the count
+  by five, one line of step 4 and four of rationale, and a rule that gains a why must not read as
+  the set growing. The rationale is the rules' why, so it is counted no more, step 4 and the
+  bullet were trimmed to two lines each, and the row notes the change of definition. The user
+  will add a Todo to vc-x1 for a `vc-x1 agent-files size` command that computes it.
 
-#### Ladder details
-
-##### docs: a user guide for SPSC v3 and MPSC v2 opening
-
-The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move
-the Todo entry into this block, and bump the version-of-record.
-
-- `## Waiting` is `_None._`, nothing to promote.
-
-##### docs: the segment lifecycle in the design note
-
-The switching, give-back, and free set are protocol bullets in the SPSC v3 and MPSC v2 sections,
-and the lifecycle a reader asks about is assembled from them. A subsection under MPSC v2 states
-it: a switch only at a full segment, a freed segment back to the ring's free set and never to the
-pool, the segment the consumer ends in staying in use, the free set a bitmask taken lowest-first,
-and v3's three differences.
-
-* The lifecycle was implicit in the protocol.
-  - Seven statements under MPSC v2, each a fact a user acts on: fixed memory at `init`, one
-    segment at a time, a switch only at a full segment, Full as no free segment, give-back after
-    the consumer passes the end, the drained ring's shape, and what the counters count.
-* The two rings share the lifecycle and differ in mechanics.
-  - One table of the three differences, where the switch is decided, when a segment is given
-    back, and the free set, so the subsection serves both and the SPSC v3 section is untouched.
-
-##### docs: guide examples for SPSC v3 and MPSC v2
-
-No complete program shows either ring from pool to threads. Two examples, one per ring, each
-sizing a pool, initializing, splitting, moving messages across threads with a wait policy, and
-reading the counters at the end, written to be quoted.
-
-* No program showed a ring from pool to threads.
-  - `examples/guide_spsc_v3.rs` and `examples/guide_mpsc_v2.rs`, each in five numbered steps a
-    guide section can quote: size the pool from `segment_size`, init and split, move the
-    endpoints to threads, send and receive under a policy, and read the counters.
-* The shipped `policy::spin` never yields, and a guide reader will want a policy of their own.
-  - Each example carries `spin_then_yield`, a hundred spins then a thread yield, never giving
-    up, and a single non-blocking probe with `|_| false` at the end that reports `Empty`.
-* The MPSC program is where cloning, closure fill, and per-producer order are shown.
-  - Three producer clones, a consumer checking each producer's order, and the original handle
-    read for the counters after the threads join, since clones and the original are equals.
-* The two run under `cargo test` and `cargo clippy --all-targets` like every example.
-  - On the 3900X the SPSC run switched 525 times in a million messages and the MPSC run 59 in
-    nine hundred thousand, both ending where the counters agreed.
-
-##### docs: the user guide for SPSC v3 and MPSC v2
-
-The guide itself, `notes/user-guide.md`: what the rings are, choosing one, sizing, init and
-split, sending, receiving, policies, threads, the segment lifecycle, counters, limits, and
-errors, quoting the two examples.
-
-* A reader had the protocol and not the calls.
-  - Thirteen sections in the order a program is written: what the rings are, the message type,
-    sizing, init and split, sending, receiving, policies with Full and Empty, threads, the
-    lifecycle, the counters, the limits, an errors table, and the two programs' output.
-* The examples' comments said the slot header is 4 bytes.
-  - It is 16, `SLOT_HEADER_BYTES`, so a 64-byte slot carries 48, and the two comments and the
-    guide say so. Found while writing the sizing section against the source.
-* The acceptance check wants the guide and the examples to agree.
-  - A script lists every method and type the examples call and finds each in the guide, none
-    missing, and the guide's prose carries no semicolon.
-
-##### docs: README and module docs point at the guide
-
-The README says "SPSC only" and shows no MPSC v2. Its status line is corrected, an MPSC v2
-paragraph joins the Overview, the segment paragraph links to the lifecycle subsection, the
-Testing list gains the two examples, the notes index lists the guide, and the crate root and the
-two module docs point at it.
-
-* The README said "SPSC only" and showed no MPSC v2.
-  - The status line says SPSC and MPSC, in-process for the segmented rings and between
-    processes for the single-region ones, and the segment paragraph gains the MPSC v2 sibling by
-    path, the lifecycle link, and the guide link.
-* Nothing led from the code to the guide.
-  - The crate root links the guide by URL, the way it links the design note, and the two module
-    docs name it and the lifecycle subsection with their example, as plain text since rustdoc has
-    no path to a notes file.
-* `cargo doc --no-deps` with warnings as errors reports no broken link.
-* The files touched owe nine prose semicolons, seven in `src/lib.rs` and two in
-  `src/mpsc/v2/mod.rs`.
-  - Paid in the next rung, `style: pay the prose semicolons in lib.rs and mpsc v2`, the
-    penultimate rung the prose rule asks for.
-
-##### style: pay the prose semicolons in lib.rs and mpsc v2
-
-The previous rung touched `src/lib.rs` and `src/mpsc/v2/mod.rs`, which carried nine prose
-semicolons between them, and the prose rule pays a touched file's semicolons in a penultimate
-rung of its own. Each is rewritten with a period, or a comma and a conjunction, and nothing else
-in either file changes.
-
-* Nine semicolons joined two claims or a claim and its continuation.
-  - Two became periods where each half stands alone, and seven a comma with "and", the rule's
-    two joins. No code span was touched, and a count over comment lines with code spans blanked
-    reads zero in both files.
-
-##### docs: a user guide for SPSC v3 and MPSC v2 closing
-
-Closing out the cycle. What closing taught:
-
-* A guide written against the source finds what the comments got wrong.
-  - The slot header is 16 bytes, and both new examples said 4 until the sizing section was
-    written from `SLOT_HEADER_BYTES`. A guide is a review of the API docs as much as a
-    document for users.
-* The acceptance check's identifier listing is cheap and worth keeping.
-  - Two regular expressions over the examples and the guide, run again at the closing, so the
-    guide cannot silently name a call the examples do not make or miss one they do.
-* The prose rule's penultimate rung fired on a pointer rung.
-  - Two doc-comment edits in `src/lib.rs` and `src/mpsc/v2/mod.rs` made nine semicolons owed,
-    and the style rung paid them. A file's whole prose is owed at the first touch, so a pointer
-    rung is not free.
-* Nothing in the block must outlive it.
-  - The lifecycle is in the design note, the usage in the guide, and the design note's own
-    semicolons stay with `Sweep punctuation in the design note`.
-
-Close-out shape: trapezoid, the default.
-
+Close-out shape: single-step, one commit, landed as it is.
 # References
 
-[1]: #docs-a-user-guide-for-spsc-v3-and-mpsc-v2-opening
-[2]: #docs-the-segment-lifecycle-in-the-design-note
-[3]: #docs-guide-examples-for-spsc-v3-and-mpsc-v2
-[4]: #docs-the-user-guide-for-spsc-v3-and-mpsc-v2
-[5]: #docs-readme-and-module-docs-point-at-the-guide
-[6]: #docs-a-user-guide-for-spsc-v3-and-mpsc-v2-closing
-[7]: #style-pay-the-prose-semicolons-in-librs-and-mpsc-v2
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies

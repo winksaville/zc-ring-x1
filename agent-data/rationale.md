@@ -233,6 +233,8 @@ Each close-out step exists because a close-out once went wrong without it.
 - The user restarts the agent after the close-out (wink, 2026-08-24) because context degrades over
   a long session, nothing is in flight once the cycle has landed, and an agent cannot restart
   itself, so the step says what must be written down before the exit.
+- The size row is recorded only when an agent-file changed (wink, 2026-09-16) because the table
+  is the count's history, and a row repeating the last one records nothing.
 - The `(current)` / `(done)` markers stay in the closed block (wink, 2026-08-28) because they have
   value: the finished block is the ladder as it was worked, and a closed block is one every rung of
   which reads `(done)`, so a rung reading otherwise is a finding. The earlier "drop the markers"

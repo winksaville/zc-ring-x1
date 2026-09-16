@@ -6,8 +6,12 @@ shrinking count is evidence the set is converging, while a growing one is a prom
 arrived as a paragraph that should have been a line. The count is not a rule, and a rule is never
 cut to move it.
 
-The count is `wc -l AGENTS.md custom.md agent-data/*.md`, taken at close-out and recorded here as
-the closing rung's last edit, with the cycle title as the row's label.
+The count is `wc -l` over `AGENTS.md`, `custom.md`, and `agent-data/*.md` less `rationale.md`,
+since the rationale is the rules' why and grows with every rule that gains one, taken at the
+close-out of a cycle that changed an agent-file and recorded here as the closing rung's last
+edit, with the cycle title as the row's label. A cycle that touched no agent-file adds no row,
+so the table is the history of the count and nothing else. Rows before 2026-09-16 counted
+`rationale.md` too.
 
 ## Counts
 
@@ -18,6 +22,7 @@ the closing rung's last edit, with the cycle title as the row's label.
 | 2026-09-07 | agent-files(adoption): v0.2.3 | 10 | 2315 | iiac-perf's set at d5d5e77a3bb1 copied whole, messaging.md gone, the version marker added |
 | 2026-09-10 | fix: mpsc handling of capacity 1 | 10 | 2315 | unchanged, no agent-file touched |
 | 2026-09-11 | agent-files(adoption): v0.2.4 | 10 | 2315 | vc-x1's set at e378ce9ee494, the version file renamed and one clause of `custom.md` reworded, so the count holds |
+| 2026-09-16 | agent-files(proposal): v0.2.5 | 9 | 1774 | a size row only when an agent-file changed, and `rationale.md` out of the count, so the files drop to 9 and the total from 2315 less its 541 |
 
 Per file at the last row, replaced at each close-out, the history being in the commits:
 
@@ -30,7 +35,6 @@ Per file at the last row, replaced at each close-out, the history being in the c
    391 agent-data/jj.md
    166 agent-data/notes.md
    405 agent-data/prose.md
-   541 agent-data/rationale.md
    204 agent-data/versioning.md
-  2315 total
+  1774 total
 ```
