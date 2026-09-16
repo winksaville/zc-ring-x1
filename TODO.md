@@ -49,7 +49,7 @@ every call the guide names exists in the crate, checked by listing the identifie
 #### Ladder
 
 - [docs: a user guide for SPSC v3 and MPSC v2 opening][1] (done)
-- [docs: the segment lifecycle in the design note][2]
+- [docs: the segment lifecycle in the design note][2] (done)
 - [docs: guide examples for SPSC v3 and MPSC v2][3]
 - [docs: the user guide for SPSC v3 and MPSC v2][4]
 - [docs: README and module docs point at the guide][5]
@@ -88,6 +88,14 @@ and the lifecycle a reader asks about is assembled from them. A subsection under
 it: a switch only at a full segment, a freed segment back to the ring's free set and never to the
 pool, the segment the consumer ends in staying in use, the free set a bitmask taken lowest-first,
 and v3's three differences.
+
+* The lifecycle was implicit in the protocol.
+  - Seven statements under MPSC v2, each a fact a user acts on: fixed memory at `init`, one
+    segment at a time, a switch only at a full segment, Full as no free segment, give-back after
+    the consumer passes the end, the drained ring's shape, and what the counters count.
+* The two rings share the lifecycle and differ in mechanics.
+  - One table of the three differences, where the switch is decided, when a segment is given
+    back, and the free set, so the subsection serves both and the SPSC v3 section is untouched.
 
 ##### docs: guide examples for SPSC v3 and MPSC v2
 
