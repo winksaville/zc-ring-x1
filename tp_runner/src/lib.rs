@@ -204,7 +204,7 @@ pub fn parse_depth(s: &str) -> Result<u32, String> {
 }
 
 /// clap value parser for `--pin MAIN,WORKER`: two
-/// comma-separated logical CPU numbers.
+/// comma-separated cpu numbers.
 pub fn parse_pin(s: &str) -> Result<(usize, usize), String> {
     let (m, w) = s
         .split_once(',')

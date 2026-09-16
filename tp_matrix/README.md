@@ -99,9 +99,9 @@ The three tools that sweep placements, `tp-matrix`,
 `tp-stream`, and `tp-pool`, take `--base-cpu N`, the cpu every
 placement starts from: CCX is it and a core on its L3, x-CCX
 it and a core outside, SMT it and its sibling. The default is
-the last physical core's first thread, cpu 11 on the 3900X
-and 5 on the 7600X, and the partners prefer a core's first
-thread and the highest number, since the kernel fills cpus
+the last core's primary cpu, cpu 11 on the 3900X and 5 on
+the 7600X, and the partners prefer a core's primary cpu and
+the highest number, since the kernel fills cpus
 from the bottom and the top is the quiet end ([Measurement
 placements](../notes/ring-buffer-design.md#measurement-placements-the-base-cpu-and-its-partners)).
 `tp-cell` pins explicitly with `--pin`. `-d` is 1 s a
@@ -123,7 +123,7 @@ tp-matrix 0.1.0 - run the full measurement matrix, markdown tables out
 
 - `placement`: the CPUs the two threads are pinned to and how they share caches:
   CCX two cores on one L3, x-CCX cores on different L3s, SMT one core's two
-  hardware threads sharing its L1 and L2, or unpinned
+  cpus sharing its L1 and L2, or unpinned
 ...
 - `xfills/RT`: x-core cache-line fills: cache lines pulled into a core from
   another core's cache, near 0 when the threads share a core's caches, as SMT

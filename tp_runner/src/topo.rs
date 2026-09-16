@@ -4,13 +4,15 @@
 //!
 //! - same cache domain (another core sharing the base's L3)
 //! - cross cache domain (a core outside the base's L3)
-//! - SMT siblings (the base's hyper-thread, shared L1/L2)
+//! - SMT siblings (the base core's other cpu, shared L1/L2)
 //! - unpinned (scheduler's choice)
 //!
-//! Partners prefer a core's first thread and the highest cpu
-//! number, and the default base is the last core's first
-//! thread, since the scheduler fills cpus from the bottom and
-//! the top is the quiet end.
+//! Partners prefer a core's primary cpu and the highest cpu
+//! number, and the default base is the last core's primary
+//! cpu, since the scheduler fills cpus from the bottom and the
+//! top is the quiet end. The terms are the design note's
+//! Terminology: a core is the physical unit, a cpu what the
+//! kernel numbers, a core's cpus its SMT siblings.
 //!
 //! Pairs the machine doesn't have (no SMT, single L3 domain)
 //! are simply absent, and non-Linux gets only the unpinned
@@ -22,8 +24,8 @@
 pub struct BaseCpuArg {
     /// The cpu every placement starts from: CCX is it and a
     /// core on its L3, x-CCX it and a core outside, SMT it and
-    /// its sibling. The default is the last physical core's
-    /// first thread, the quiet end of the kernel's fill order
+    /// its sibling. The default is the last core's primary cpu,
+    /// the quiet end of the kernel's fill order
     #[arg(long, value_name = "N", default_value_t = default_base_cpu())]
     pub base_cpu: usize,
 }
@@ -41,9 +43,9 @@ fn siblings_of(cpu: usize) -> Vec<usize> {
     .unwrap_or_else(|| vec![cpu])
 }
 
-/// A core's first thread: the lowest cpu in its sibling list.
+/// A core's primary cpu: the lowest cpu in its sibling list.
 #[cfg(target_os = "linux")]
-fn is_first_thread(cpu: usize) -> bool {
+fn is_primary_cpu(cpu: usize) -> bool {
     siblings_of(cpu).iter().min() == Some(&cpu)
 }
 
@@ -56,27 +58,27 @@ fn online_cpus() -> Vec<usize> {
         .unwrap_or_default()
 }
 
-/// Partner order: a core's first thread before its second, and
-/// the highest cpu number first. The scheduler's idlest-cpu
+/// Partner order: a core's primary cpu before its secondary,
+/// and the highest cpu number first. The scheduler's idlest-cpu
 /// search fills cpus from the bottom, so the top is the quiet
-/// end, and a first thread's partner thread is idler than a
-/// second thread's (design note, Measurement placements).
+/// end, and a primary cpu's sibling is idler than a secondary's
+/// (design note, Measurement placements).
 #[cfg(target_os = "linux")]
 fn quiet_first(cpus: &[usize]) -> Vec<usize> {
     let mut v: Vec<usize> = cpus.to_vec();
-    v.sort_by_key(|&c| (!is_first_thread(c), std::cmp::Reverse(c)));
+    v.sort_by_key(|&c| (!is_primary_cpu(c), std::cmp::Reverse(c)));
     v
 }
 
 /// The base cpu when `--base-cpu` is not given: the last
-/// physical core's first thread, the quiet end of the kernel's
-/// fill order, 11 on a 3900X and 5 on a 7600X. 0 when sysfs
-/// cannot be read.
+/// core's primary cpu, the quiet end of the kernel's fill
+/// order, 11 on a 3900X and 5 on a 7600X. 0 when sysfs cannot
+/// be read.
 #[cfg(target_os = "linux")]
 pub fn default_base_cpu() -> usize {
     online_cpus()
         .into_iter()
-        .filter(|&c| is_first_thread(c))
+        .filter(|&c| is_primary_cpu(c))
         .max()
         .unwrap_or(0)
 }
@@ -98,7 +100,7 @@ pub struct Placement {
 }
 
 /// Parse a /sys cpu-list string ("0,12" or "0-2,6") into cpu
-/// numbers; malformed pieces are skipped.
+/// numbers, and malformed pieces are skipped.
 #[cfg(target_os = "linux")]
 fn parse_cpu_list(s: &str) -> Vec<usize> {
     let mut out = Vec::new();

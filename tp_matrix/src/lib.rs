@@ -55,7 +55,7 @@ pub const XFILLS_MEANING: &str = "x-core cache-line fills: cache lines pulled in
 /// that sweep placements.
 pub const PLACEMENT_MEANING: &str = "the CPUs the two threads are pinned to and how they \
      share caches: CCX two cores on one L3, x-CCX cores on different L3s, SMT one core's two \
-     hardware threads sharing its L1 and L2, or unpinned";
+     cpus sharing its L1 and L2, or unpinned";
 
 /// The narrowest a legend wraps to, so a narrow table's legend
 /// stays readable.

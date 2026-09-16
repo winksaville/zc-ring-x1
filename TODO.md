@@ -55,6 +55,7 @@ new default, the tools at 1 s.
 - [feat: a base cpu for the measurement tools][4] (done)
 - [perf: the demo and the tools off cpu 0 on both machines][5] (done)
 - [perf: a quiet default base and quiet partners][7] (done)
+- [docs: cores, cpus, and cache layers, the placement terms][8] (done)
 - [feat: the demo's base cpu and pin-pair picker closing][6]
 
 #### Deliberation
@@ -84,9 +85,17 @@ new default, the tools at 1 s.
 - A quiet base is the last core, the user's call on 2026-09-16 after the housekeeping counts: the
   scheduler's idlest-cpu search fills cpus from the bottom, so cpu 1 carries nearly cpu 0's timer
   and reschedule load and the high-numbered cores ten times less. The default base is the last
-  physical core's first thread, 11 on the 3900X and 5 on the 7600X, and partners prefer a core's
-  first thread and the highest number, so the pairs stay at the quiet end. The rationale and the
+  core's primary cpu, 11 on the 3900X and 5 on the 7600X, and partners prefer a core's primary
+  cpu and the highest number, so the pairs stay at the quiet end. The rationale and the
   counts are in the design note.
+- Placement terms, the user's on 2026-09-16 at the quiet-base rung's review: "first thread" and
+  "second thread" collide with software threads, and the repo had four spellings for one thing.
+  A core is the physical unit, a cpu what the kernel presents and pins to, a core's cpus its SMT
+  siblings, the lowest its primary cpu and the other its secondary, a cluster the cpus sharing a
+  cache layer, and caches are layers, L1, L2, L3. The glossary goes into the design note's
+  Terminology and the rename through code, usage, legends, and both READMEs. The rung also pays
+  the one prose semicolon `tp_runner/src/topo.rs` owed, the user's call, since it touches the
+  file anyway.
 - Waiver, the user's on 2026-09-16 at the opening's review: the work reviews, description reviews,
   and per-push approvals of the opening and the four work rungs are waived, the user reviewing on
   return. It does not cover the closing rung or Land.
@@ -171,16 +180,16 @@ and the tools', is re-done on the 3900X and the 7600X at the new defaults.
 ##### perf: a quiet default base and quiet partners
 
 Base 1 is nearly as noisy as cpu 0, and the pickers' partners went up from the base, so base 9's
-x-CCX partner was cpu 12, cpu 0's sibling. The default base becomes the last physical core's first
-thread, partners prefer first threads and the highest number, the rationale goes into the design
+x-CCX partner was cpu 12, cpu 0's sibling. The default base becomes the last core's primary cpu,
+partners prefer primary cpus and the highest number, the rationale goes into the design
 note, and the README examples are re-run.
 
 * Base 1 sits in cpu 0's CCX and draws the same scheduler traffic.
-  - The default is the last physical core's first thread, computed from sysfs at start, 11 on
+  - The default is the last core's primary cpu, computed from sysfs at start, 11 on
     the 3900X and 5 on the 7600X. The first cpu of the highest L3 group was rejected, since on
     the one-L3 7600X it is cpu 0.
 * Partners went up from the base, so the last CCX's x-CCX partner was cpu 12, cpu 0's sibling.
-  - Both pickers order candidates first threads first and highest number first, so the pairs are
+  - Both pickers order candidates primary cpus first and highest number first, so the pairs are
     `11,10 CCX`, `11,8 x-CCX`, `11,23 SMT` and `5,4 CCX`, `5,11 SMT`. The rule, the counts, and
     the rejected orders are in [Measurement placements](notes/ring-buffer-design.md#measurement-placements-the-base-cpu-and-its-partners).
 * The tools' placement column widened to ten characters with a two-digit base.
@@ -188,6 +197,25 @@ note, and the README examples are re-run.
     on both machines.
 * The design note owes 130 prose semicolons, a rewrite rather than a repunctuation.
   - Left for its own cycle, as the semicolon rule says, and raised at the close-out.
+
+##### docs: cores, cpus, and cache layers, the placement terms
+
+The repo says "hardware thread", "SMT sibling", "logical CPU", and "first thread" for the same
+thing, and the last collides with software threads. A glossary in the design note's Terminology
+fixes core, cpu, SMT siblings, primary and secondary cpu, cluster, and cache layers, and the
+rename runs through the code, the usage texts, the legends, both READMEs, and the placements
+section. No number moves, so no re-run.
+
+* Four spellings for one thing, and one of them a software word.
+  - Six glossary entries in the design note's Terminology: core, cpu, SMT siblings with primary
+    and secondary cpu, cluster, cache layers, and bare metal, the last so the RP2350 has a place
+    without joining the tools. The tools' legend says "one core's two cpus", `tp-cell`'s help
+    says "cpu numbers", and the pickers' helper is `is_primary_cpu`.
+* The pickers' L3 grouping is the Zen shape and the note did not say so.
+  - The placements section says a part whose cluster shares L2 finds no CCX pair, and names the
+    kernel's cluster list as the fix when such a machine arrives.
+* `tp_runner/src/topo.rs` owed one prose semicolon.
+  - Paid, a comma and a conjunction.
 
 ##### feat: the demo's base cpu and pin-pair picker closing
 
@@ -439,4 +467,5 @@ of this section, and the cycles before the rule in the frozen [notes/chores/](no
 [5]: #perf-the-demo-and-the-tools-off-cpu-0-on-both-machines
 [6]: #feat-the-demos-base-cpu-and-pin-pair-picker-closing
 [7]: #perf-a-quiet-default-base-and-quiet-partners
+[8]: #docs-cores-cpus-and-cache-layers-the-placement-terms
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies

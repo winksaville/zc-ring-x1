@@ -443,8 +443,8 @@ zcr-mpsc-2t: zc-ring-x1 mpsc send_with round-trip (2 threads, spin) [duration=30
   each thread placement: single thread on the base cpu, then
   two threads at each placement the machine has, in the
   measurement tools' terms: CCX, two cores on one L3, x-CCX,
-  cores on different L3s, SMT, one core's two hardware
-  threads sharing its L1 and L2, and unpinned (pairs
+  cores on different L3s, SMT, one core's two cpus sharing
+  its L1 and L2, and unpinned (pairs
   discovered from /sys at runtime, each line naming its
   cpus, and a placement the machine lacks is absent, the
   7600X having no x-CCX). Eyeball numbers (single runs, no
@@ -454,7 +454,7 @@ zcr-mpsc-2t: zc-ring-x1 mpsc send_with round-trip (2 threads, spin) [duration=30
   version-of-record so you know which build you are
   testing. `--base-cpu <n>` sets the base, the cpu the
   single-thread lines pin to and every pair starts from. The
-  default is the last physical core's first thread, cpu 11
+  default is the last core's primary cpu, cpu 11
   on the 3900X and 5 on the 7600X, the quiet end of the
   kernel's fill order, and the partners are chosen the same
   way ([Measurement placements](notes/ring-buffer-design.md#measurement-placements-the-base-cpu-and-its-partners)).

@@ -70,7 +70,7 @@ struct Cli {
     #[arg(value_enum, default_value_t = FlavorArg::All)]
     flavor: FlavorArg,
 
-    /// Pin main to MAIN and the worker to WORKER (logical CPU
+    /// Pin main to MAIN and the worker to WORKER (cpu
     /// numbers, e.g. `--pin 0,1`); omit to leave the scheduler
     /// free
     ///

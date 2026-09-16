@@ -87,6 +87,27 @@ once before first use:
   order and commit order can differ — see
   [MPSC ring (sibling primitive)](#mpsc-ring-sibling-primitive).
 
+The placement terms, for the measurement tools and the demo ([Measurement
+placements](#measurement-placements-the-base-cpu-and-its-partners)), fixed on 2026-09-16:
+
+- **core**: a physical execution unit. Twelve on the 3900X, six on the 7600X, four on an RP2350
+  with two active. A core has an instruction set, Zen 2, Cortex-M33, Hazard3, and on a mixed
+  machine a kind, the kernel's `cpu_capacity` number.
+- **cpu**: what the kernel presents and pins to, one number per active execution context, the
+  `N` of `cpu N` and of every placement label. One per core without SMT, two with it: the 3900X
+  presents 24 cpus on 12 cores, the 7600X 12 on 6, an Apple M1 8 on 8. A cpu carries its core's
+  instruction set and kind and belongs to a cluster. Never "logical cpu" or "hardware thread",
+  and never "thread", which is software here.
+- **SMT siblings**: the cpus of one core, the kernel's term for `thread_siblings_list`. A core's
+  **primary cpu** is its lowest-numbered sibling, cpu N on both machines, and the other is its
+  **secondary cpu**, N+12 on the 3900X and N+6 on the 7600X.
+- **cluster**: the cpus sharing a cache layer, which layer depending on the part. A Zen CCX
+  shares L3, an Apple or ARM cluster shares L2. The pickers use L3 today, so `CCX` and `x-CCX`
+  are the Zen spelling of same-cluster and cross-cluster.
+- **cache layers**: L1, L2, L3, "layer" where prose needs the word, never "level".
+- **bare metal**: no kernel numbers cpus, so only cores exist and the SDK names them, core 0
+  and core 1 on the RP2350.
+
 ## Requirements
 
 - **no_std** — the crate builds with `#![no_std]` and no
@@ -2197,8 +2218,9 @@ must be laid out together when that header lands.
 
 Every pinned measurement here, the demo's single-thread lines and the 2t placements of the demo
 and the tools, starts from a base cpu, `--base-cpu` since 0.17.1, and the partners are picked from
-the base's topology. This section records why the default base is the last physical core's first
-thread and why partners prefer first threads and high cpu numbers. Decided 2026-09-16, in the
+the base's topology. This section records why the default base is the last core's primary cpu
+and why partners prefer primary cpus and high cpu numbers. The terms are in
+[Terminology](#terminology). Decided 2026-09-16, in the
 cycle `feat: the demo's base cpu and pin-pair picker`.
 
 ### Where the kernel puts work
@@ -2274,14 +2296,14 @@ order.
 
 ### The rule
 
-- The default base is the last physical core's first thread: cpu 11 on the 3900X, cpu 5 on the
+- The default base is the last core's primary cpu: cpu 11 on the 3900X, cpu 5 on the
   7600X. The first cpu of the highest L3 group was considered and rejected, since on a one-L3
   machine it is cpu 0 again.
-- Partners prefer a core's first thread over its second, and among those the highest cpu number.
+- Partners prefer a core's primary cpu over its secondary, and among those the highest cpu number.
   The SMT partner is the base's own sibling. Two earlier orders were tried and dropped: the first
   cpu going up from the base paired base 1 with cpu 0 for CCX, the first other core on the L3,
   and cpus above the base first paired every base in the last CCX with cpu 12 for x-CCX, cpu 0's
-  sibling, and paired base 11 with cpu 21, cpu 9's second thread, for CCX.
+  sibling, and paired base 11 with cpu 21, cpu 9's secondary cpu, for CCX.
 - What the rule gives:
 
 | machine | base | CCX | x-CCX | SMT |
@@ -2293,7 +2315,9 @@ order.
 | 7600X | 1 | 1,5 | none | 1,7 |
 
 So the default pairs sit on the quiet end of each machine, and the x-CCX partner is the
-neighbouring CCX's quietest core. The real fix for calibrated numbers is `isolcpus` and
+neighbouring CCX's quietest core. The L3 grouping is the Zen shape: a part whose cluster shares
+L2 and exposes no L3 would find no CCX pair and call every other core x-CCX, and the cluster
+list the kernel exposes, `cluster_cpus_list`, is the fix when such a machine arrives. The real fix for calibrated numbers is `isolcpus` and
 `nohz_full` on a set of cores, a boot-line change and a separate decision, and the numbers here
 are eyeball numbers on a quiet base rather than isolated ones.
 

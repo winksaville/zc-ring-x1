@@ -5,7 +5,7 @@
 //! version-of-record so you know exactly which build you
 //! are testing, `-h`/`--help` the usage, and `--base-cpu <n>`
 //! sets the base, the cpu the single-thread lines pin to and
-//! every placement starts from, the last core's first thread
+//! every placement starts from, the last core's primary cpu
 //! by default, the quiet end of the kernel's fill order.
 //!
 //! - Part 1, the ring: an SPSC pair moves typed messages
@@ -15,7 +15,7 @@
 //!   one consumer thread at each placement the machine has,
 //!   in the measurement tools' terms: CCX, two cores on one
 //!   L3, x-CCX, cores on different L3s, SMT, one core's two
-//!   hardware threads sharing its L1 and L2, and unpinned.
+//!   cpus sharing its L1 and L2, and unpinned.
 //!   Every ring version runs beside it at each placement, the
 //!   `spsc1_` to `spsc3_` and `mpsc0_` to `mpsc2_` lines
 //!   (the MPSC ones by send_with closure fill), the segmented
@@ -174,9 +174,9 @@ fn siblings_of(cpu: usize) -> Vec<usize> {
     .unwrap_or_else(|| vec![cpu])
 }
 
-/// A core's first thread: the lowest cpu in its sibling list.
+/// A core's primary cpu: the lowest cpu in its sibling list.
 #[cfg(target_os = "linux")]
-fn is_first_thread(cpu: usize) -> bool {
+fn is_primary_cpu(cpu: usize) -> bool {
     siblings_of(cpu).iter().min() == Some(&cpu)
 }
 
@@ -189,27 +189,27 @@ fn online_cpus() -> Vec<usize> {
         .unwrap_or_default()
 }
 
-/// Partner order: a core's first thread before its second, and
-/// the highest cpu number first. The scheduler's idlest-cpu
+/// Partner order: a core's primary cpu before its secondary,
+/// and the highest cpu number first. The scheduler's idlest-cpu
 /// search fills cpus from the bottom, so the top is the quiet
-/// end, and a first thread's partner thread is idler than a
-/// second thread's (design note, Measurement placements).
+/// end, and a primary cpu's sibling is idler than a secondary's
+/// (design note, Measurement placements).
 #[cfg(target_os = "linux")]
 fn quiet_first(cpus: &[usize]) -> Vec<usize> {
     let mut v: Vec<usize> = cpus.to_vec();
-    v.sort_by_key(|&c| (!is_first_thread(c), std::cmp::Reverse(c)));
+    v.sort_by_key(|&c| (!is_primary_cpu(c), std::cmp::Reverse(c)));
     v
 }
 
 /// The base cpu when `--base-cpu` is not given: the last
-/// physical core's first thread, the quiet end of the kernel's
-/// fill order, 11 on a 3900X and 5 on a 7600X. 0 when sysfs
-/// cannot be read.
+/// core's primary cpu, the quiet end of the kernel's fill
+/// order, 11 on a 3900X and 5 on a 7600X. 0 when sysfs cannot
+/// be read.
 #[cfg(target_os = "linux")]
 fn default_base_cpu() -> usize {
     online_cpus()
         .into_iter()
-        .filter(|&c| is_first_thread(c))
+        .filter(|&c| is_primary_cpu(c))
         .max()
         .unwrap_or(0)
 }
@@ -236,7 +236,7 @@ struct Placement {
 ///   cross-core handoff.
 /// - `x-CCX`: `base` and a core outside its L3, the far one.
 /// - `SMT`: `base` and its SMT sibling, one core's two
-///   hardware threads sharing L1 and L2, the cheapest.
+///   cpus sharing L1 and L2, the cheapest.
 /// - `unpinned`: the scheduler's choice, always present.
 #[cfg(target_os = "linux")]
 fn discover_placements(base: usize) -> Vec<Placement> {
@@ -308,9 +308,8 @@ usage: zc-ring-x1-demo [--base-cpu <n>]
   --base-cpu <n>  the cpu the single-thread lines pin to and every 2t
                   placement starts from: CCX is <n> and a core on its L3,
                   x-CCX is <n> and a core outside it, SMT is <n> and its
-                  sibling. The default is the last physical core's
-                  first thread, the quiet end of the kernel's fill
-                  order.
+                  sibling. The default is the last core's primary
+                  cpu, the quiet end of the kernel's fill order.
   -h, --help      print this and exit
   -V, --version   print the version-of-record and exit";
 
