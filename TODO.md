@@ -9,16 +9,7 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- The cycle `feat: segmented queue MPSC v2` landed on `main` as a trapezoid on 2026-09-15 at
-  0.17.0, the demo and the tools installed from it, the bookmark deleted. Both repos should be
-  clean; `vc-x1 squash-push -R .claude` if the agent-repo's `@` is not.
-- The 7600X holds `~/zc-sweep/` from the cycle's last measurement: the bookmark's source tree,
-  three builds, and their sweep outputs. Nothing depends on it, and it can be deleted.
-- The 3900X's known-hosts line for the 7600X is stale: `ssh 7600x` needs `-o
-  StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null` from the sandbox, or the user fixes
-  the line. Non-interactive sessions there have no `~/.cargo/bin` on the path.
-- Next cycles, in the Todo's order: `SPSC v3 fast path`, `MPSC v2 as the default`, `Cheaper segment
-  switches`, and the `Demo pin-pair picker` with its move off CPU 0.
+_None._
 
 ## In Progress
 
@@ -26,7 +17,104 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### feat: the demo's base cpu and pin-pair picker
+
+#### Problem
+
+The demo pins every single-thread line to cpu 0 and builds its two pin pairs from cpu0's
+topology, all of it hard-coded, and the measurement tools start from cpu 0 the same way. Cpu 0 is
+the kernel's favorite and runs noisier, so a bench there is not a good choice, and the demo has
+no way to move it, no `--help`, and no usage beyond `-V`. The demo's "diff cores" pair is the
+first cpu outside cpu0's L3, cross-L3 on the 3900X and same-L3 on the 7600X, so the two machines'
+lines with the same label were different experiments, while the tools already name their
+placements `CCX`, `x-CCX`, and `SMT`.
+
+#### Solution
+
+A `--base-cpu <n>` for the demo and the tools, every pinned line and every placement built from
+it, with `-h` / `--help` and an unknown argument rejected in the demo. The demo's picker becomes
+the tools' one: a same-L3 pair, a cross-L3 pair, and the SMT pair, labelled `CCX`, `x-CCX`, and
+`SMT`, each skipped where the machine lacks it. The default base moves to 1 tool-wide, the tools'
+default duration drops from 5 s to 1 s, and every README example run is re-done on both machines.
+
+#### Acceptance check
+
+`zc-ring-x1-demo --help` prints the usage and exits 0, `zc-ring-x1-demo --bogus` prints it and
+exits 1. On the 3900X the default demo run labels its 1t lines `core 1` and its pairs `1,2 CCX`,
+`1,3 x-CCX`, and `1,13 SMT`, and `--base-cpu 3` gives `3,4 CCX`, `3,0 x-CCX`, `3,15 SMT`. On the
+7600X the `x-CCX` rows are skipped as lacking. `tp-matrix`, `tp-stream`, and `tp-pool` take
+`--base-cpu` and label their placements from it the same way, and each README example run on both
+machines is at the new default, the tools at 1 s.
+
+#### Ladder
+
+- [feat: the demo's base cpu and pin-pair picker opening][1] (done)
+- [feat: a base cpu flag and help for the demo][2]
+- [feat: same-L3, cross-L3, and SMT placements in the demo][3]
+- [feat: a base cpu for the measurement tools][4]
+- [perf: the demo and the tools off cpu 0 on both machines][5]
+- [feat: the demo's base cpu and pin-pair picker closing][6]
+
+#### Deliberation
+
+- Grown from a single-step cycle, `feat: the demo's base cpu flag and help`, at its work review on
+  2026-09-16: the user's vote was a ladder that does `Demo pin-pair picker` too, since the review
+  of a `1+3` pair showed the "diff cores" label hiding what the pick was. Nothing had pushed but the
+  bookmark, so the shape was still open, and the bookmark was retitled with the cycle.
+- Whole binary, not the segment stress alone, the user's call: the base is shared by the picker
+  and every pinned line, so a flag that reached one section would leave the rest on cpu 0.
+- The base as a process-wide atomic in the demo, set once in `main`: the single-thread loops sit
+  behind macros and function-pointer tables, so a parameter would change every signature.
+- Default base 1, tool-wide, the user's call, "for now": cpu 0 is the kernel's, and 1 is the
+  first cpu that is not. On the 3900X it gives `1,2 CCX`, `1,3 x-CCX`, `1,13 SMT`.
+- The tools' default duration 5 s to 1 s, tp-pool untouched: a cell is a fixed-duration spin at
+  millions of trips a second, so 1 s still has samples in the millions and the tables print
+  stdev, and `-d 5` stays for calm numbers. tp-pool already runs 0.1 s cells, median of three,
+  and its 108 s is the cell count.
+- Every README example run re-done in one rung, both machines: at the new defaults a machine's
+  set is about 30 s each for tp-matrix and tp-stream, 108 s for tp-pool, and a few minutes for
+  the demo, cheap enough that no table stays dated on cpu 0.
+- No `-dev` rename, as in the earlier cycles.
+- Waiver, the user's on 2026-09-16 at the opening's review: the work reviews, description reviews,
+  and per-push approvals of the opening and the four work rungs are waived, the user reviewing on
+  return. It does not cover the closing rung or Land.
+
+#### Ladder details
+
+##### feat: the demo's base cpu and pin-pair picker opening
+
+The cycle's setup commit: retitle and publish the bookmark, delete `## Closed`'s contents, move
+the Todo entry into this block, reset the continuation notes, and bump the version-of-record.
+
+- `## Waiting` is `_None._`, nothing to promote.
+- The single-step draft's flag work was set aside as a patch, `tmp/rung2.patch`, so this commit
+  carries the setup alone, and returns as the next rung.
+
+##### feat: a base cpu flag and help for the demo
+
+The demo hard-codes cpu 0 at every pin and in its picker, and has no usage. A `--base-cpu <n>`,
+default 0 in this rung, that every pin and both pairs start from, the labels naming it, plus
+`-h` / `--help` and the usage on an unknown argument.
+
+##### feat: same-L3, cross-L3, and SMT placements in the demo
+
+The demo's two pairs, "diff cores" and "same core", are one experiment on the 3900X and another
+on the 7600X. The picker becomes the tools' one with a base: `CCX`, `x-CCX`, and `SMT`, each
+skipped where the machine lacks it, in the 2t lines, the depth sweep, and the segment stress.
+
+##### feat: a base cpu for the measurement tools
+
+`tp_runner`'s placement discovery reads cpu0's topology. It takes a base, `tp-matrix`,
+`tp-stream`, and `tp-pool` grow `--base-cpu`, and the shared default duration drops to 1 s.
+
+##### perf: the demo and the tools off cpu 0 on both machines
+
+The default base becomes 1 in the demo and the tools, and every README example run, the demo's
+and the tools', is re-done on the 3900X and the 7600X at the new defaults.
+
+##### feat: the demo's base cpu and pin-pair picker closing
+
+Closing out the cycle.
 
 ## Waiting
 
@@ -120,18 +208,6 @@ every path that never needs a second segment.
 The tools run every MPSC flavor at one producer and one consumer, so a claim word contended by
 several producers is never measured. A `--producers N` flag for `tp-matrix` and `tp-stream` would
 run N pinned producers into one consumer, and v2's switch would then be measured under contention.
-
-### Demo pin-pair picker
-
-The demo's "diff cores" pair is the first cpu outside cpu0's L3, cross-L3 on the 3900X and same-L3
-on the 7600X, so the two machines' lines with the same label were different experiments. The picker
-wants a same-L3 placement and a cross-L3 one, each labelled by what it is, and the same for
-`tp-matrix`'s placements.
-
-- The base CPU must not be 0, the user's call on 2026-09-15: the OS uses it and it runs noisier,
-  and every pinned line in the demo and the tools starts from it, the 1t loops and the burst
-  pinned to it and the pairs built from its topology. The cycle that fixes the picker moves the
-  base too and re-runs the sweeps on the new placements.
 
 ### Cheaper segment switches
 
@@ -277,340 +353,12 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### feat: segmented queue MPSC v2
-
-#### Problem
-
-Every MPSC ring is one fixed region, so a producer that outruns the consumer finds it Full. SPSC v3
-answered that with a ring of segments, and its design note carries a list for MPSC: producers racing
-for a segment need a CAS, a segment must be sealed before the switch so no late claim lands in it,
-and a slow producer may still hold a segment being given back, so reclamation is the hard part.
-
-#### Solution
-
-Done as designed, then measured on both machines. `mpsc::v2` is a sibling of v0 and v1 over v3's
-segments, up to 32 taken from the application's pool at `init`, each a ring of its own, no attach,
-with v0 and v1 untouched. One 32-bit claim word, the segment and the position, is CAS-claimed as
-v1's index, and a stale view fails the CAS, so the claim word is the seal. A producer at a full
-segment takes a free one by setting its bit in one in-use word and moves the claim word to it,
-sealing the old segment's header. The consumer runs v1's loop within a segment and reads the seal
-only when a slot is neither committed nor tombstoned, so its fast path is v1's one load and a
-segment is given back at the reserve after its last release. The design is in [MPSC v2: ring of
-segments](notes/ring-buffer-design.md#mpsc-v2-ring-of-segments) with its measurements.
-
-- Two findings changed the design mid-cycle: v3's two parity words for the free set are unsound
-  for several producers, replaced by the in-use word, and the seal is cleared before the claim CAS
-  with a lost CAS restoring it, since a clear after it could wipe a live seal.
-- The tools measure `mpsc-v2` with switch counts, the demo runs every ring at every placement with
-  the segmented rings at one segment, and a segment stress table shows the switches and the cost
-  of one: 7 ns for spsc-v3 and 13 to 14 for mpsc-v2 single-threaded, 140 and 270 to 290 streaming
-  across cores, two runs on the 3900X.
-- A first sweep found small helpers called across codegen units on every send, fixed with inline
-  hints, and the same shape in v3 went into its fast-path Todo entry.
-- The verdict: v2 streams two to five times faster than v1 from depth 8 up while pulling half the
-  lines, and does not match v1 in the round trip, where the receive runs up to 30% slower from
-  depth 8 up. Three builds on the 7600X, the 3900X's binaries, a default and a native build there,
-  agreed within run noise.
-
-#### Acceptance check
-
-Tests stream far more messages than one segment holds through several segments at depths 1 to 1024
-with one, two, and four producers, and afterwards every segment but the current one is free. A
-threaded stress with two or three segments and several producers forces switches, seals, a
-tombstone before a seal, and a producer waiting with no free segment. The whole library passes under
-Miri. The diff touches nothing under `src/mpsc/v0` and `src/mpsc/v1`. The sweep in the design note
-shows v2 against v1 at one producer on the 3900X and the 7600X with switches per message. `vc-x1
-validate` passes.
-
-Passed (2026-09-15). Three tests stream far past one segment through every count from 1 to 32 at
-depths 1 to 1024 with one, two, and four producers, and afterwards every segment but the current
-one is free. The threaded tests force switches, seals, a tombstone before a seal, and a producer
-waiting with no free segment. The whole library, 122 tests, passes under Miri. The diff from `main`
-touches nothing under the v0 and v1 modules. The sweep in the note shows v2 against v1 on both
-machines with switches per message, and `vc-x1 validate` passes. Not in the check but on record:
-the prediction that v2 matches v1 in the round trip from depth 2 up failed on the receive, and the
-stream beat it.
-
-#### Ladder
-
-- [feat: segmented queue MPSC v2 opening][1] (done)
-- [docs: mpsc v2 design and prediction][2] (done)
-- [feat: mpsc v2 segment chain][3] (done)
-- [test: mpsc v2 across segment counts, depths, and producers][4] (done)
-- [feat: mpsc v2 in the measurement tools][5] (done)
-- [feat: every ring in the demo's one_msg lines and a segment stress][9] (done)
-- [perf: mpsc v2 on the 7600X and a native build][10] (done)
-- [feat: the demo's segment stress as a table with a switch cost][12] (done)
-- [fix: wrap the segment stress legend][13] (done)
-- [feat: segmented queue MPSC v2 closing][6] (done)
-
-#### Deliberation
-
-- The claim word is the seal, the plan's design, the user's go on 2026-09-15: one packed word of
-  segment and position replaces v1's producer index, so a claim can never land in a segment the
-  ring has left and the send path pays nothing for sealing.
-  - The alternative weighed: a producer index per segment plus a current-segment word, which
-    needs a seal bit in every segment's index word and a stale-segment check on every send.
-- The switch is two CASes on a rare path: one on the taken word to own a free segment among
-  producers, one on the claim word to move the ring. A lost claim CAS flips the taken bit back and
-  retries, not a policy call, and Full means no segment is free.
-- The seal lives in a header word, never in a slot word: v3 retired the consumer's second look
-  because a flag set in the slot word outside the commit raced the release store. In a header word
-  it races nothing, and the consumer loads it only on the empty path.
-- Reclamation falls out of the seal: a slow producer holds a claimed slot, never a segment, and the
-  consumer gives a segment back only after passing its end position.
-- Word layout as v3's, 26 seq bits and 32 segments, with v1's tombstone at bit 31, so v2 builds on
-  the 32-bit `no_std` targets.
-- `MpscRing` stays v1 this cycle, the plan's recommendation: the v3 verdict is that the default ring
-  now costs more on every path that never needs a second segment. The Todo entry `MPSC v2 as the
-  default` holds the flip, conditioned on v2 matching v1 with no switch.
-- A design rung before code, the plan's recommendation: v3 designed in conversation, and this design
-  has more moving parts, so the note section is reviewed as text first, with the prediction on
-  record before measuring.
-- The tools run every MPSC flavor at one producer and one consumer, so v2's rows compare with v1's
-  directly. A producer-count flag is the Todo entry `Multi-producer measurement`.
-- The segment table is borrowed on every path, never copied, v3's fast-path finding applied from the
-  start.
-- One in-use word for the free set, not v3's two parity words, the finding of the code rung: two
-  producers with views one store apart can agree a segment in use is free. The design note's
-  section records the interleaving.
-  - The cost accepted: the consumer's give-back is a read-modify-write, on the switch path only.
-    Its fast path is still one load.
-- The give-back is one poll late, a consequence of the second look being on the empty path only: a
-  segment is given back at the reserve after its last release. The alternative, a seal load at
-  every release, is a load on the fast path, and the tools rung measures the path as it is.
-- Inline hints on v2's helpers in the tools rung, before the sweep on record: the first sweep put
-  v2's one-thread loop at twice v1's, and the cause was calls across codegen units, small
-  non-generic helpers in the parent module called from the child modules. `#[inline]` on them is
-  the whole fix, so it went in before the sweep rather than into a fast-path Todo, and v3's
-  matching finding went into its fast-path entry. `seq_of`, shared with v3, is inlined too, so v3's
-  own numbers move a little; v0 and v1 are untouched.
-- 0.17.0, a minor bump, as v3's: a new queue layer.
-- No `-dev` rename: the demo's name is unchanged by the cycle, as in the earlier cycles.
-- The user's waiver on 2026-09-15, "you have permission to complete the rungs before close-out and
-  then we can test and tweak together": it covers the opening push and every rung push before the
-  closing, their work and description reviews included. The closing push and Land are outside it.
-- A rung inserted before the closing, the user's call on 2026-09-15 after reading the demo's
-  output: every ring in the one_msg lines, the depth sweep at one segment so it measures the fast
-  path alone, and a segment stress block, since nothing in the demo showed a switch. Inside the
-  cycle's subject, so a rung rather than a Todo entry, and under the waiver as a rung before the
-  closing.
-- A second rung inserted before the closing, the user's call on 2026-09-15 at the closing's
-  review: the stress block as a table with a legend, and the cost of one switch measured at depth
-  1 as a difference at equal capacity, 32 segments of 1 against 1 segment of 32. The closing's
-  edits were set aside as `tmp/closing.patch` and redone after it.
-- `## Waiting` is `_None._`, nothing to promote.
-- The user's reading at the closing's review, on record in the note's verdict: a segmented ring
-  cannot serve where every send must cost the same, an ISR or a hard-real-time path, and the
-  narrower claim beside it, that a switch is a bounded few line transfers and spsc-v3's is loads
-  and stores only.
-- No row in `notes/agent-files-size.md`: no agent-file changed, as at the last close-out.
-- The closing runs under the full per-rung flow, the waiver having ended before it.
-
-#### Ladder details
-
-##### feat: segmented queue MPSC v2 opening
-
-The cycle's setup commit: publish the bookmark, clear `## Closed`, move the Todo entry into this
-block, file the two follow-on Todo entries, and bump the version to 0.17.0-0.
-
-##### docs: mpsc v2 design and prediction
-
-The design note had v3's list of what MPSC needs and no MPSC v2 section, so the protocol was settled
-in prose before code.
-
-* The three carried problems, a CAS to take a segment, a seal before the switch, and reclamation
-  under a slow producer, had no MPSC answer.
-  - The new section
-    [MPSC v2: ring of segments](notes/ring-buffer-design.md#mpsc-v2-ring-of-segments) resolves
-    them into the packed claim word, with the switch, the consumer's second look, reuse, the API,
-    trust, and the alternative weighed.
-* v3's second look was retired for a race, and v2 needs one.
-  - The section says why the race does not reach v2: the seal is a header word the consumer never
-    stores to, read on the empty path only.
-* No prediction was on record.
-  - Within run noise of v1 from depth 2 up, within twice v1 at depth 1, and the switch's cost
-    itemized, for the tools rung to check.
-
-##### feat: mpsc v2 segment chain
-
-v2 existed only as a design, and the crate's MPSC rings could not grow past one region.
-
-* A ring of segments to measure.
-  - `mpsc::v2` builds the design: segments taken from the pool at `init` with a three-line header
-    each, the packed claim word CAS-claimed as v1's index, the switch at a full segment, the seal
-    in the old segment's header, the consumer's second look on the empty path, and reuse through
-    the seal's end position. v3's `seq_of`, `validate_geometry`, and `check_body_type` are shared.
-  - Tests cover one segment as a plain ring, a full ring of segments, many laps in uneven bursts,
-    depth 1 one message behind, a producer waiting with no free segment, the policies, an
-    abandoned read guard, a tombstone mid-segment and one before a seal, a stale seal on a reused
-    segment, the 26-bit wrap, and two, four, and shared-reference producers across threads. The
-    threaded tests passed 30 release runs, and the module passes under Miri.
-* The two-producer stress deadlocked, one run in three.
-  - v3's free set, a producer-private taken word against the consumer's give-back word, is sound
-    for one producer and not for several. A producer that slept with a stale view woke to the
-    taken word reading the same bits again and took a segment that was in fact free, and a second
-    producer read the fresh taken word beside a give-back word one consumer store stale, the two
-    parities agreed, and it took the segment the first held with the ring inside it. The free set
-    is one in-use word now: a take is a `fetch_or` that succeeds only where the bit was clear, and
-    the consumer's give-back a `fetch_and`, its one read-modify-write, on the switch path only.
-  - Found with a trace of every take, move, loss, and follow, dumped when the consumer stalled.
-* The seal's clear could wipe a live seal.
-  - A first cut cleared the new segment's seal after the claim CAS, and a producer delayed there
-    cleared a seal a later producer had already written into that segment. The clear comes before
-    the CAS, and a lost CAS restores the resume position it held.
-* A segment is given back one poll late.
-  - The consumer reads the seal only when a slot is neither committed nor tombstoned, so it gives
-    a segment back at the reserve after its last release, not at that release. At depth 1 a
-    consumer one message behind needs three segments where v3 needs two. The tests and the note
-    say so.
-
-##### test: mpsc v2 across segment counts, depths, and producers
-
-Multiple segments under several producers were shown working only by tests over a few chosen
-shapes.
-
-* The tests covered a handful of segment counts, depths, and producer counts.
-  - Three tests run every count from 1 to 32 at depths 1, 8, 64, and 1024: filling every segment
-    with the consumer idle and draining, bursts of every size up to capacity, and a stream from
-    one, two, and four producer threads with per-producer order checked. Both ends count the same
-    switches, a filled ring used every segment, and afterwards every segment but the current one
-    is free. Under Miri they run a corner of the matrix, and pass.
-* Nothing showed a switch happening under contention.
-  - `examples/mpsc_v2_segments.rs` runs the same matrix and prints a fill table and a stream table
-    per producer count. Filled, a ring of n segments used all n with n - 1 switches at every
-    depth. Streaming 100,000 messages at depth 1, one producer switched on nearly every message
-    from three segments up, two producers on about nine in ten, and four on six to eight in ten,
-    since a producer that finds the slot unread while another is mid-fill waits on the policy
-    rather than switching. At depth 8 and up a few hundred switches per run at most.
-  - Its nanoseconds are a hundred thousand messages on unpinned threads, a sign of life rather
-    than a measurement, which the tools rung makes.
-
-##### feat: mpsc v2 in the measurement tools
-
-The tools measured every MPSC ring but v2, so nothing could say what v2 costs against v1.
-
-* No tool could build an MPSC ring of segments.
-  - `tp-cell`, `tp-matrix`, `tp-stream`, and the demo's depth sweep run `mpsc-v2`, each ring over a
-    pool holding exactly its segments, through an `mpsc_pair` builder beside the `spsc_pair` one,
-    so the MPSC cell bodies stay shared across v0, v1, and v2. `--segments` covers it, its rows
-    carry `switches/RT` and `switches/msg`, and the banners and legends name both segmented rings.
-* The first sweep put v2's send at half again v1's and its one-thread loop at twice.
-  - Calls across codegen units: the segment table's accessors, the seq helper, and the word packers
-    are small non-generic functions in the parent module called from the producer and consumer
-    modules, real calls without `#[inline]`. The hints went on before the sweep on record, and v3's
-    matching finding went into its fast-path Todo entry.
-* What v2 costs against v1 was not measured.
-  - The sweep, `tp-matrix` and `tp-stream` at depths 1, 8, 64, and 1024 with two segments, ran
-    twice on the 3900X, and the demo's sweep once. It is the measured part of
-    [MPSC v2: ring of segments](notes/ring-buffer-design.md#mpsc-v2-ring-of-segments), with the
-    tables, the readings, and the verdict.
-  - The verdict: the design works, the round trip never switches, and v2 streams two to five times
-    faster than v1 from depth 8 up while pulling half the lines. It does not match v1 in the round
-    trip: the send matches everywhere but the SMT pair, and the receive runs up to 30% slower from
-    depth 8 up, we think from the seq word sharing the slot line the consumer spins on.
-  - The 7600X is not yet run: the sweep there goes over ssh with binaries built here, and the host
-    is the user's to reach. It is the one open item of the acceptance check.
-
-##### feat: every ring in the demo's one_msg lines and a segment stress
-
-The demo's one_msg lines stopped at spsc-v2 and mpsc-v0, its depth sweep ran the segmented rings
-with two segments so a switch and the fast path mixed, and nothing in it stressed the segments.
-
-* Two rings had no one_msg line, and the MPSC lines did not say which version they ran.
-  - spsc-v3 and mpsc-v2 run at every placement, and the MPSC lines are `mpsc0_`, `mpsc1_`, and
-    `mpsc2_`, the 2p+1c line `mpsc1_` since it runs the crate default.
-* The sweep and the one_msg lines could not tell a switch from the fast path.
-  - Both run the segmented rings at one segment, so they never switch and measure the fast path
-    alone. The pair builders take the segment count as a parameter for that.
-* Nothing in the demo showed a switch.
-  - A segment stress block, last, for spsc-v3 and mpsc-v2 at four segments of 64: a burst on one
-    thread that fills every segment then drains, three switches a round, and a lagging consumer at
-    each placement that reads two segments' worth between pauses. Every line uses all four segments
-    and both ends count the same switches: per pause two for mpsc-v2, which switches at full, and
-    one and a half for spsc-v3, which switches at its look-ahead.
-  - The lagging line prints no rate, since its pace is the consumer's pauses, not the ring's.
-
-##### perf: mpsc v2 on the 7600X and a native build
-
-The sweep had run on the 3900X only, and whether a build native to the 7600X measures differently
-from the binaries built here had never been asked.
-
-* The 7600X had no numbers.
-  - The same sweep ran there over ssh, twice, with the binaries built here, and its tables and
-    readings joined the note's section. It reads as the 3900X does, closer: v2 streams two and a
-    half to three times faster from depth 8 up, its send matches or beats v1's everywhere but the
-    SMT pair, and its receive is slower only around depth 64.
-* Whether native codegen changes the numbers was unknown.
-  - Three builds of the bookmark's source swept the same way on the 7600X: the 3900X's binaries, a
-    default build there, and a `target-cpu=native` build there. Every MPSC cell agreed within run
-    noise. The one line that moved was spsc-v3's one-thread loop, a fifth faster native, which
-    points at its fast path again and is noted in the section.
-  - The 7600X's earlier known-hosts line was stale, so the runs used a scratch known-hosts file,
-    and the tree went over as a git archive of the bookmark, so the 7600X never touched GitHub.
-
-##### feat: the demo's segment stress as a table with a switch cost
-
-The stress block's lines did not align, nothing said what its per-message figure meant, and the
-cost of one segment switch was not measured anywhere.
-
-* Lines that did not align, and a figure nobody could read.
-  - The block is one markdown table, line, placement, shape, ns/msg, segments used, switches,
-    switches per message, and switch ns, with a legend under it saying what each column is and
-    where the 0.012 comes from, three switches per 256 messages at the stress shape.
-* The cost of one switch was unmeasured.
-  - Measured as a difference at equal capacity so slack does not change: the same 32 slots as one
-    segment, which never switches, and as 32 segments of one slot, which switches on nearly every
-    message. The gap in ns per message over the gap in switches per message is one switch. On the
-    3900X, single-threaded on core 0, spsc-v3's switch costs 6.5 ns and mpsc-v2's 14.4, the two
-    read-modify-writes and the seal. Streaming across cores at 0+3 it is 137 and 267 ns: a switch
-    moves the seal, the in-use word, and the claim word between the cores on top of the slot line,
-    so at depth 1 across cores the switch is most of the cost. The lagging lines keep their shape
-    and print no rate.
-* The stress builders were fixed at the stress shape.
-  - The burst, the lagging consumer, and a new spinning stream take segments and depth as
-    parameters, so the switch-cost rows reuse them.
-
-##### fix: wrap the segment stress legend
-
-The stress table's legend printed each entry as one line, past any terminal's width.
-
-* Four entries, each one long line.
-  - A wrapper breaks them at 80 columns with the continuation lines indented under the entry, and
-    the depth sweep's banner line, the other long one, is left as it was.
-
-##### feat: segmented queue MPSC v2 closing
-
-The design went from v3's parity words and a clear-after-CAS to the in-use word and a clear-before
-with restore, both found by the two-producer stress rather than by thought, and the measurement's
-first surprise was the compiler's, not the ring's.
-
-* A design carried from a single-producer ring needed a multi-producer proof, and the deliberation
-  had none for the free set.
-  - The stress found the interleaving in a run, and a trace of every take, move, loss, and follow
-    named it. The proof that replaced it is one bit per segment set and cleared atomically.
-* The first sweep measured the calls across codegen units, not the ring.
-  - Inline hints on the helpers before the sweep on record, and the same finding filed for v3.
-* Nothing the plan foresaw showed a switch to a reader of the demo, or priced one.
-  - Three rungs inserted at the user's readings of the demo: the segment stress, the stress as a
-    table with the cost of one switch, and the legend's wrap. The plan measured switches per
-    message and never what one costs, which at depth 1 across cores is most of the message.
-* The closing's edits were set aside twice for inserted rungs.
-  - `tmp/closing.patch` and `tmp/closing2.patch` held them, and they were regenerated on the new
-    record each time rather than applied, since the record had moved under them.
-
-Close-out shape: trapezoid, the default.
-
 # References
 
-[1]: #feat-segmented-queue-mpsc-v2-opening
-[2]: #docs-mpsc-v2-design-and-prediction
-[3]: #feat-mpsc-v2-segment-chain
-[4]: #test-mpsc-v2-across-segment-counts-depths-and-producers
-[5]: #feat-mpsc-v2-in-the-measurement-tools
-[6]: #feat-segmented-queue-mpsc-v2-closing
-[9]: #feat-every-ring-in-the-demos-one_msg-lines-and-a-segment-stress
-[10]: #perf-mpsc-v2-on-the-7600x-and-a-native-build
-[12]: #feat-the-demos-segment-stress-as-a-table-with-a-switch-cost
-[13]: #fix-wrap-the-segment-stress-legend
+[1]: #feat-the-demos-base-cpu-and-pin-pair-picker-opening
+[2]: #feat-a-base-cpu-flag-and-help-for-the-demo
+[3]: #feat-same-l3-cross-l3-and-smt-placements-in-the-demo
+[4]: #feat-a-base-cpu-for-the-measurement-tools
+[5]: #perf-the-demo-and-the-tools-off-cpu-0-on-both-machines
+[6]: #feat-the-demos-base-cpu-and-pin-pair-picker-closing
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
