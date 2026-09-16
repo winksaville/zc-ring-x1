@@ -448,8 +448,12 @@ zcr-mpsc-2t: zc-ring-x1 mpsc send_with round-trip (2 threads, spin) [duration=30
   benchmark (calibrated measurement lives in iiac-perf).
   Installable: `cargo install --path . --locked`, then
   `zc-ring-x1-demo`, and `-V` prints the version-of-record so
-  you know which build you are testing. An example run on
-  each machine, the 3900X (Zen 2, 12 cores over four CCXs)
+  you know which build you are testing. `--base-cpu <n>`
+  moves the base off cpu 0: the single-thread lines pin to
+  it and both pairs start from it, its SMT sibling and a
+  core outside its L3, since the kernel favors cpu 0 and a
+  quieter core benches better. `-h` prints the usage. An
+  example run on each machine, the 3900X (Zen 2, 12 cores over four CCXs)
   first, then the 7600X (Zen 4, six cores under one L3):
 
   ```text

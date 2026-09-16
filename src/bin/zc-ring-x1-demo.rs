@@ -3,7 +3,10 @@
 //! `cargo install --path . --locked` and run
 //! `zc-ring-x1-demo`. `-V`/`--version` prints the
 //! version-of-record so you know exactly which build you
-//! are testing.
+//! are testing, `-h`/`--help` the usage, and `--base-cpu <n>`
+//! moves every pinned line off cpu 0 (the default), the base
+//! the single-thread lines pin to and both pin pairs start
+//! from.
 //!
 //! - Part 1, the ring: an SPSC pair moves typed messages
 //!   in place (reserve -> write -> commit, reserve -> read ->
@@ -37,6 +40,7 @@
 //!   alloc -> into_desc -> ring -> resolve -> free, with the
 //!   same placement ladder as the raw ring.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use zc_ring_x1::{
@@ -157,27 +161,35 @@ fn parse_cpu_list(s: &str) -> Vec<usize> {
 type PinPair = Option<(usize, usize)>;
 
 /// Discover two cpu pairs for the pinned 2t runs from
-/// /sys/devices/system/cpu. `None` when the machine lacks the
-/// shape (or not Linux).
+/// /sys/devices/system/cpu, both starting at `base`. `None`
+/// when the machine lacks the shape (or not Linux).
 ///
-/// - `.0`: same physical core, cpu0 and its SMT sibling
+/// - `.0`: same physical core, `base` and its SMT sibling
 ///   (shared L1/L2, the cheapest handoff).
-/// - `.1`: different physical cores, cpu0 and a core outside
-///   cpu0's L3 group when one exists (the farthest handoff),
+/// - `.1`: different physical cores, `base` and a core outside
+///   its L3 group when one exists (the farthest handoff),
 ///   else any non-sibling core.
 #[cfg(target_os = "linux")]
-fn discover_pin_pairs() -> (PinPair, PinPair) {
+fn discover_pin_pairs(base: usize) -> (PinPair, PinPair) {
     let read = |path: &str| std::fs::read_to_string(path).ok();
-    let siblings = read("/sys/devices/system/cpu/cpu0/topology/thread_siblings_list")
-        .map(|s| parse_cpu_list(&s))
-        .unwrap_or_default();
-    let smt = (siblings.len() >= 2).then(|| (siblings[0], siblings[1]));
+    let siblings = read(&format!(
+        "/sys/devices/system/cpu/cpu{base}/topology/thread_siblings_list"
+    ))
+    .map(|s| parse_cpu_list(&s))
+    .unwrap_or_default();
+    let smt = siblings
+        .iter()
+        .copied()
+        .find(|c| *c != base)
+        .map(|c| (base, c));
     let online = read("/sys/devices/system/cpu/online")
         .map(|s| parse_cpu_list(&s))
         .unwrap_or_default();
-    let l3 = read("/sys/devices/system/cpu/cpu0/cache/index3/shared_cpu_list")
-        .map(|s| parse_cpu_list(&s))
-        .unwrap_or_else(|| siblings.clone());
+    let l3 = read(&format!(
+        "/sys/devices/system/cpu/cpu{base}/cache/index3/shared_cpu_list"
+    ))
+    .map(|s| parse_cpu_list(&s))
+    .unwrap_or_else(|| siblings.clone());
     let far = online
         .iter()
         .copied()
@@ -186,15 +198,84 @@ fn discover_pin_pairs() -> (PinPair, PinPair) {
             online
                 .iter()
                 .copied()
-                .find(|c| *c != 0 && !siblings.contains(c))
+                .find(|c| *c != base && !siblings.contains(c))
         });
-    (smt, far.map(|c| (0, c)))
+    (smt, far.map(|c| (base, c)))
 }
 
 /// Non-Linux stub: no pinned runs.
 #[cfg(not(target_os = "linux"))]
-fn discover_pin_pairs() -> (PinPair, PinPair) {
+fn discover_pin_pairs(_base: usize) -> (PinPair, PinPair) {
     (None, None)
+}
+
+/// The cpu every single-thread line pins to and both pin
+/// pairs start from: `--base-cpu`, default 0. Set once in
+/// `main` before any run, read at every pin, so the loops
+/// behind the macros and the flavor tables keep their
+/// signatures.
+static BASE_CPU: AtomicUsize = AtomicUsize::new(0);
+
+/// The base cpu, see [`BASE_CPU`].
+fn base_cpu() -> usize {
+    BASE_CPU.load(Ordering::Relaxed)
+}
+
+/// The usage text, printed by `-h` / `--help` and, to stderr,
+/// on an argument the demo does not know.
+const USAGE: &str = "\
+usage: zc-ring-x1-demo [--base-cpu <n>]
+       zc-ring-x1-demo -h | --help | -V | --version
+
+  --base-cpu <n>  the cpu the single-thread lines pin to and both pin
+                  pairs start from: the SMT sibling pair is <n> and its
+                  sibling, the diff-cores pair is <n> and a core outside
+                  its L3. Default 0, which the kernel favors, so a
+                  quieter core is a better bench.
+  -h, --help      print this and exit
+  -V, --version   print the version-of-record and exit";
+
+/// The parsed command line: the base cpu, or an early exit.
+enum Args {
+    Run { base_cpu: usize },
+    Exit { code: i32 },
+}
+
+/// Parse the arguments after the program name. `-V` and `-h`
+/// print and exit 0. An unknown argument, a `--base-cpu`
+/// without a value, or one that is not a number prints the
+/// usage to stderr and exits 1.
+fn parse_args(args: impl Iterator<Item = String>) -> Args {
+    let mut base_cpu = 0;
+    let mut args = args.peekable();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "-V" | "--version" => return Args::Exit { code: 0 },
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return Args::Exit { code: 0 };
+            }
+            "--base-cpu" => match args.next().map(|v| v.parse::<usize>()) {
+                Some(Ok(n)) => base_cpu = n,
+                Some(Err(_)) => {
+                    eprintln!("error: --base-cpu wants a cpu number");
+                    eprintln!("{USAGE}");
+                    return Args::Exit { code: 1 };
+                }
+                None => {
+                    eprintln!("error: --base-cpu wants a value");
+                    eprintln!("{USAGE}");
+                    return Args::Exit { code: 1 };
+                }
+            },
+            _ => {
+                eprintln!("error: unknown argument `{a}`");
+                eprintln!("{USAGE}");
+                return Args::Exit { code: 1 };
+            }
+        }
+    }
+    Args::Run { base_cpu }
 }
 
 /// Pin the calling thread to `cpu` via sched_setaffinity.
@@ -254,7 +335,7 @@ macro_rules! spsc_pair {
 
 /// Define the SPSC one-message loops over the ring `$pair` builds
 /// (see `spsc_pair`): `$one_t`
-/// moves COUNT messages single thread, pinned to cpu 0, and
+/// moves COUNT messages single thread, pinned to the base cpu, and
 /// `$two_t` moves them producer-thread -> consumer-thread (`pin`
 /// as in [`spsc_ring_one_msg_2t`]), both over a ring of `depth`
 /// slots. Each returns elapsed seconds. The SPSC versions share
@@ -264,7 +345,7 @@ macro_rules! spsc_pair {
 /// The 1t loop runs in a scoped thread rather than pinning the
 /// main thread: spawned threads inherit the main thread's
 /// affinity mask, which would squeeze every later part onto
-/// cpu 0.
+/// the base cpu.
 macro_rules! spsc_loops {
     ($one_t:ident, $two_t:ident, $($pair:tt)+) => {
         fn $one_t(depth: u32) -> f64 {
@@ -273,7 +354,7 @@ macro_rules! spsc_loops {
             let start = Instant::now();
             std::thread::scope(|s| {
                 s.spawn(move || {
-                    pin_to_cpu(0);
+                    pin_to_cpu(base_cpu());
                     for i in 0..COUNT {
                         match producer.reserve_slot_with::<Msg>(|_| false) {
                             Ok(mut slot) => {
@@ -396,7 +477,7 @@ macro_rules! mpsc_pair {
 /// Define the MPSC one-message loops over the ring at `$ring`,
 /// its region sized by `$size(slot_size, depth)`, the siblings
 /// of the SPSC loops at the same placements: `$one_t` moves
-/// COUNT messages single thread, pinned to cpu 0, so the two
+/// COUNT messages single thread, pinned to the base cpu, so the two
 /// lines read as the seam between the protocols (claim CAS +
 /// seq vs load/store), and `$two_t` moves them producer-thread
 /// -> consumer-thread (`pin` as in [`spsc_ring_one_msg_2t`]),
@@ -412,7 +493,7 @@ macro_rules! mpsc_loops {
             let start = Instant::now();
             std::thread::scope(|s| {
                 s.spawn(move || {
-                    pin_to_cpu(0);
+                    pin_to_cpu(base_cpu());
                     for i in 0..COUNT {
                         producer.send_with::<Msg>(|_| false, |m| m.seq = i).unwrap(); // OK: room is guaranteed, the consumer drains in lockstep
                         match consumer.reserve_slot_with::<Msg>(|_| false) {
@@ -525,7 +606,7 @@ fn mpsc1_ring_one_msg_3t() -> f64 {
     start.elapsed().as_secs_f64()
 }
 
-/// The composed flow on one thread pinned to cpu 0: one pool
+/// The composed flow on one thread pinned to the base cpu: one pool
 /// message allocated outside the timed loop. Each iteration
 /// populates it, converts guard -> descriptor, rings the
 /// descriptor across, and resolves the guard back. Return
@@ -553,7 +634,7 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
     let start = Instant::now();
     std::thread::scope(|s| {
         s.spawn(move || {
-            pin_to_cpu(0);
+            pin_to_cpu(base_cpu());
             let mut buf_slot = pool.alloc::<Msg>().unwrap(); // OK: fresh pool, DEPTH buffers free
             for i in 0..COUNT {
                 buf_slot.seq = i;
@@ -705,7 +786,7 @@ fn std_mpsc_one_pool_msg_2t(pin: PinPair) -> f64 {
     start.elapsed().as_secs_f64()
 }
 
-/// The std-channel flow on one thread pinned to cpu 0: alloc
+/// The std-channel flow on one thread pinned to the base cpu: alloc
 /// a pool message, move its guard through a sync_channel,
 /// receive and free it. Return elapsed seconds.
 fn std_mpsc_one_pool_msg_1t() -> f64 {
@@ -716,7 +797,7 @@ fn std_mpsc_one_pool_msg_1t() -> f64 {
     let start = Instant::now();
     std::thread::scope(|s| {
         s.spawn(move || {
-            pin_to_cpu(0);
+            pin_to_cpu(base_cpu());
             for i in 0..COUNT {
                 let mut buf_slot = pool.alloc::<Msg>().unwrap(); // OK: alloc+free per iteration, DEPTH never exceeded
                 buf_slot.seq = i;
@@ -731,7 +812,7 @@ fn std_mpsc_one_pool_msg_1t() -> f64 {
 }
 
 /// Alloc -> write -> free COUNT messages on one thread pinned
-/// to cpu 0, the pool's own cost, no channel, no second
+/// to the base cpu, the pool's own cost, no channel, no second
 /// thread. Return elapsed seconds.
 ///
 /// Runs in a scoped thread like the other pinned parts, so
@@ -743,7 +824,7 @@ fn pool_alloc_free_1t() -> f64 {
     let start = Instant::now();
     std::thread::scope(|s| {
         s.spawn(move || {
-            pin_to_cpu(0);
+            pin_to_cpu(base_cpu());
             for i in 0..COUNT {
                 let mut buf_slot = pool.alloc::<Msg>().unwrap(); // OK: alloc+free per iteration, DEPTH never exceeded
                 buf_slot.seq = i;
@@ -756,7 +837,7 @@ fn pool_alloc_free_1t() -> f64 {
 }
 
 /// The same loop through the global allocator (Box::new ->
-/// write -> drop) for comparison, pinned to cpu 0. Return
+/// write -> drop) for comparison, pinned to the base cpu. Return
 /// elapsed seconds.
 ///
 /// Runs in a scoped thread like the other pinned parts, so
@@ -765,7 +846,7 @@ fn global_alloc_free_1t() -> f64 {
     let start = Instant::now();
     std::thread::scope(|s| {
         s.spawn(move || {
-            pin_to_cpu(0);
+            pin_to_cpu(base_cpu());
             for i in 0..COUNT {
                 let mut buf = std::hint::black_box(Box::new(Msg { seq: 0, val: 0 }));
                 buf.seq = i;
@@ -897,7 +978,7 @@ fn stress_table(rows: &[StressRow]) {
     }
 }
 
-/// The burst: one thread, pinned to core 0, fills the whole
+/// The burst: one thread, pinned to the base cpu, fills the whole
 /// ring of `segments` by `depth` with the consumer idle and then
 /// drains it, and again until COUNT messages have moved. Every
 /// fill crosses every segment, so this is the switch cost with
@@ -909,7 +990,7 @@ macro_rules! burst_1t {
             let capacity = (segments * depth) as u64;
             std::thread::scope(|s| {
                 s.spawn(move || {
-                    pin_to_cpu(0);
+                    pin_to_cpu(base_cpu());
                     // Built here so its segments belong to this
                     // thread's pool, as the one_msg loops build
                     // theirs on the thread that runs them.
@@ -1140,7 +1221,7 @@ fn segment_stress(smt: PinPair, far: PinPair) {
         assert_eq!(sent, seen, "{line}: switch counts differ");
         rows.push(StressRow {
             line: line.to_string(),
-            placement: "core 0".to_string(),
+            placement: format!("core {}", base_cpu()),
             shape: shape.clone(),
             ns: Some(secs * 1e9 / COUNT as f64),
             used: (used, STRESS_SEGMENTS),
@@ -1176,8 +1257,9 @@ fn segment_stress(smt: PinPair, far: PinPair) {
             });
         }
     }
-    switch_cost(&mut rows, "spsc3 burst 1t", "core 0", spsc3_burst_1t);
-    switch_cost(&mut rows, "mpsc2 burst 1t", "core 0", mpsc2_burst_1t);
+    let one_t = format!("core {}", base_cpu());
+    switch_cost(&mut rows, "spsc3 burst 1t", &one_t, spsc3_burst_1t);
+    switch_cost(&mut rows, "mpsc2 burst 1t", &one_t, mpsc2_burst_1t);
     // The stream across cores at the far placement, or unpinned
     // when the machine has no second core to find.
     let (placement, pin) = match far {
@@ -1227,7 +1309,7 @@ fn segment_stress(smt: PinPair, far: PinPair) {
 
 /// Where a sweep row's threads sit.
 enum SweepPlacement {
-    /// Both ends on one thread, pinned to cpu 0.
+    /// Both ends on one thread, pinned to the base cpu.
     OneT,
     /// Producer and consumer threads at `PinPair`.
     TwoT(PinPair),
@@ -1243,7 +1325,7 @@ enum SweepPlacement {
 ///   streaming there costs what a round trip does.
 fn depth_sweep(smt: PinPair, far: PinPair) {
     let mut placements = vec![
-        ("1t core 0".to_string(), SweepPlacement::OneT),
+        (format!("1t core {}", base_cpu()), SweepPlacement::OneT),
         ("2t unpinned".to_string(), SweepPlacement::TwoT(None)),
     ];
     if let Some((p, c)) = far {
@@ -1287,58 +1369,70 @@ fn depth_sweep(smt: PinPair, far: PinPair) {
 }
 
 /// Run both parts and print their throughput, then the depth
-/// sweep. `-V` / `--version` prints the version-of-record and
-/// exits.
+/// sweep. `--base-cpu <n>` moves the base off cpu 0, `-h` /
+/// `--help` prints the usage, and `-V` / `--version` prints the
+/// version-of-record and exits.
 fn main() {
     let banner = concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"));
     println!("{banner}");
-    if std::env::args().any(|a| a == "-V" || a == "--version") {
-        return;
-    }
-    println!("demo: {} messages each, depth {DEPTH}", commas(COUNT));
-    let (smt, far) = discover_pin_pairs();
+    let base = match parse_args(std::env::args().skip(1)) {
+        Args::Run { base_cpu } => base_cpu,
+        Args::Exit { code } => std::process::exit(code),
+    };
+    BASE_CPU.store(base, Ordering::Relaxed);
+    println!(
+        "demo: {} messages each, depth {DEPTH}, base cpu {base}",
+        commas(COUNT)
+    );
+    let (smt, far) = discover_pin_pairs(base);
 
     // Alloc/free baselines, then message flows: like
     // compares with like within each block.
-    report("pool_alloc_free_1t (core 0):", pool_alloc_free_1t());
-    report("global_alloc_free_1t (core 0):", global_alloc_free_1t());
+    report(
+        &format!("pool_alloc_free_1t (core {base}):"),
+        pool_alloc_free_1t(),
+    );
+    report(
+        &format!("global_alloc_free_1t (core {base}):"),
+        global_alloc_free_1t(),
+    );
 
-    // Single thread, core 0.
+    // Single thread, the base cpu.
     println!();
     report(
-        "spsc_ring_one_msg_1t (core 0):",
+        &format!("spsc_ring_one_msg_1t (core {base}):"),
         spsc_ring_one_msg_1t(DEPTH),
     );
     report(
-        "spsc1_ring_one_msg_1t (core 0):",
+        &format!("spsc1_ring_one_msg_1t (core {base}):"),
         spsc1_ring_one_msg_1t(DEPTH),
     );
     report(
-        "spsc2_ring_one_msg_1t (core 0):",
+        &format!("spsc2_ring_one_msg_1t (core {base}):"),
         spsc2_ring_one_msg_1t(DEPTH),
     );
     report(
-        "spsc3_ring_one_msg_1t (core 0):",
+        &format!("spsc3_ring_one_msg_1t (core {base}):"),
         spsc3_ring_one_msg_1t(DEPTH),
     );
     report(
-        "mpsc0_ring_one_msg_1t (core 0):",
+        &format!("mpsc0_ring_one_msg_1t (core {base}):"),
         mpsc0_ring_one_msg_1t(DEPTH),
     );
     report(
-        "mpsc1_ring_one_msg_1t (core 0):",
+        &format!("mpsc1_ring_one_msg_1t (core {base}):"),
         mpsc1_ring_one_msg_1t(DEPTH),
     );
     report(
-        "mpsc2_ring_one_msg_1t (core 0):",
+        &format!("mpsc2_ring_one_msg_1t (core {base}):"),
         mpsc2_ring_one_msg_1t(DEPTH),
     );
     report(
-        "spsc_ring_one_pool_msg_1t (core 0):",
+        &format!("spsc_ring_one_pool_msg_1t (core {base}):"),
         spsc_ring_one_pool_msg_1t(),
     );
     report(
-        "std_mpsc_one_pool_msg_1t (core 0):",
+        &format!("std_mpsc_one_pool_msg_1t (core {base}):"),
         std_mpsc_one_pool_msg_1t(),
     );
 

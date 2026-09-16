@@ -49,7 +49,7 @@ machines is at the new default, the tools at 1 s.
 #### Ladder
 
 - [feat: the demo's base cpu and pin-pair picker opening][1] (done)
-- [feat: a base cpu flag and help for the demo][2]
+- [feat: a base cpu flag and help for the demo][2] (done)
 - [feat: same-L3, cross-L3, and SMT placements in the demo][3]
 - [feat: a base cpu for the measurement tools][4]
 - [perf: the demo and the tools off cpu 0 on both machines][5]
@@ -95,6 +95,17 @@ the Todo entry into this block, reset the continuation notes, and bump the versi
 The demo hard-codes cpu 0 at every pin and in its picker, and has no usage. A `--base-cpu <n>`,
 default 0 in this rung, that every pin and both pairs start from, the labels naming it, plus
 `-h` / `--help` and the usage on an unknown argument.
+
+* The single-thread loops sit behind macros and function-pointer tables.
+  - The base is a process-wide atomic set once in `main` before any run and read at every pin,
+    so no loop's signature changes. The picker alone takes the base as a parameter.
+* The usage has to be the one text at three exits.
+  - One constant, printed to stdout on `-h` and to stderr, under an error line, on an unknown
+    argument, a missing value, or a value that is not a number. Parsing is a hand loop over the
+    arguments, since the demo has no clap dependency and three flags do not earn one.
+* Every label said `core 0`.
+  - The 1t lines, the sweep's `1t core N` heading, and the stress table's placement column print
+    the base, and the demo's header line names it.
 
 ##### feat: same-L3, cross-L3, and SMT placements in the demo
 
