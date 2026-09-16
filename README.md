@@ -440,158 +440,228 @@ zcr-mpsc-2t: zc-ring-x1 mpsc send_with round-trip (2 threads, spin) [duration=30
   like compares with like: alloc/free baselines (pool vs
   global allocator), then three message flows (raw ring,
   composed ring + pool descriptors, std channel + pool) at
-  each thread placement: single thread on core 0, two
-  threads unpinned, two SMT siblings sharing one physical
-  core, and two different physical cores (pairs discovered
-  from /sys at runtime, and each line names the cpus it ran
-  on). Eyeball numbers (single runs, no mean/stdev), not a
-  benchmark (calibrated measurement lives in iiac-perf).
-  Installable: `cargo install --path . --locked`, then
-  `zc-ring-x1-demo`, and `-V` prints the version-of-record so
-  you know which build you are testing. An example run on
+  each thread placement: single thread on the base cpu, then
+  two threads at each placement the machine has, in the
+  measurement tools' terms: CCX, two cores on one L3, x-CCX,
+  cores on different L3s, SMT, one core's two cpus sharing
+  its L1 and L2, and unpinned (pairs
+  discovered from /sys at runtime, each line naming its
+  cpus, and a placement the machine lacks is absent, the
+  7600X having no x-CCX). Eyeball numbers (single runs, no
+  mean/stdev), not a benchmark (calibrated measurement lives
+  in iiac-perf). Installable: `cargo install --path .
+  --locked`, then `zc-ring-x1-demo`, and `-V` prints the
+  version-of-record so you know which build you are
+  testing. `--base-cpu <n>` sets the base, the cpu the
+  single-thread lines pin to and every pair starts from. The
+  default is the last core's primary cpu, cpu 11
+  on the 3900X and 5 on the 7600X, the quiet end of the
+  kernel's fill order, and the partners are chosen the same
+  way ([Measurement placements](notes/ring-buffer-design.md#measurement-placements-the-base-cpu-and-its-partners)).
+  `-h` prints the usage. An example run on
   each machine, the 3900X (Zen 2, 12 cores over four CCXs)
   first, then the 7600X (Zen 4, six cores under one L3):
 
   ```text
   $ zc-ring-x1-demo
-  zc-ring-x1 0.15.8
-  demo: 1,000,000 messages each, depth 64
-  pool_alloc_free_1t (core 0):                    102,413,507 msgs/sec      9.8 ns/msg
-  global_alloc_free_1t (core 0):                  136,789,231 msgs/sec      7.3 ns/msg
+  zc-ring-x1 0.17.1-5
+  demo: 1,000,000 messages each, depth 64, base cpu 11
+  pool_alloc_free_1t (core 11):                    55,542,354 msgs/sec     18.0 ns/msg
+  global_alloc_free_1t (core 11):                 138,928,599 msgs/sec      7.2 ns/msg
 
-  spsc_ring_one_msg_1t (core 0):                  352,773,629 msgs/sec      2.8 ns/msg
-  spsc1_ring_one_msg_1t (core 0):                 132,988,962 msgs/sec      7.5 ns/msg
-  spsc2_ring_one_msg_1t (core 0):                 132,571,032 msgs/sec      7.5 ns/msg
-  mpsc_ring_one_msg_1t (core 0):                   93,070,986 msgs/sec     10.7 ns/msg
-  spsc_ring_one_pool_msg_1t (core 0):              90,896,348 msgs/sec     11.0 ns/msg
-  std_mpsc_one_pool_msg_1t (core 0):               27,731,486 msgs/sec     36.1 ns/msg
+  spsc_ring_one_msg_1t (core 11):                 369,055,848 msgs/sec      2.7 ns/msg
+  spsc1_ring_one_msg_1t (core 11):                137,210,123 msgs/sec      7.3 ns/msg
+  spsc2_ring_one_msg_1t (core 11):                140,979,199 msgs/sec      7.1 ns/msg
+  spsc3_ring_one_msg_1t (core 11):                 48,662,399 msgs/sec     20.5 ns/msg
+  mpsc0_ring_one_msg_1t (core 11):                 93,216,469 msgs/sec     10.7 ns/msg
+  mpsc1_ring_one_msg_1t (core 11):                 87,541,650 msgs/sec     11.4 ns/msg
+  mpsc2_ring_one_msg_1t (core 11):                 67,279,212 msgs/sec     14.9 ns/msg
+  spsc_ring_one_pool_msg_1t (core 11):             89,899,915 msgs/sec     11.1 ns/msg
+  std_mpsc_one_pool_msg_1t (core 11):              28,041,914 msgs/sec     35.7 ns/msg
 
-  spsc_ring_one_msg_2t (unpinned):                 51,707,086 msgs/sec     19.3 ns/msg
-  spsc1_ring_one_msg_2t (unpinned):                19,381,669 msgs/sec     51.6 ns/msg
-  spsc2_ring_one_msg_2t (unpinned):               175,534,339 msgs/sec      5.7 ns/msg
-  mpsc_ring_one_msg_2t (unpinned):                 27,372,364 msgs/sec     36.5 ns/msg
-  spsc_ring_one_pool_msg_2t (unpinned):            11,180,680 msgs/sec     89.4 ns/msg
-  std_mpsc_one_pool_msg_2t (unpinned):              5,433,791 msgs/sec    184.0 ns/msg
-  mpsc_ring_one_msg_3t (2p+1c unpinned):           16,745,697 msgs/sec     59.7 ns/msg
+  spsc_ring_one_msg_2t (11,10 CCX):                63,372,476 msgs/sec     15.8 ns/msg
+  spsc1_ring_one_msg_2t (11,10 CCX):               25,504,371 msgs/sec     39.2 ns/msg
+  spsc2_ring_one_msg_2t (11,10 CCX):              195,149,024 msgs/sec      5.1 ns/msg
+  spsc3_ring_one_msg_2t (11,10 CCX):               46,860,707 msgs/sec     21.3 ns/msg
+  mpsc0_ring_one_msg_2t (11,10 CCX):               42,150,295 msgs/sec     23.7 ns/msg
+  mpsc1_ring_one_msg_2t (11,10 CCX):               42,238,089 msgs/sec     23.7 ns/msg
+  mpsc2_ring_one_msg_2t (11,10 CCX):               56,735,023 msgs/sec     17.6 ns/msg
+  spsc_ring_one_pool_msg_2t (11,10 CCX):           13,693,746 msgs/sec     73.0 ns/msg
+  std_mpsc_one_pool_msg_2t (11,10 CCX):             5,217,695 msgs/sec    191.7 ns/msg
 
-  spsc_ring_one_msg_2t (diff cores 0+3):            4,868,814 msgs/sec    205.4 ns/msg
-  spsc1_ring_one_msg_2t (diff cores 0+3):           9,260,332 msgs/sec    108.0 ns/msg
-  spsc2_ring_one_msg_2t (diff cores 0+3):          74,601,267 msgs/sec     13.4 ns/msg
-  mpsc_ring_one_msg_2t (diff cores 0+3):           12,064,103 msgs/sec     82.9 ns/msg
-  spsc_ring_one_pool_msg_2t (diff cores 0+3):       4,623,268 msgs/sec    216.3 ns/msg
-  std_mpsc_one_pool_msg_2t (diff cores 0+3):        3,431,196 msgs/sec    291.4 ns/msg
+  spsc_ring_one_msg_2t (11,8 x-CCX):                5,049,900 msgs/sec    198.0 ns/msg
+  spsc1_ring_one_msg_2t (11,8 x-CCX):               7,940,920 msgs/sec    125.9 ns/msg
+  spsc2_ring_one_msg_2t (11,8 x-CCX):              74,263,153 msgs/sec     13.5 ns/msg
+  spsc3_ring_one_msg_2t (11,8 x-CCX):              19,136,483 msgs/sec     52.3 ns/msg
+  mpsc0_ring_one_msg_2t (11,8 x-CCX):              10,067,719 msgs/sec     99.3 ns/msg
+  mpsc1_ring_one_msg_2t (11,8 x-CCX):              11,916,643 msgs/sec     83.9 ns/msg
+  mpsc2_ring_one_msg_2t (11,8 x-CCX):              47,591,662 msgs/sec     21.0 ns/msg
+  spsc_ring_one_pool_msg_2t (11,8 x-CCX):           3,966,189 msgs/sec    252.1 ns/msg
+  std_mpsc_one_pool_msg_2t (11,8 x-CCX):            2,968,124 msgs/sec    336.9 ns/msg
 
-  spsc_ring_one_msg_2t (same core 0+12):          132,767,830 msgs/sec      7.5 ns/msg
-  spsc1_ring_one_msg_2t (same core 0+12):          76,528,894 msgs/sec     13.1 ns/msg
-  spsc2_ring_one_msg_2t (same core 0+12):         129,412,430 msgs/sec      7.7 ns/msg
-  mpsc_ring_one_msg_2t (same core 0+12):           61,224,221 msgs/sec     16.3 ns/msg
-  spsc_ring_one_pool_msg_2t (same core 0+12):      28,071,475 msgs/sec     35.6 ns/msg
-  std_mpsc_one_pool_msg_2t (same core 0+12):       18,170,386 msgs/sec     55.0 ns/msg
+  spsc_ring_one_msg_2t (11,23 SMT):               144,312,701 msgs/sec      6.9 ns/msg
+  spsc1_ring_one_msg_2t (11,23 SMT):               80,837,593 msgs/sec     12.4 ns/msg
+  spsc2_ring_one_msg_2t (11,23 SMT):              135,450,350 msgs/sec      7.4 ns/msg
+  spsc3_ring_one_msg_2t (11,23 SMT):               53,032,144 msgs/sec     18.9 ns/msg
+  mpsc0_ring_one_msg_2t (11,23 SMT):               62,917,595 msgs/sec     15.9 ns/msg
+  mpsc1_ring_one_msg_2t (11,23 SMT):               64,206,706 msgs/sec     15.6 ns/msg
+  mpsc2_ring_one_msg_2t (11,23 SMT):               36,135,760 msgs/sec     27.7 ns/msg
+  spsc_ring_one_pool_msg_2t (11,23 SMT):           27,025,353 msgs/sec     37.0 ns/msg
+  std_mpsc_one_pool_msg_2t (11,23 SMT):            14,086,410 msgs/sec     71.0 ns/msg
 
-  depth sweep: 1,000,000 messages per cell, ns/msg at depths 1, 2, 8, 64
+  spsc_ring_one_msg_2t (unpinned):                 35,836,151 msgs/sec     27.9 ns/msg
+  spsc1_ring_one_msg_2t (unpinned):                19,737,585 msgs/sec     50.7 ns/msg
+  spsc2_ring_one_msg_2t (unpinned):                97,605,902 msgs/sec     10.2 ns/msg
+  spsc3_ring_one_msg_2t (unpinned):                21,229,048 msgs/sec     47.1 ns/msg
+  mpsc0_ring_one_msg_2t (unpinned):                11,937,908 msgs/sec     83.8 ns/msg
+  mpsc1_ring_one_msg_2t (unpinned):                31,238,507 msgs/sec     32.0 ns/msg
+  mpsc2_ring_one_msg_2t (unpinned):                60,974,356 msgs/sec     16.4 ns/msg
+  spsc_ring_one_pool_msg_2t (unpinned):            12,375,406 msgs/sec     80.8 ns/msg
+  std_mpsc_one_pool_msg_2t (unpinned):              4,098,484 msgs/sec    244.0 ns/msg
+  mpsc1_ring_one_msg_3t (2p+1c unpinned):           7,528,351 msgs/sec    132.8 ns/msg
 
-  | 1t core 0              |     d=1 |     d=2 |     d=8 |    d=64 |
+  depth sweep: 1,000,000 messages per cell, ns/msg at depths 1, 2, 8, 64, spsc-v3 and mpsc-v2 with 1 segment(s)
+
+  | 1t core 11             |     d=1 |     d=2 |     d=8 |    d=64 |
   |------------------------|--------:|--------:|--------:|--------:|
-  | spsc-v0                |     2.8 |     2.8 |     2.8 |     2.8 |
-  | spsc-v1                |     7.7 |     7.5 |     7.5 |     7.5 |
-  | spsc-v2                |     7.5 |     7.5 |     7.5 |     7.5 |
-  | mpsc-v0                |       - |    10.7 |    10.6 |    10.6 |
-  | mpsc-v1                |    10.8 |    10.7 |    10.7 |    10.6 |
+  | spsc-v0                |     2.6 |     2.5 |     2.5 |     2.5 |
+  | spsc-v1                |     7.2 |     7.4 |    19.6 |     7.2 |
+  | spsc-v2                |     7.0 |     7.1 |     7.6 |     7.6 |
+  | spsc-v3                |    25.2 |    20.3 |    20.3 |    32.1 |
+  | mpsc-v0                |       - |    10.6 |    10.7 |    10.8 |
+  | mpsc-v1                |    11.0 |    11.0 |    11.0 |    22.9 |
+  | mpsc-v2                |    14.1 |    14.4 |    14.2 |    14.3 |
+
+  | 2t 11,10 CCX           |     d=1 |     d=2 |     d=8 |    d=64 |
+  |------------------------|--------:|--------:|--------:|--------:|
+  | spsc-v0                |    98.3 |    76.9 |    22.8 |     9.7 |
+  | spsc-v1                |    74.4 |    68.8 |    42.8 |    35.7 |
+  | spsc-v2                |    71.8 |    48.9 |     9.1 |     5.8 |
+  | spsc-v3                |    82.9 |    43.3 |    18.9 |    15.0 |
+  | mpsc-v0                |       - |    80.1 |    45.0 |    26.2 |
+  | mpsc-v1                |   101.2 |    58.3 |    45.4 |    27.5 |
+  | mpsc-v2                |    85.3 |    37.1 |    13.4 |    14.4 |
+
+  | 2t 11,8 x-CCX          |     d=1 |     d=2 |     d=8 |    d=64 |
+  |------------------------|--------:|--------:|--------:|--------:|
+  | spsc-v0                |   385.7 |   232.4 |   194.4 |   229.4 |
+  | spsc-v1                |   480.7 |   233.5 |   142.6 |   107.9 |
+  | spsc-v2                |   213.9 |   121.5 |    37.3 |    17.5 |
+  | spsc-v3                |   216.2 |   170.3 |    68.4 |    31.6 |
+  | mpsc-v0                |       - |   213.1 |   108.8 |    93.1 |
+  | mpsc-v1                |   548.5 |   270.1 |   122.5 |    98.4 |
+  | mpsc-v2                |   221.0 |   130.6 |    34.6 |    19.0 |
+
+  | 2t 11,23 SMT           |     d=1 |     d=2 |     d=8 |    d=64 |
+  |------------------------|--------:|--------:|--------:|--------:|
+  | spsc-v0                |    33.1 |    15.5 |     7.1 |     7.1 |
+  | spsc-v1                |    53.6 |    27.1 |    16.1 |    13.2 |
+  | spsc-v2                |    44.2 |    23.0 |     8.0 |     7.8 |
+  | spsc-v3                |    42.9 |    30.0 |    20.0 |    21.0 |
+  | mpsc-v0                |       - |    27.2 |    17.1 |    15.4 |
+  | mpsc-v1                |    45.0 |    24.7 |    17.9 |    18.3 |
+  | mpsc-v2                |    53.5 |    27.9 |    16.9 |    17.1 |
 
   | 2t unpinned            |     d=1 |     d=2 |     d=8 |    d=64 |
   |------------------------|--------:|--------:|--------:|--------:|
-  | spsc-v0                |   352.8 |   202.7 |    32.0 |   208.1 |
-  | spsc-v1                |   465.9 |   213.3 |    49.0 |    33.8 |
-  | spsc-v2                |    74.5 |    35.3 |    34.2 |     5.8 |
-  | mpsc-v0                |       - |    64.8 |    40.9 |    27.0 |
-  | mpsc-v1                |   121.5 |    70.3 |    31.3 |    33.1 |
-
-  | 2t diff cores 0+3      |     d=1 |     d=2 |     d=8 |    d=64 |
-  |------------------------|--------:|--------:|--------:|--------:|
-  | spsc-v0                |   338.6 |   204.8 |   168.6 |   212.0 |
-  | spsc-v1                |   441.4 |   208.6 |   120.9 |   111.8 |
-  | spsc-v2                |   199.3 |   105.3 |    33.3 |    11.0 |
-  | mpsc-v0                |       - |   194.9 |   112.3 |    71.8 |
-  | mpsc-v1                |   462.8 |   197.5 |   112.2 |    78.3 |
-
-  | 2t same core 0+12      |     d=1 |     d=2 |     d=8 |    d=64 |
-  |------------------------|--------:|--------:|--------:|--------:|
-  | spsc-v0                |    30.1 |    14.7 |     7.1 |     6.8 |
-  | spsc-v1                |    50.2 |    26.1 |    15.2 |    12.2 |
-  | spsc-v2                |    39.6 |    21.0 |     7.1 |     7.1 |
-  | mpsc-v0                |       - |    23.8 |    15.8 |    15.0 |
-  | mpsc-v1                |    42.9 |    22.3 |    15.1 |    14.9 |
+  | spsc-v0                |   216.3 |    75.3 |    44.2 |    11.1 |
+  | spsc-v1                |   183.2 |    79.8 |    46.9 |    34.1 |
+  | spsc-v2                |   196.7 |   107.1 |    29.9 |    12.3 |
+  | spsc-v3                |   143.4 |    76.6 |    20.9 |    29.2 |
+  | mpsc-v0                |       - |   180.6 |    34.5 |    61.2 |
+  | mpsc-v1                |   459.4 |   202.0 |   103.0 |    80.8 |
+  | mpsc-v2                |   164.7 |   114.5 |    31.3 |    17.6 |
   ```
 
   ```text
   $ zc-ring-x1-demo
-  zc-ring-x1 0.15.8
-  demo: 1,000,000 messages each, depth 64
-  pool_alloc_free_1t (core 0):                    206,961,951 msgs/sec      4.8 ns/msg
-  global_alloc_free_1t (core 0):                  164,318,905 msgs/sec      6.1 ns/msg
+  zc-ring-x1 0.17.1-5
+  demo: 1,000,000 messages each, depth 64, base cpu 5
+  pool_alloc_free_1t (core 5):                    227,708,167 msgs/sec      4.4 ns/msg
+  global_alloc_free_1t (core 5):                  179,801,818 msgs/sec      5.6 ns/msg
 
-  spsc_ring_one_msg_1t (core 0):                  471,771,994 msgs/sec      2.1 ns/msg
-  spsc1_ring_one_msg_1t (core 0):                 165,022,274 msgs/sec      6.1 ns/msg
-  spsc2_ring_one_msg_1t (core 0):                 164,777,628 msgs/sec      6.1 ns/msg
-  mpsc_ring_one_msg_1t (core 0):                  140,478,421 msgs/sec      7.1 ns/msg
-  spsc_ring_one_pool_msg_1t (core 0):             111,374,350 msgs/sec      9.0 ns/msg
-  std_mpsc_one_pool_msg_1t (core 0):               43,080,082 msgs/sec     23.2 ns/msg
+  spsc_ring_one_msg_1t (core 5):                  570,357,602 msgs/sec      1.8 ns/msg
+  spsc1_ring_one_msg_1t (core 5):                 184,600,786 msgs/sec      5.4 ns/msg
+  spsc2_ring_one_msg_1t (core 5):                 197,204,002 msgs/sec      5.1 ns/msg
+  spsc3_ring_one_msg_1t (core 5):                  72,388,772 msgs/sec     13.8 ns/msg
+  mpsc0_ring_one_msg_1t (core 5):                 158,175,640 msgs/sec      6.3 ns/msg
+  mpsc1_ring_one_msg_1t (core 5):                 154,874,712 msgs/sec      6.5 ns/msg
+  mpsc2_ring_one_msg_1t (core 5):                 120,334,235 msgs/sec      8.3 ns/msg
+  spsc_ring_one_pool_msg_1t (core 5):             126,895,759 msgs/sec      7.9 ns/msg
+  std_mpsc_one_pool_msg_1t (core 5):               49,253,225 msgs/sec     20.3 ns/msg
 
-  spsc_ring_one_msg_2t (unpinned):                135,036,521 msgs/sec      7.4 ns/msg
-  spsc1_ring_one_msg_2t (unpinned):                52,420,838 msgs/sec     19.1 ns/msg
-  spsc2_ring_one_msg_2t (unpinned):               287,768,873 msgs/sec      3.5 ns/msg
-  mpsc_ring_one_msg_2t (unpinned):                 54,573,177 msgs/sec     18.3 ns/msg
-  spsc_ring_one_pool_msg_2t (unpinned):            17,264,744 msgs/sec     57.9 ns/msg
-  std_mpsc_one_pool_msg_2t (unpinned):              7,691,915 msgs/sec    130.0 ns/msg
-  mpsc_ring_one_msg_3t (2p+1c unpinned):           22,489,912 msgs/sec     44.5 ns/msg
+  spsc_ring_one_msg_2t (5,4 CCX):                 129,990,497 msgs/sec      7.7 ns/msg
+  spsc1_ring_one_msg_2t (5,4 CCX):                 57,964,502 msgs/sec     17.3 ns/msg
+  spsc2_ring_one_msg_2t (5,4 CCX):                333,848,015 msgs/sec      3.0 ns/msg
+  spsc3_ring_one_msg_2t (5,4 CCX):                 57,274,257 msgs/sec     17.5 ns/msg
+  mpsc0_ring_one_msg_2t (5,4 CCX):                 63,197,399 msgs/sec     15.8 ns/msg
+  mpsc1_ring_one_msg_2t (5,4 CCX):                 66,149,111 msgs/sec     15.1 ns/msg
+  mpsc2_ring_one_msg_2t (5,4 CCX):                137,871,378 msgs/sec      7.3 ns/msg
+  spsc_ring_one_pool_msg_2t (5,4 CCX):             19,923,164 msgs/sec     50.2 ns/msg
+  std_mpsc_one_pool_msg_2t (5,4 CCX):               8,283,694 msgs/sec    120.7 ns/msg
 
-  spsc_ring_one_msg_2t (diff cores 0+1):          134,961,126 msgs/sec      7.4 ns/msg
-  spsc1_ring_one_msg_2t (diff cores 0+1):          52,476,265 msgs/sec     19.1 ns/msg
-  spsc2_ring_one_msg_2t (diff cores 0+1):         286,991,067 msgs/sec      3.5 ns/msg
-  mpsc_ring_one_msg_2t (diff cores 0+1):           54,876,191 msgs/sec     18.2 ns/msg
-  spsc_ring_one_pool_msg_2t (diff cores 0+1):      17,706,459 msgs/sec     56.5 ns/msg
-  std_mpsc_one_pool_msg_2t (diff cores 0+1):        7,533,611 msgs/sec    132.7 ns/msg
+  spsc_ring_one_msg_2t (5,11 SMT):                165,661,186 msgs/sec      6.0 ns/msg
+  spsc1_ring_one_msg_2t (5,11 SMT):                81,511,138 msgs/sec     12.3 ns/msg
+  spsc2_ring_one_msg_2t (5,11 SMT):               241,918,881 msgs/sec      4.1 ns/msg
+  spsc3_ring_one_msg_2t (5,11 SMT):                64,507,314 msgs/sec     15.5 ns/msg
+  mpsc0_ring_one_msg_2t (5,11 SMT):                82,388,162 msgs/sec     12.1 ns/msg
+  mpsc1_ring_one_msg_2t (5,11 SMT):                86,338,674 msgs/sec     11.6 ns/msg
+  mpsc2_ring_one_msg_2t (5,11 SMT):               109,485,914 msgs/sec      9.1 ns/msg
+  spsc_ring_one_pool_msg_2t (5,11 SMT):            34,763,183 msgs/sec     28.8 ns/msg
+  std_mpsc_one_pool_msg_2t (5,11 SMT):             17,325,611 msgs/sec     57.7 ns/msg
 
-  spsc_ring_one_msg_2t (same core 0+6):           157,617,653 msgs/sec      6.3 ns/msg
-  spsc1_ring_one_msg_2t (same core 0+6):           71,234,178 msgs/sec     14.0 ns/msg
-  spsc2_ring_one_msg_2t (same core 0+6):          209,563,910 msgs/sec      4.8 ns/msg
-  mpsc_ring_one_msg_2t (same core 0+6):            75,434,424 msgs/sec     13.3 ns/msg
-  spsc_ring_one_pool_msg_2t (same core 0+6):       30,850,214 msgs/sec     32.4 ns/msg
-  std_mpsc_one_pool_msg_2t (same core 0+6):        15,636,071 msgs/sec     64.0 ns/msg
+  spsc_ring_one_msg_2t (unpinned):                124,253,994 msgs/sec      8.0 ns/msg
+  spsc1_ring_one_msg_2t (unpinned):                55,432,747 msgs/sec     18.0 ns/msg
+  spsc2_ring_one_msg_2t (unpinned):               288,657,603 msgs/sec      3.5 ns/msg
+  spsc3_ring_one_msg_2t (unpinned):                58,592,372 msgs/sec     17.1 ns/msg
+  mpsc0_ring_one_msg_2t (unpinned):                60,788,824 msgs/sec     16.5 ns/msg
+  mpsc1_ring_one_msg_2t (unpinned):                61,822,189 msgs/sec     16.2 ns/msg
+  mpsc2_ring_one_msg_2t (unpinned):               131,994,765 msgs/sec      7.6 ns/msg
+  spsc_ring_one_pool_msg_2t (unpinned):            19,286,700 msgs/sec     51.8 ns/msg
+  std_mpsc_one_pool_msg_2t (unpinned):              7,872,802 msgs/sec    127.0 ns/msg
+  mpsc1_ring_one_msg_3t (2p+1c unpinned):          23,902,238 msgs/sec     41.8 ns/msg
 
-  depth sweep: 1,000,000 messages per cell, ns/msg at depths 1, 2, 8, 64
+  depth sweep: 1,000,000 messages per cell, ns/msg at depths 1, 2, 8, 64, spsc-v3 and mpsc-v2 with 1 segment(s)
 
-  | 1t core 0              |     d=1 |     d=2 |     d=8 |    d=64 |
+  | 1t core 5              |     d=1 |     d=2 |     d=8 |    d=64 |
   |------------------------|--------:|--------:|--------:|--------:|
-  | spsc-v0                |     2.2 |     2.4 |     2.4 |     2.5 |
-  | spsc-v1                |     6.2 |     6.2 |     6.2 |     6.3 |
-  | spsc-v2                |     6.2 |     6.3 |     6.4 |     6.4 |
-  | mpsc-v0                |       - |     7.2 |     7.4 |     7.3 |
-  | mpsc-v1                |     7.3 |     7.2 |     7.0 |     7.2 |
+  | spsc-v0                |     2.3 |     1.9 |     1.9 |     1.9 |
+  | spsc-v1                |     5.3 |     5.5 |     5.5 |     5.4 |
+  | spsc-v2                |     5.0 |     5.2 |     5.2 |     5.2 |
+  | spsc-v3                |    15.4 |    13.4 |    13.6 |    13.4 |
+  | mpsc-v0                |       - |     6.4 |     6.4 |     6.4 |
+  | mpsc-v1                |     6.6 |     6.6 |     6.5 |     6.6 |
+  | mpsc-v2                |     8.5 |     8.4 |     8.4 |     8.5 |
+
+  | 2t 5,4 CCX             |     d=1 |     d=2 |     d=8 |    d=64 |
+  |------------------------|--------:|--------:|--------:|--------:|
+  | spsc-v0                |    67.1 |    40.7 |    14.1 |     7.4 |
+  | spsc-v1                |    50.3 |    36.5 |    17.8 |    15.6 |
+  | spsc-v2                |    40.6 |    25.0 |     7.5 |     3.1 |
+  | spsc-v3                |    67.7 |    43.9 |    17.7 |    17.0 |
+  | mpsc-v0                |       - |    39.2 |    17.8 |    17.3 |
+  | mpsc-v1                |    84.3 |    38.8 |    21.0 |    16.2 |
+  | mpsc-v2                |    43.1 |    28.3 |     7.7 |     7.0 |
+
+  | 2t 5,11 SMT            |     d=1 |     d=2 |     d=8 |    d=64 |
+  |------------------------|--------:|--------:|--------:|--------:|
+  | spsc-v0                |    27.5 |    14.6 |     5.4 |     6.1 |
+  | spsc-v1                |    43.4 |    24.3 |    13.3 |    12.3 |
+  | spsc-v2                |    20.2 |    10.8 |     4.9 |     4.5 |
+  | spsc-v3                |    53.0 |    26.4 |    15.8 |    15.6 |
+  | mpsc-v0                |       - |    22.8 |    12.9 |    12.0 |
+  | mpsc-v1                |    39.8 |    22.4 |    12.5 |    11.7 |
+  | mpsc-v2                |    32.7 |    17.1 |     9.0 |     9.1 |
 
   | 2t unpinned            |     d=1 |     d=2 |     d=8 |    d=64 |
   |------------------------|--------:|--------:|--------:|--------:|
-  | spsc-v0                |    55.5 |    39.4 |    12.3 |     7.3 |
-  | spsc-v1                |    79.2 |    40.3 |    18.0 |    17.9 |
-  | spsc-v2                |    41.5 |    27.2 |     8.7 |     3.6 |
-  | mpsc-v0                |       - |    39.6 |    19.4 |    16.7 |
-  | mpsc-v1                |    79.6 |    41.6 |    17.5 |    16.0 |
-
-  | 2t diff cores 0+1      |     d=1 |     d=2 |     d=8 |    d=64 |
-  |------------------------|--------:|--------:|--------:|--------:|
-  | spsc-v0                |    57.5 |    39.1 |    13.9 |     6.1 |
-  | spsc-v1                |    75.7 |    39.8 |    16.0 |    17.0 |
-  | spsc-v2                |    40.8 |    24.1 |     7.4 |     3.3 |
-  | mpsc-v0                |       - |    38.0 |    16.9 |    16.0 |
-  | mpsc-v1                |    79.6 |    38.8 |    17.1 |    16.6 |
-
-  | 2t same core 0+6       |     d=1 |     d=2 |     d=8 |    d=64 |
-  |------------------------|--------:|--------:|--------:|--------:|
-  | spsc-v0                |    27.8 |    14.7 |     5.1 |     5.6 |
-  | spsc-v1                |    43.1 |    24.3 |    13.3 |    12.3 |
-  | spsc-v2                |    27.0 |    10.7 |     4.5 |     4.5 |
-  | mpsc-v0                |       - |    22.6 |    12.8 |    12.6 |
-  | mpsc-v1                |    40.1 |    22.3 |    12.5 |    11.8 |
+  | spsc-v0                |    59.3 |    41.5 |    13.0 |     7.2 |
+  | spsc-v1                |    75.7 |    42.2 |    17.5 |    17.1 |
+  | spsc-v2                |    40.7 |    25.4 |     7.6 |     3.7 |
+  | spsc-v3                |    59.8 |    44.9 |    17.9 |    17.1 |
+  | mpsc-v0                |       - |    41.6 |    19.4 |    17.7 |
+  | mpsc-v1                |    79.1 |    41.8 |    18.9 |    17.3 |
+  | mpsc-v2                |    47.7 |    22.5 |     7.9 |     7.9 |
   ```
 - `cargo +nightly miri test`: the full suite under
   [Miri](https://github.com/rust-lang/miri), which checks the

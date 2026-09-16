@@ -10,7 +10,7 @@ use clap::Parser;
 use tp_matrix::{
     FLAVORS, Flavor, PLACEMENT_MEANING, StreamResult, XFILLS_MEANING, print_legend, run_stream,
 };
-use tp_runner::topo::{Placement, discover_placements};
+use tp_runner::topo::{BaseCpuArg, Placement, discover_placements};
 use tp_runner::{Cfg, CommonArgs};
 
 /// Banner: name, version, and tagline on one line, the first
@@ -35,6 +35,9 @@ const TOP_ABOUT: &str = concat!(
 struct Cli {
     #[command(flatten)]
     common: CommonArgs,
+
+    #[command(flatten)]
+    base: BaseCpuArg,
 
     /// Print a legend under the table explaining every column
     #[arg(short = 'v', long)]
@@ -110,7 +113,7 @@ fn main() {
     let cli = Cli::parse();
     println!("{TOP_ABOUT}");
     let cfg: Cfg = cli.common.to_cfg(None);
-    let placements = discover_placements();
+    let placements = discover_placements(cli.base.base_cpu);
     println!(
         "{} cells, {:.1}s each, spsc-v3 and mpsc-v2 with {} segments{}",
         placements.len() * FLAVORS.len() * cfg.depths.len(),

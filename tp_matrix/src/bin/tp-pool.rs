@@ -13,7 +13,7 @@ use clap::Parser;
 use tp_matrix::pool::{POOL_FLAVORS, PoolFlavor, PoolResult, run_pool_cell};
 use tp_matrix::{PLACEMENT_MEANING, XFILLS_MEANING, print_legend};
 use tp_runner::parse_depth;
-use tp_runner::topo::{Placement, discover_placements};
+use tp_runner::topo::{BaseCpuArg, Placement, discover_placements};
 
 /// Banner: name, version, and tagline on one line, the first
 /// line of every run and of `-h`/`--help`.
@@ -77,6 +77,9 @@ struct Cli {
     /// Runs per cell, the median reported
     #[arg(long, value_name = "N", default_value_t = 3, value_parser = parse_repeat)]
     repeat: usize,
+
+    #[command(flatten)]
+    base: BaseCpuArg,
 
     /// Print a legend after the last placement explaining every
     /// table and column
@@ -221,7 +224,7 @@ fn fills_cell(res: &PoolResult) -> String {
 fn main() {
     let cli = Cli::parse();
     println!("{TOP_ABOUT}");
-    let placements = discover_placements();
+    let placements = discover_placements(cli.base.base_cpu);
     let rows = rows(&cli.depth);
     println!(
         "{} cells, {}s each, median of {} runs{}",

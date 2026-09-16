@@ -14,7 +14,7 @@ use clap::Parser;
 use tp_matrix::{
     CellResult, FLAVORS, Flavor, PLACEMENT_MEANING, XFILLS_MEANING, print_legend, run_cell,
 };
-use tp_runner::topo::{Placement, discover_placements};
+use tp_runner::topo::{BaseCpuArg, Placement, discover_placements};
 use tp_runner::{Cfg, CommonArgs};
 use tprobe::{TProbe, ticks};
 
@@ -40,6 +40,9 @@ const TOP_ABOUT: &str = concat!(
 struct Cli {
     #[command(flatten)]
     common: CommonArgs,
+
+    #[command(flatten)]
+    base: BaseCpuArg,
 
     /// Print a legend under the table explaining every column
     #[arg(short = 'v', long)]
@@ -147,7 +150,7 @@ fn main() {
     let cli = Cli::parse();
     println!("{TOP_ABOUT}");
     let cfg: Cfg = cli.common.to_cfg(None);
-    let placements = discover_placements();
+    let placements = discover_placements(cli.base.base_cpu);
     let unit = if cfg.ticks { "tk" } else { "ns" };
     println!(
         "{} cells, {:.1}s each, spsc-v3 and mpsc-v2 with {} segments{}",
