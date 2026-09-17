@@ -202,7 +202,7 @@ throttling first, and the cordyceps row, unbounded, has no
 depth.
 
 ```sh
-$ tp-pool                                  # pools 1,100,1000; depths 1,8,64,1024; 0.1 s a run; median of 3
+$ tp-pool                                  # pools 1,100,1000 / depths 1,8,64,1024 / 0.1 s a run / median of 3
 $ tp-pool --pool 1,10,100 --depth 1,1024 -d 0.5 --repeat 5
 tp-pool 0.1.0 - run the pool-message sweep, one table per placement
 ...

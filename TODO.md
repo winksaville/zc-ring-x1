@@ -55,7 +55,7 @@ included. Every inbound link to a heading whose anchor moved resolves.
 - [docs: punctuation debt in the notes and READMEs][3] (done)
 - [docs: punctuation debt in the src comments][4] (done)
 - [docs: punctuation debt in the tp crates][5] (done)
-- [chore: a prose punctuation debt checker][6]
+- [chore: a prose punctuation debt checker][6] (done)
 - [docs: pay the punctuation debt closing][7]
 
 #### Deliberation
@@ -166,7 +166,7 @@ The comments under `tprobe/`, `tp_runner/`, and `tp_matrix/`.
 
 - Ten source files and the comment heading `tp_runner/Cargo.toml` paid, 55 lines.
 - Three user-visible messages changed, the refusals `tprobe` prints when the clock cannot be
-  trusted: an em dash became a comma or a period, and "; refusing to run." became its own
+  trusted: an em dash became a comma or a period, and `; refusing to run.` became its own
   sentence. No test or note quoted them.
   - A message string is prose in a source file, so its semicolon pays like a comment's.
 - A clap doc comment is the program's help text, and was treated as any other comment.
@@ -179,6 +179,22 @@ The comments under `tprobe/`, `tp_runner/`, and `tp_matrix/`.
 
 Nothing detects a new banned character or prose semicolon. A script blanks what is code and
 expects zero elsewhere, and is the cycle's acceptance check.
+
+- The script is `notes/prose-check.py`, grown from the finder the src rung used, and `[validate]`
+  runs it in both lists, since a doc-only rung under review validates with `--fast`.
+- What counts, by kind of file:
+  - Markdown: a banned character anywhere, and a semicolon outside fences and code spans, a
+    comment inside a fence counting as prose.
+  - Source: a banned character anywhere, a semicolon in a comment outside spans and doctest code,
+    and a semicolon between two words of a string literal.
+- Its first whole-tree run found five lines the sweeps had missed: three demo legend strings,
+  a fenced shell comment in the `tp_matrix` README, and a line of this block quoting a semicolon
+  outside a span. The string rule is the one the earlier finder lacked.
+- The exclusions and the one transcription are lists at the top of the script, so a new case is
+  an edit there and a reason in the commit.
+- It spells the banned characters as escapes, so it passes its own check.
+- Not covered: the `--workspace` build. The tp crates stay outside `[validate]` as before, and
+  only their punctuation is now checked on every run.
 
 ##### docs: pay the punctuation debt closing
 
