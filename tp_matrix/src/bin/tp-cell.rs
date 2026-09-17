@@ -71,7 +71,7 @@ struct Cli {
     flavor: FlavorArg,
 
     /// Pin main to MAIN and the worker to WORKER (cpu
-    /// numbers, e.g. `--pin 0,1`); omit to leave the scheduler
+    /// numbers, e.g. `--pin 0,1`), or omit to leave the scheduler
     /// free
     ///
     /// Placement decides what the handoff costs: two cores

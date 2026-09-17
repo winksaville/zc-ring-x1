@@ -12,16 +12,16 @@
 //!   access, and full is `p - c == M`, no sacrificial slot.
 //! - Messages move in place: the producer writes through a
 //!   [`WriteSlot`] `&mut T`, the consumer reads through a
-//!   [`ReadSlot`] `&T` — zerocopy traits bound `T`, no
+//!   [`ReadSlot`] `&T`, zerocopy traits bound `T`, no
 //!   serialization step. Each side reserves at most one slot at
 //!   a time, and the guard holds the endpoint borrow until commit /
 //!   release (or drop).
 //! - The SPSC protocol lives in the `spsc` module, and a
 //!   multi-producer sibling, [`MpscRing`], lives in the
-//!   `mpsc` module (gated on CAS support) — see its module
+//!   `mpsc` module (gated on CAS support), see its module
 //!   docs for the claim/seq protocol and closure-send API.
 //!   Primitive modules hold versioned sibling implementations
-//!   (`spsc::v0`, …) behind per-module default-version
+//!   (`spsc::v0`, ...) behind per-module default-version
 //!   re-exports, and this crate root re-exports the defaults.
 //! - How to use the segmented rings, [`Ring`] and
 //!   `mpsc::v2::MpscRing`, from a pool to two threads is the
@@ -37,7 +37,7 @@ use core::sync::atomic::AtomicU32;
 
 // The MPSC ring needs CAS (the claim), so it is gated. The
 // SPSC ring protocol stays load/store-only. (The pool's
-// free-stack also uses CAS and predates the gate — see
+// free-stack also uses CAS and predates the gate, see
 // notes/bugs.md.)
 #[cfg(target_has_atomic = "32")]
 pub mod mpsc;
@@ -65,7 +65,7 @@ pub const USER_WORDS: usize = 16;
 /// `reserve_slot_with` / `send_with` failed: every slot holds
 /// an uncommitted-or-unread message.
 ///
-/// - Shared by the ring primitives (SPSC reserve, MPSC send) —
+/// - Shared by the ring primitives (SPSC reserve, MPSC send),
 ///   defined in the crate core so no primitive depends on a
 ///   sibling's version module for its error type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +73,7 @@ pub struct Full;
 
 /// `reserve_slot_with` failed: no unread messages.
 ///
-/// - Shared by the ring primitives' consumer endpoints — see
+/// - Shared by the ring primitives' consumer endpoints, see
 ///   [`Full`] for why it lives in the crate core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Empty;
@@ -81,8 +81,8 @@ pub struct Empty;
 /// Cache-line-aligned wrapper granting its field sole
 /// ownership of the line.
 ///
-/// - `repr(align(N))` accepts only an integer literal — it
-///   cannot name [`CACHE_LINE_SIZE`] — so the `64` is written out
+/// - `repr(align(N))` accepts only an integer literal. It
+///   cannot name [`CACHE_LINE_SIZE`], so the `64` is written out
 ///   and a const assert ties them back together.
 #[repr(C, align(64))]
 struct CacheAligned<T>(T);
@@ -97,7 +97,7 @@ impl<T> core::ops::Deref for CacheAligned<T> {
     }
 }
 
-/// Errors from region validation — the rings' `init` / `attach`,
+/// Errors from region validation, the rings' `init` / `attach`,
 /// [`Ring::init`], and [`Pool::init`] / [`Pool::attach`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -116,7 +116,7 @@ pub enum Error {
     /// Pool: buffer count is zero or `u32::MAX` (the
     /// free-stack NIL sentinel).
     BadBufCount,
-    /// Attach: magic mismatch — not a region of the expected
+    /// Attach: magic mismatch, not a region of the expected
     /// kind.
     BadMagic,
     /// Attach: layout version mismatch.
@@ -134,7 +134,7 @@ pub enum Error {
 /// Check `T` fits a slot, called once per `reserve_slot_with`
 /// (both endpoints).
 ///
-/// - Panics on a type-geometry mismatch — that is a programming
+/// - Panics on a type-geometry mismatch. That is a programming
 ///   error, not a runtime condition.
 fn check_type<T>(slot_size: u32) {
     assert!(size_of::<T>() <= slot_size as usize, "T larger than slot");
@@ -145,7 +145,7 @@ fn check_type<T>(slot_size: u32) {
 }
 
 /// Non-panicking form of [`check_type`], for descriptor
-/// resolve — there the pool compared against is selected by
+/// resolve. There the pool compared against is selected by
 /// untrusted input, which must not be able to select a panic.
 fn type_fits<T>(slot_size: u32) -> bool {
     size_of::<T>() <= slot_size as usize && core::mem::align_of::<T>() <= CACHE_LINE_SIZE

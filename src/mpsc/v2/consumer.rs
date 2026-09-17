@@ -40,7 +40,7 @@ pub struct MpscConsumer<'a> {
     _region: PhantomData<&'a [u8]>,
 }
 
-// SAFETY: the handle owns the single-consumer role; shared state
+// SAFETY: the handle owns the single-consumer role, and shared state
 // (the header words, the slot seqs) is atomic with
 // Release/Acquire handoff.
 unsafe impl Send for MpscConsumer<'_> {}
@@ -90,7 +90,7 @@ impl<'a> MpscConsumer<'a> {
     /// - A seal naming a segment the ring does not have reads as
     ///   Empty, failing toward Empty as the rings do.
     /// - `on_empty` is called after each failed attempt with the
-    ///   attempt count (0-based, saturating); returning `false`
+    ///   attempt count (0-based, saturating), and returning `false`
     ///   gives up. Pass `|_| false` for a single non-blocking
     ///   probe.
     /// - Guard semantics as v1's: drop without release re-delivers

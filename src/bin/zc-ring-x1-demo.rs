@@ -1281,7 +1281,7 @@ fn legend(text: &str) {
 /// at depth 1, single-threaded and streaming across cores.
 fn segment_stress(placements: &[Placement]) {
     println!(
-        "segment stress: {} messages per line; spsc-v3 and mpsc-v2 at {STRESS_SEGMENTS} segments \
+        "segment stress: {} messages per line, spsc-v3 and mpsc-v2 at {STRESS_SEGMENTS} segments \
          of {DEPTH} slots, then the switch cost at depth 1",
         commas(COUNT)
     );
@@ -1369,7 +1369,7 @@ fn segment_stress(placements: &[Placement]) {
         LAG_PAUSE.as_micros()
     ));
     legend(
-        "shape: segments x slots per segment. The first rows are the stress shape; the switch \
+        "shape: segments x slots per segment. The first rows are the stress shape. The switch \
          cost rows are the same 32 slots as one segment, which never switches, and as 32 segments \
          of one slot, which switches on nearly every message.",
     );
@@ -1382,7 +1382,7 @@ fn segment_stress(placements: &[Placement]) {
     ));
     legend(
         "switch ns: the cost of one switch, the gap in ns/msg between the two shapes over the gap \
-         in sw/msg, on the 32x1 row. Single-threaded it is the instructions alone; streaming across \
+         in sw/msg, on the 32x1 row. Single-threaded it is the instructions alone. Streaming across \
          cores it includes the cold segment crossing.",
     );
 }

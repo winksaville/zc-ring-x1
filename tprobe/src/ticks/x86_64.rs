@@ -15,7 +15,7 @@ pub fn read_ticks() -> u64 {
 
 static TICKS_PER_NS: OnceLock<f64> = OnceLock::new();
 
-/// Cached calibration ratio; the first call runs [`calibrate`].
+/// Cached calibration ratio, the first call runs [`calibrate`].
 pub fn ticks_per_ns() -> f64 {
     *TICKS_PER_NS.get_or_init(calibrate)
 }
@@ -47,7 +47,7 @@ pub fn require_ok() {
         eprintln!(
             "error: invariant TSC not supported by this CPU \
              (CPUID.80000007h:EDX[bit 8] = 0). tprobe requires \
-             a fixed-rate, non-stopping TSC; refusing to run."
+             a fixed-rate, non-stopping TSC. Refusing to run."
         );
         std::process::exit(1);
     }
@@ -56,15 +56,15 @@ pub fn require_ok() {
         eprintln!(
             "error: TSC not selected as the kernel clocksource. \
              The CPU advertises invariant TSC, but the kernel has \
-             rejected it — likely a sync or drift issue. tprobe \
+             rejected it, likely a sync or drift issue. tprobe \
              won't use a clock source the kernel considers \
-             unreliable; refusing to run."
+             unreliable. Refusing to run."
         );
         std::process::exit(1);
     }
 }
 
-/// `CPUID.80000007h:EDX[bit 8]` — invariant TSC. Set iff the
+/// `CPUID.80000007h:EDX[bit 8]`: invariant TSC. Set iff the
 /// TSC runs at a constant rate regardless of P-state changes
 /// and keeps ticking in deep C-states. Both Intel and AMD
 /// expose the feature at this bit.
@@ -79,11 +79,11 @@ fn has_invariant_tsc() -> bool {
 }
 
 /// Whether the kernel's active clocksource is the TSC, per
-/// sysfs. An unreadable sysfs counts as "no" — refuse rather
+/// sysfs. An unreadable sysfs counts as "no". Refuse rather
 /// than trust an unverifiable clock.
 #[cfg(target_os = "linux")]
 fn kernel_clocksource_is_tsc() -> bool {
     std::fs::read_to_string("/sys/devices/system/clocksource/clocksource0/current_clocksource")
         .map(|s| s.trim() == "tsc")
-        .unwrap_or(false) // OK: unreadable sysfs → refuse (see doc)
+        .unwrap_or(false) // OK: unreadable sysfs -> refuse (see doc)
 }

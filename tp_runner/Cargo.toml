@@ -1,5 +1,5 @@
 # Local dev crate: the generic runner for phase-probed
-# measurement examples — CLI config, thread pinning, and the
+# measurement examples: CLI config, thread pinning, and the
 # fixed-duration round-trip drive loop. The probes themselves
 # live in the sibling tprobe crate.
 [package]

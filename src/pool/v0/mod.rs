@@ -1,5 +1,5 @@
 //! Message pool: fixed-size buffers over a caller-provided
-//! region, handed out through an intrusive LIFO free-stack —
+//! region, handed out through an intrusive LIFO free-stack,
 //! the allocation half of the messaging layer, decoupling
 //! "get a message" from "send it" (see the design doc's
 //! "Messaging layer: pools and descriptor queues").
@@ -9,15 +9,15 @@
 //!   `buf_count` buffers of `buf_size` bytes each.
 //! - The free-stack is intrusive with zero per-buffer
 //!   overhead: a *free* buffer's first word holds the index
-//!   of the next free buffer; an allocated buffer carries no
-//!   header at all (in-buffer provenance is deferred — the
-//!   descriptor is the travel form; see the design doc's
+//!   of the next free buffer. An allocated buffer carries no
+//!   header at all (in-buffer provenance is deferred. The
+//!   descriptor is the travel form. See the design doc's
 //!   "Descriptor and registry design (0.7.0)").
 //! - One owning allocator pops ([`Pool::alloc`], `&mut self`
-//!   as the in-process single-popper token); any holder
+//!   as the in-process single-popper token). Any holder
 //!   frees ([`BufSlot::free`], the MPSC push side). The
 //!   [`BufSlot`] guard does not borrow the pool, so any
-//!   number of allocated buffers may be live at once —
+//!   number of allocated buffers may be live at once,
 //!   the decoupling the messaging layer exists for.
 
 use core::marker::PhantomData;
@@ -29,12 +29,12 @@ use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 use crate::{CACHE_LINE_SIZE, CacheAligned, Error, check_type};
 
 /// `alloc` failed: no free buffer (or a peer-corrupted
-/// free-stack index — validation fails toward exhaustion,
+/// free-stack index, validation fails toward exhaustion,
 /// never toward handing out memory the pool doesn't own).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Exhausted;
 
-/// Layout marker written by [`Pool::init`]; rejects foreign
+/// Layout marker written by [`Pool::init`], and rejects foreign
 /// (including ring) regions on attach.
 const POOL_MAGIC: u32 = 0x5A43_5031; // "ZCP1"
 
@@ -47,29 +47,29 @@ const POOL_LAYOUT_VERSION: u32 = 1;
 ///   be distinguishable from the sentinel.
 const NIL: u32 = u32::MAX;
 
-/// Control block at offset 0 of a pool region — two cache
+/// Control block at offset 0 of a pool region, two cache
 /// lines: cold geometry, then the contended free-stack head.
 ///
 /// - line 0: geometry, written by [`Pool::init`] with `magic`
 ///   last (`Release`), read-only thereafter. Cold: per-op
 ///   paths use the handle's snapshot.
 /// - line 1: `first_free_idx`, CAS-contended by every freer and
-///   the allocator — sole owner of its line.
+///   the allocator, sole owner of its line.
 /// - Every field is atomic for the same reason as the ring
 ///   [`Header`](crate::spsc::v0::Header): a peer may be mapped at any
 ///   time, and scribbles must be garbage values, never UB.
 #[repr(C)]
 pub struct PoolHeader {
-    /// Layout marker ([`POOL_MAGIC`]); stored last by init
+    /// Layout marker ([`POOL_MAGIC`]), and stored last by init
     /// (`Release`), loaded first by attach (`Acquire`).
     magic: AtomicU32,
     /// Pool layout version ([`POOL_LAYOUT_VERSION`]).
     layout_version: AtomicU32,
-    /// Buffer size in bytes — a [`CACHE_LINE_SIZE`] multiple.
+    /// Buffer size in bytes, a [`CACHE_LINE_SIZE`] multiple.
     buf_size: AtomicU32,
-    /// Buffer count — nonzero, `< u32::MAX` ([`NIL`]).
+    /// Buffer count, nonzero, `< u32::MAX` ([`NIL`]).
     buf_count: AtomicU32,
-    /// [`CACHE_LINE_SIZE`] this region was built with; attach
+    /// [`CACHE_LINE_SIZE`] this region was built with, and attach
     /// validates it like the rest of the geometry.
     cache_line_size: AtomicU32,
     /// Free-stack head: index of the first free buffer, or
@@ -98,19 +98,19 @@ pub struct Pool<'a> {
     _region: PhantomData<&'a [u8]>,
 }
 
-// SAFETY: the handle owns the allocator role; the shared
+// SAFETY: the handle owns the allocator role. The shared
 // state it touches (first_free_idx, next-links) is atomic,
 // and buffer ownership is handed off with Release/Acquire
-// ordering — same rationale as the ring endpoints.
+// ordering, same rationale as the ring endpoints.
 unsafe impl Send for Pool<'_> {}
 
 impl<'a> Pool<'a> {
     /// Initialize a fresh region and return the pool over it,
     /// with every buffer on the free-stack.
     ///
-    /// - `buf_size` — bytes per buffer, a [`CACHE_LINE_SIZE`]
+    /// - `buf_size`: bytes per buffer, a [`CACHE_LINE_SIZE`]
     ///   multiple.
-    /// - `buf_count` — number of buffers, nonzero and
+    /// - `buf_count`: number of buffers, nonzero and
     ///   `< u32::MAX`.
     /// - The region must be [`CACHE_LINE_SIZE`]-aligned and at
     ///   least `size_of::<PoolHeader>() + buf_count *
@@ -118,7 +118,7 @@ impl<'a> Pool<'a> {
     pub fn init(region: &'a mut [u8], buf_size: u32, buf_count: u32) -> Result<Self, Error> {
         validate_pool_geometry(buf_size, buf_count)?;
         let len = region.len();
-        // Taken exactly once — same Stacked Borrows retag
+        // Taken exactly once, same Stacked Borrows retag
         // hazard as Ring::init.
         let base = region.as_mut_ptr();
         let header = pool_header_ptr(base, len)?;
@@ -126,8 +126,8 @@ impl<'a> Pool<'a> {
             return Err(Error::TooSmall);
         }
         // SAFETY: alignment + room for the PoolHeader checked
-        // by pool_header_ptr; region is exclusively borrowed
-        // for 'a; any byte pattern is a valid PoolHeader
+        // by pool_header_ptr, region is exclusively borrowed
+        // for 'a, and any byte pattern is a valid PoolHeader
         // (all-atomic fields, plain-byte padding).
         let header = unsafe { &*header };
         header
@@ -138,7 +138,7 @@ impl<'a> Pool<'a> {
         header
             .cache_line_size
             .store(CACHE_LINE_SIZE as u32, Ordering::Relaxed);
-        // SAFETY: in bounds — len >= header + buffers.
+        // SAFETY: in bounds, len >= header + buffers.
         let bufs = unsafe { base.add(size_of::<PoolHeader>()) };
         let pool = Pool {
             header,
@@ -170,12 +170,12 @@ impl<'a> Pool<'a> {
     ///   `'a`, genuinely shared and writable (e.g. a
     ///   `MAP_SHARED` mapping).
     /// - At most one attached handle acts as the pool's
-    ///   allocator (single-popper contract); any handle may
+    ///   allocator (single-popper contract). Any handle may
     ///   free.
     pub unsafe fn attach(region: *mut u8, len: usize) -> Result<Self, Error> {
         let header = pool_header_ptr(region, len)?;
         // SAFETY: alignment + room for the PoolHeader checked
-        // by pool_header_ptr; caller guarantees the memory is
+        // by pool_header_ptr. Caller guarantees the memory is
         // live and shared.
         let header = unsafe { &*header };
         // Acquire pairs with init's Release store of magic.
@@ -188,14 +188,14 @@ impl<'a> Pool<'a> {
         if header.cache_line_size.load(Ordering::Relaxed) != CACHE_LINE_SIZE as u32 {
             return Err(Error::BadCacheLine);
         }
-        // Snapshot geometry once; per-op paths never re-read.
+        // Snapshot geometry once. Per-op paths never re-read.
         let buf_size = header.buf_size.load(Ordering::Relaxed);
         let buf_count = header.buf_count.load(Ordering::Relaxed);
         validate_pool_geometry(buf_size, buf_count)?;
         if (len as u64) < pool_region_size(buf_size, buf_count) {
             return Err(Error::TooSmall);
         }
-        // SAFETY: in bounds — len >= header + buffers.
+        // SAFETY: in bounds, len >= header + buffers.
         let bufs = unsafe { region.add(size_of::<PoolHeader>()) };
         Ok(Pool {
             header,
@@ -209,23 +209,23 @@ impl<'a> Pool<'a> {
     /// Pop the first free buffer off the free-stack as an
     /// owned [`BufSlot`], or [`Exhausted`].
     ///
-    /// - `&mut self` is the in-process single-popper token;
+    /// - `&mut self` is the in-process single-popper token, and
     ///   cross-process, at most one attached handle allocates
     ///   (see [`Pool::attach`]). The guard does **not** borrow
-    ///   the pool — any number of allocated buffers may be
-    ///   live at once; per-buffer exclusivity comes from the
+    ///   the pool. Any number of allocated buffers may be
+    ///   live at once. Per-buffer exclusivity comes from the
     ///   free-stack protocol (each pop yields a distinct
     ///   index), not the borrow checker.
     /// - Validated pop: the head and its next-link live in
-    ///   peer-writable memory, so both are bounds-checked;
-    ///   corruption degrades to `Exhausted` (mirroring the
+    ///   peer-writable memory, so both are bounds-checked.
+    ///   Corruption degrades to `Exhausted` (mirroring the
     ///   ring's fail-toward-`Full` occupancy check), never to
     ///   an out-of-bounds buffer.
-    /// - A racing free moves the head and the CAS retries;
-    ///   with a single popper an in-flight head node cannot be
+    /// - A racing free moves the head and the CAS retries.
+    ///   With a single popper an in-flight head node cannot be
     ///   removed underneath us, so there is no ABA hazard.
     /// - `T` geometry is asserted on each call (a mismatch is
-    ///   a programming error, so it panics — same doctrine as
+    ///   a programming error, so it panics, same doctrine as
     ///   `reserve_slot_with`). A zero-sized `T` is legal and still
     ///   consumes a whole buffer: the buffer is the
     ///   allocation granule.
@@ -290,8 +290,8 @@ impl<'a> Pool<'a> {
     /// retry until a buffer frees up or the policy gives up.
     ///
     /// - `on_exhausted` is called after each failed attempt
-    ///   with the attempt count (0-based, saturating);
-    ///   returning `false` gives up → `Err(Exhausted)`.
+    ///   with the attempt count (0-based, saturating), and
+    ///   returning `false` gives up -> `Err(Exhausted)`.
     /// - See [`policy`](crate::policy) for shipped policies
     ///   and the composition model.
     pub fn alloc_with<T>(
@@ -331,9 +331,9 @@ impl<'a> Pool<'a> {
     ///
     /// - Derived from this handle (same provenance as its own
     ///   pointers), so no second region borrow and no Stacked
-    ///   Borrows retag hazard — `init`/`attach` take the
+    ///   Borrows retag hazard, `init`/`attach` take the
     ///   region pointer exactly once.
-    /// - Any number of views may exist; none can allocate, so
+    /// - Any number of views may exist, and none can allocate, so
     ///   the single-popper contract stays with this handle.
     pub fn resolver(&self) -> PoolResolver<'a> {
         PoolResolver {
@@ -344,25 +344,25 @@ impl<'a> Pool<'a> {
         }
     }
 
-    /// The next-free-buffer index cell of buffer `idx` — its
+    /// The next-free-buffer index cell of buffer `idx`, its
     /// first word, the intrusive free-stack link, meaningful
     /// only while the buffer is free.
     ///
-    /// - Returns the atomic cell, not the value; symmetric
+    /// - Returns the atomic cell, not the value, symmetric
     ///   with the header's `first_free_idx`.
     /// - Callers pass `idx < buf_count` (validated pops /
     ///   init's linking loop), keeping the deref in bounds.
     fn next_buf_idx(&self, idx: u32) -> &AtomicU32 {
         let p = self.buf_ptr(idx) as *const AtomicU32;
         // SAFETY: idx < buf_count keeps the buffer in the
-        // region validated at init/attach; the base is
+        // region validated at init/attach. The base is
         // cache-line aligned and buf_size is a line multiple,
-        // so the first word is 4-aligned; all peers access it
+        // so the first word is 4-aligned. All peers access it
         // as an atomic.
         unsafe { &*p }
     }
 
-    /// Pointer to buffer `idx`; callers pass
+    /// Pointer to buffer `idx`, and callers pass
     /// `idx < buf_count`.
     fn buf_ptr(&self, idx: u32) -> *mut u8 {
         // SAFETY: idx < buf_count, so the offset stays inside
@@ -375,9 +375,9 @@ impl<'a> Pool<'a> {
 /// buffer indices to owned [`BufSlot`] guards on behalf of a
 /// [`PoolRegistry`](crate::PoolRegistry).
 ///
-/// - Created by [`Pool::resolver`]; carries the same header
+/// - Created by [`Pool::resolver`], and carries the same header
 ///   ref, buffer base, and geometry snapshot as its pool.
-/// - Cannot allocate — the single-popper token stays with the
+/// - Cannot allocate, the single-popper token stays with the
 ///   owning [`Pool`] handle.
 /// - Identifies its pool by header address (see
 ///   [`PoolRegistry::into_desc`](crate::PoolRegistry::into_desc)).
@@ -393,7 +393,7 @@ pub struct PoolResolver<'a> {
     buf_count: u32,
 }
 
-// SAFETY: the view is read-only over its own fields; the only
+// SAFETY: the view is read-only over its own fields. The only
 // shared-memory mutation reachable through it is the minted
 // guards' free CAS, which is the free-stack's any-thread MPSC
 // push side. Allocation (the single-popper role) is not
@@ -405,7 +405,7 @@ unsafe impl Send for PoolResolver<'_> {}
 unsafe impl Sync for PoolResolver<'_> {}
 
 impl<'a> PoolResolver<'a> {
-    /// The pool's header address — its identity for registry
+    /// The pool's header address, its identity for registry
     /// lookups.
     pub(crate) fn header_ptr(&self) -> *const PoolHeader {
         self.header
@@ -431,7 +431,7 @@ impl<'a> PoolResolver<'a> {
     ///   came from a consumed guard via
     ///   [`PoolRegistry::into_desc`](crate::PoolRegistry::into_desc),
     ///   arrived with happens-before ordering, and is resolved
-    ///   exactly once) — minting a second live guard for one
+    ///   exactly once), minting a second live guard for one
     ///   buffer aliases `&mut T`.
     pub(crate) unsafe fn slot_from_idx<T>(&self, idx: u32) -> BufSlot<'a, T>
     where
@@ -454,8 +454,8 @@ impl<'a> PoolResolver<'a> {
 /// An allocated buffer, owned until [`free`](BufSlot::free):
 /// `DerefMut` to use it as a `T` in place.
 ///
-/// - Does not borrow the [`Pool`] — hold any number, as long
-///   as you like; getting a buffer implies nothing about
+/// - Does not borrow the [`Pool`], hold any number, as long
+///   as you like, and getting a buffer implies nothing about
 ///   when (or whether) it is sent or freed.
 /// - Dropping without `free` leaks the buffer until the pool
 ///   is re-initialized (the abandon analog of the ring's
@@ -464,7 +464,7 @@ pub struct BufSlot<'p, T: ?Sized> {
     /// The pool's control block (for the free CAS).
     header: &'p PoolHeader,
     /// Base of the owned buffer. Raw, and references are
-    /// minted per access — same aliasing rationale as the
+    /// minted per access, same aliasing rationale as the
     /// ring guards.
     buf: *mut u8,
     /// Snapshot of the pool's buffer size, the length a
@@ -477,7 +477,7 @@ pub struct BufSlot<'p, T: ?Sized> {
 }
 
 // SAFETY: the guard owns its buffer exclusively (the pop
-// removed it from every shared structure); free's CAS is the
+// removed it from every shared structure). Free's CAS is the
 // only shared-state touch and is properly ordered.
 unsafe impl<T: ?Sized + Send> Send for BufSlot<'_, T> {}
 
@@ -496,7 +496,7 @@ impl<T> Deref for BufSlot<'_, T> {
 impl<T> DerefMut for BufSlot<'_, T> {
     /// Write access to the buffer as a `T`.
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as in deref; &mut self gives exclusivity of
+        // SAFETY: as in deref, and &mut self gives exclusivity of
         // the minted reference.
         unsafe { &mut *(self.buf as *mut T) }
     }
@@ -517,14 +517,14 @@ impl Deref for BufSlot<'_, [u8]> {
 impl DerefMut for BufSlot<'_, [u8]> {
     /// Write access to the whole buffer as bytes.
     fn deref_mut(&mut self) -> &mut [u8] {
-        // SAFETY: as in deref; &mut self gives exclusivity of
+        // SAFETY: as in deref, and &mut self gives exclusivity of
         // the minted slice.
         unsafe { core::slice::from_raw_parts_mut(self.buf, self.buf_size as usize) }
     }
 }
 
 impl<T: ?Sized> BufSlot<'_, T> {
-    /// The owning pool's header address — matched against a
+    /// The owning pool's header address, matched against a
     /// registry entry's [`PoolResolver::header_ptr`] by
     /// [`PoolRegistry::into_desc`](crate::PoolRegistry::into_desc).
     pub(crate) fn header_ptr(&self) -> *const PoolHeader {
@@ -546,15 +546,15 @@ impl<T: ?Sized> BufSlot<'_, T> {
 
     /// Push the buffer back onto the pool's free-stack.
     ///
-    /// - Any holder may free — this is the free-stack's MPSC
-    ///   push side; only allocation is single-popper.
+    /// - Any holder may free: this is the free-stack's MPSC
+    ///   push side. Only allocation is single-popper.
     /// - The CAS retries only when another free (or the
     ///   allocator's pop) moves the head first.
     pub fn free(self) {
         // The buffer's first word becomes its next-link again.
         let link = self.buf as *const AtomicU32;
         // SAFETY: buf is in-bounds and 4-aligned (cache-line
-        // aligned base); the guard still owns the buffer, and
+        // aligned base). The guard still owns the buffer, and
         // all peers access this word as an atomic.
         let link = unsafe { &*link };
         loop {
@@ -576,10 +576,10 @@ impl<T: ?Sized> BufSlot<'_, T> {
 }
 
 /// Validate a region base pointer and cast it to the
-/// `PoolHeader` it must start with; shared by
+/// `PoolHeader` it must start with, shared by
 /// [`Pool::init`] / [`Pool::attach`].
 ///
-/// - Checks alignment and room for the header itself; the
+/// - Checks alignment and room for the header itself. The
 ///   full-geometry length check stays with the caller (init
 ///   knows the geometry from parameters, attach only after
 ///   reading the header).
@@ -593,7 +593,7 @@ fn pool_header_ptr(base: *mut u8, len: usize) -> Result<*const PoolHeader, Error
     Ok(base as *const PoolHeader)
 }
 
-/// Bytes needed for a pool region with the given geometry —
+/// Bytes needed for a pool region with the given geometry,
 /// computed in u64 for the same 32-bit wrap reason as the
 /// ring's `region_size`.
 fn pool_region_size(buf_size: u32, buf_count: u32) -> u64 {
@@ -620,7 +620,7 @@ mod tests {
     use super::*;
     use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-    /// Test message; two words so a torn write would be
+    /// Test message, two words so a torn write would be
     /// visible.
     #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Debug, PartialEq)]
     #[repr(C)]
@@ -676,7 +676,7 @@ mod tests {
             Error::Misaligned
         );
         // 32-bit tripwire: size * count wraps a 32-bit usize
-        // (2^26 * 2^6 = 2^32); u64 region math must reject it.
+        // (2^26 * 2^6 = 2^32), and u64 region math must reject it.
         assert_eq!(
             Pool::init(&mut r.0, 1 << 26, 1 << 6).err().unwrap(),
             Error::TooSmall
@@ -721,7 +721,7 @@ mod tests {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
 
-        // All four live at once — the decoupling: no guard
+        // All four live at once, the decoupling: no guard
         // blocks the next alloc.
         let mut bufs = Vec::new();
         for i in 0..4u64 {
@@ -777,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    // Dropping the guard is the behavior under test; BufSlot
+    // Dropping the guard is the behavior under test. BufSlot
     // has no Drop impl by design (drop = leak, documented).
     #[allow(clippy::drop_non_drop)]
     fn dropped_guard_leaks_its_buffer() {
@@ -804,13 +804,13 @@ mod tests {
         pool.header.first_free_idx.store(1000, Ordering::Relaxed);
         assert_eq!(pool.alloc::<Msg>().err().unwrap(), Exhausted);
 
-        // Valid head, corrupted next-link: still refused —
+        // Valid head, corrupted next-link: still refused,
         // the pop validates both before touching anything.
         pool.header.first_free_idx.store(0, Ordering::Relaxed);
         pool.next_buf_idx(0).store(77, Ordering::Relaxed);
         assert_eq!(pool.alloc::<Msg>().err().unwrap(), Exhausted);
 
-        // Repairing the link restores service — degraded,
+        // Repairing the link restores service, degraded,
         // never bricked.
         pool.next_buf_idx(0).store(NIL, Ordering::Relaxed);
         let a = pool.alloc::<Msg>().unwrap();
@@ -858,7 +858,7 @@ mod tests {
     #[test]
     fn internally_aligned_types_work() {
         /// Alignment 32 (≤ CACHE_LINE_SIZE), no padding, so the
-        /// zerocopy derives accept it; the buffer base is
+        /// zerocopy derives accept it. The buffer base is
         /// line-aligned, satisfying any align ≤ CACHE_LINE_SIZE.
         #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
         #[repr(C, align(32))]
@@ -901,7 +901,7 @@ mod tests {
 
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, TEST_CACHE_LINE_SIZE, 4).unwrap();
-        // Legal, and each one occupies a whole buffer — the
+        // Legal, and each one occupies a whole buffer, the
         // buffer is the allocation granule.
         let a = pool.alloc::<Zst>().unwrap();
         let b = pool.alloc::<Zst>().unwrap();
@@ -917,7 +917,7 @@ mod tests {
     #[test]
     fn threaded_alloc_here_free_there() {
         // Allocator thread allocs and hands guards to a freer
-        // thread; recycling means total allocations far
+        // thread, and recycling means total allocations far
         // exceed buf_count. Reduced under Miri (interpreted
         // spin loops are slow).
         const COUNT: u64 = if cfg!(miri) { 200 } else { 100_000 };

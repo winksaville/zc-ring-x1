@@ -3,12 +3,12 @@
 //! equality-seq ring" section. A sibling of v0 under the same
 //! module layout, so the two measure side by side:
 //!
-//! - Same region shape as the SPSC ring — a four-line
-//!   [`MpscHeader`] then slots — plus a per-slot sequence
+//! - Same region shape as the SPSC ring (a four-line
+//!   [`MpscHeader`] then slots), plus a per-slot sequence
 //!   array between them: `seq[pos]` publishes each slot
 //!   independently, because claim order and commit order
 //!   differ under concurrent producers.
-//! - Producers CAS-claim `producer_idx`; the consumer stays
+//! - Producers CAS-claim `producer_idx`. The consumer stays
 //!   CAS-free. Fullness is read from the slot seq, so
 //!   producers never load `consumer_idx`.
 //! - `capacity` may be any power of two down to 1, the change
@@ -20,8 +20,8 @@
 //!   the other, and cross-attaching fails toward
 //!   [`Error::BadMagic`].
 //! - The claim CAS raises the atomic floor for MPSC users
-//!   only — this module is gated on `target_has_atomic =
-//!   "32"`; the SPSC ring stays load/store-only.
+//!   only: this module is gated on `target_has_atomic =
+//!   "32"`, and the SPSC ring stays load/store-only.
 
 use core::marker::PhantomData;
 use core::mem::size_of;
@@ -35,17 +35,17 @@ mod producer;
 pub use consumer::{MpscConsumer, MpscReadSlot};
 pub use producer::MpscProducer;
 
-/// Layout marker written by [`MpscRing::init`]; distinct from
+/// Layout marker written by [`MpscRing::init`], distinct from
 /// the SPSC and MPSC v0 magics so a cross-kind or cross-version
 /// attach fails toward [`Error::BadMagic`]: a v0 region carries
 /// v0's seq values, which this ring would misread.
 const MPSC_MAGIC: u32 = 0x5A43_4D32; // "ZCM2"
 
-/// Bumped on any change to the MPSC v1 region layout;
+/// Bumped on any change to the MPSC v1 region layout,
 /// independent of the v0 and SPSC layout versions.
 const MPSC_LAYOUT_VERSION: u32 = 1;
 
-/// Capacity bound: `2^30`, not the SPSC `2^31` — the seq
+/// Capacity bound: `2^30`, not the SPSC `2^31`, the seq
 /// tombstone encoding reserves index-arithmetic headroom (see
 /// the design doc's "MPSC open questions").
 const MPSC_MAX_CAPACITY: u32 = 1 << 30;
@@ -58,45 +58,45 @@ const MPSC_MAX_CAPACITY: u32 = 1 << 30;
 /// - Unambiguous at both wait points: the consumer at `c`
 ///   legitimately sees only `c` (not yet committed),
 ///   `c + M + 1` (committed), or that plus `2^31` (tombstone),
-///   distinct while `M <= 2^30`; a producer reads a tombstoned
+///   distinct while `M <= 2^30`, and a producer reads a tombstoned
 ///   previous lap as anything but `pos`, so "full", until the
 ///   consumer skips it, which is the correct backpressure.
 pub(crate) const TOMBSTONE: u32 = 1 << 31;
 
-/// Control block at offset 0 of an MPSC region — same
+/// Control block at offset 0 of an MPSC region, same
 /// four-line shape as the SPSC [`Header`](crate::spsc::v0::Header), but
 /// its own type: the layouts evolve independently and the
 /// index-ownership story differs.
 ///
 /// - line 0: geometry, written by [`MpscRing::init`] with
 ///   `magic` last (`Release`), read-only thereafter.
-/// - line 1: `producer_idx` — CAS-claimed by *all* producers
-///   (the contended line), never read by the consumer's hot
+/// - line 1: `producer_idx` (CAS-claimed by *all* producers,
+///   the contended line), never read by the consumer's hot
 ///   path.
-/// - line 2: `consumer_idx` — written only by the consumer;
+/// - line 2: `consumer_idx` (written only by the consumer),
 ///   never read by producers (fullness comes from the slot
 ///   seq), so it is resume state and diagnostic occupancy.
-/// - line 3: `user`, app-owned scratch — same contract as the
+/// - line 3: `user`, app-owned scratch, same contract as the
 ///   SPSC user line.
 /// - Every field is atomic: the region may be mapped by a
 ///   peer at any time.
 #[repr(C)]
 pub struct MpscHeader {
-    /// Layout marker ([`MPSC_MAGIC`]); stored last by init
+    /// Layout marker ([`MPSC_MAGIC`]), stored last by init
     /// (`Release`), loaded first by attach (`Acquire`).
     magic: AtomicU32,
     /// Layout version ([`MPSC_LAYOUT_VERSION`]).
     layout_version: AtomicU32,
-    /// Slot size N in bytes — a [`CACHE_LINE_SIZE`] multiple.
+    /// Slot size N in bytes, a [`CACHE_LINE_SIZE`] multiple.
     slot_size: AtomicU32,
-    /// Slot count M — a power of two `<= 2^30`.
+    /// Slot count M, a power of two `<= 2^30`.
     capacity: AtomicU32,
     /// [`CACHE_LINE_SIZE`] this region was built with.
     cache_line_size: AtomicU32,
     /// Free-running count of slot positions claimed by
     /// producers (CAS).
     producer_idx: CacheAligned<AtomicU32>,
-    /// Free-running count of messages released; consumer-owned
+    /// Free-running count of messages released, consumer-owned
     /// resume state, not read by producers.
     consumer_idx: CacheAligned<AtomicU32>,
     /// App-owned scratch line ([`USER_WORDS`] words): zeroed by
@@ -133,15 +133,15 @@ pub struct MpscRing<'a> {
 impl<'a> MpscRing<'a> {
     /// Initialize a fresh region and return the ring over it.
     ///
-    /// - `slot_size` — N bytes per slot, a [`CACHE_LINE_SIZE`]
+    /// - `slot_size`: N bytes per slot, a [`CACHE_LINE_SIZE`]
     ///   multiple.
-    /// - `capacity` — M slots, a power of two from 1 to `2^30`.
+    /// - `capacity`: M slots, a power of two from 1 to `2^30`.
     /// - The region must be [`CACHE_LINE_SIZE`]-aligned and at
     ///   least [`mpsc_region_size`] bytes.
     pub fn init(region: &'a mut [u8], slot_size: u32, capacity: u32) -> Result<Self, Error> {
         validate_mpsc_geometry(slot_size, capacity)?;
         let len = region.len();
-        // Taken exactly once — see `Ring::init` for the Stacked
+        // Taken exactly once, see `Ring::init` for the Stacked
         // Borrows rationale.
         let base = region.as_mut_ptr();
         let header = mpsc_header_ptr(base, len)?;
@@ -149,8 +149,8 @@ impl<'a> MpscRing<'a> {
             return Err(Error::TooSmall);
         }
         // SAFETY: alignment + room for the MpscHeader checked
-        // by mpsc_header_ptr; region is exclusively borrowed
-        // for 'a; any byte pattern is a valid MpscHeader
+        // by mpsc_header_ptr, region is exclusively borrowed
+        // for 'a, and any byte pattern is a valid MpscHeader
         // (all-atomic fields, plain-byte padding).
         let header = unsafe { &*header };
         header
@@ -166,7 +166,7 @@ impl<'a> MpscRing<'a> {
         for word in header.user.iter() {
             word.store(0, Ordering::Relaxed);
         }
-        // SAFETY: in bounds — len covers header + seq array.
+        // SAFETY: in bounds, len covers header + seq array.
         let seqs = unsafe { base.add(size_of::<MpscHeader>()) } as *const AtomicU32;
         // seq[i] = i marks every slot claimable by the position
         // that will first reach it.
@@ -179,7 +179,7 @@ impl<'a> MpscRing<'a> {
         // never observe the magic before the geometry and seq
         // stores it validates and relies on.
         header.magic.store(MPSC_MAGIC, Ordering::Release);
-        // SAFETY: in bounds — len covers header + seqs + slots.
+        // SAFETY: in bounds, len covers header + seqs + slots.
         let slots = unsafe { base.add(slots_offset(capacity)) };
         Ok(MpscRing {
             header,
@@ -200,12 +200,12 @@ impl<'a> MpscRing<'a> {
     /// - `region` points to `len` bytes of memory that outlive
     ///   `'a`, genuinely shared and writable (e.g. a
     ///   `MAP_SHARED` mapping).
-    /// - At most one consumer attaches; any number of
+    /// - At most one consumer attaches, and any number of
     ///   producers may (MPSC contract).
     pub unsafe fn attach(region: *mut u8, len: usize) -> Result<Self, Error> {
         let header = mpsc_header_ptr(region, len)?;
         // SAFETY: alignment + room for the MpscHeader checked
-        // by mpsc_header_ptr; caller guarantees the memory is
+        // by mpsc_header_ptr, and caller guarantees the memory is
         // live and shared.
         let header = unsafe { &*header };
         // Acquire pairs with init's Release store of magic: a
@@ -220,14 +220,14 @@ impl<'a> MpscRing<'a> {
         if header.cache_line_size.load(Ordering::Relaxed) != CACHE_LINE_SIZE as u32 {
             return Err(Error::BadCacheLine);
         }
-        // Snapshot geometry once; per-op paths never re-read it.
+        // Snapshot geometry once. Per-op paths never re-read it.
         let slot_size = header.slot_size.load(Ordering::Relaxed);
         let capacity = header.capacity.load(Ordering::Relaxed);
         validate_mpsc_geometry(slot_size, capacity)?;
         if (len as u64) < mpsc_region_size(slot_size, capacity) {
             return Err(Error::TooSmall);
         }
-        // SAFETY: in bounds — len covers header + seqs + slots.
+        // SAFETY: in bounds, len covers header + seqs + slots.
         let seqs = unsafe { region.add(size_of::<MpscHeader>()) } as *const AtomicU32;
         // SAFETY: as above.
         let slots = unsafe { region.add(slots_offset(capacity)) };
@@ -246,7 +246,7 @@ impl<'a> MpscRing<'a> {
     ///
     /// - The producer is `Clone`: one clone per producing
     ///   thread (MPSC contract). The consumer is unique per
-    ///   process; cross-process, exactly one consuming process
+    ///   process, and cross-process, exactly one consuming process
     ///   is the caller's contract (see [`MpscRing::attach`]).
     pub fn split(self) -> (MpscProducer<'a>, MpscConsumer<'a>) {
         (
@@ -271,7 +271,7 @@ impl<'a> MpscRing<'a> {
 }
 
 /// Validate a region base pointer and cast it to the
-/// [`MpscHeader`] it must start with; shared by init / attach.
+/// [`MpscHeader`] it must start with, shared by init / attach.
 ///
 /// - Same split of duties as the SPSC `header_ptr`: alignment
 ///   and header room here, full-geometry length with the
@@ -299,8 +299,8 @@ fn seq_bytes(capacity: u32) -> u64 {
 /// array.
 ///
 /// - usize return: callers offset a pointer with it, and only
-///   after the u64 region-size check has proven the region —
-///   hence this offset — fits in memory.
+///   after the u64 region-size check has proven the region
+///   (hence this offset) fits in memory.
 fn slots_offset(capacity: u32) -> usize {
     size_of::<MpscHeader>() + seq_bytes(capacity) as usize
 }
@@ -315,7 +315,7 @@ pub fn mpsc_region_size(slot_size: u32, capacity: u32) -> u64 {
 
 /// Geometry checks for [`MpscRing::init`] / [`MpscRing::attach`].
 ///
-/// - Slot size as the SPSC ring; capacity additionally capped
+/// - Slot size as the SPSC ring, capacity additionally capped
 ///   at [`MPSC_MAX_CAPACITY`] for tombstone headroom.
 fn validate_mpsc_geometry(slot_size: u32, capacity: u32) -> Result<(), Error> {
     if slot_size == 0 || !(slot_size as usize).is_multiple_of(CACHE_LINE_SIZE) {
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn mpsc_region_size_accounts_for_seq_array() {
-        // 4 slots: header 256 + seq 16→64 + slots 256 = 576.
+        // 4 slots: header 256 + seq 16->64 + slots 256 = 576.
         assert_eq!(mpsc_region_size(64, 4), 576);
         // 32 slots: seq 128 is already a line multiple.
         assert_eq!(
@@ -390,7 +390,7 @@ mod tests {
             Error::Misaligned
         );
         // 32-bit tripwire, as the SPSC test: N * M wraps a
-        // 32-bit usize; the u64 region size must still reject.
+        // 32-bit usize, and the u64 region size must still reject.
         assert_eq!(
             MpscRing::init(&mut r.0, 1 << 26, 1 << 6).err().unwrap(),
             Error::TooSmall
@@ -410,7 +410,7 @@ mod tests {
         r.0.fill(0xAA);
         let ring = MpscRing::init(&mut r.0, 64, 4).unwrap();
         for i in 0..4 {
-            // SAFETY: i < capacity; test mirrors init's bounds.
+            // SAFETY: i < capacity, test mirrors init's bounds.
             let seq = unsafe { &*ring.seqs.add(i as usize) };
             assert_eq!(seq.load(Ordering::Relaxed), i);
         }
@@ -441,14 +441,14 @@ mod tests {
 
     #[test]
     fn cross_kind_attach_fails_bad_magic() {
-        // An SPSC-initialized region is not an MPSC region…
+        // An SPSC-initialized region is not an MPSC region...
         let mut r = Region::new();
         Ring::init(&mut r.0, 64, 4).unwrap();
         let err = unsafe { MpscRing::attach(r.0.as_mut_ptr(), r.0.len()) }
             .err()
             .unwrap();
         assert_eq!(err, Error::BadMagic);
-        // …and an MPSC-initialized region is not an SPSC one.
+        // ...and an MPSC-initialized region is not an SPSC one.
         let mut r = Region::new();
         MpscRing::init(&mut r.0, 64, 4).unwrap();
         let err = unsafe { Ring::attach(r.0.as_mut_ptr(), r.0.len()) }
@@ -478,7 +478,7 @@ mod tests {
     use crate::{Empty, Full};
     use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-    /// Test message; two words so a torn write would be
+    /// Test message, two words so a torn write would be
     /// visible, `val` doubles as the producer id in threaded
     /// tests.
     #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Debug, PartialEq)]
@@ -512,7 +512,7 @@ mod tests {
             Full
         );
 
-        // Drain in order; then empty again.
+        // Drain in order, then empty again.
         for i in 0..4u64 {
             let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
             assert_eq!(
@@ -559,8 +559,8 @@ mod tests {
         assert_eq!(seen, [0, 1, 2]);
 
         // Fill the ring: the producer's policy gives up with
-        // Err(Full), and the failed send has zero footprint —
-        // the fill closure never ran.
+        // Err(Full), and the failed send has zero footprint
+        // (the fill closure never ran).
         for i in 0..4u64 {
             prod.send_with::<Msg>(|_| false, |m| m.seq = i).unwrap();
         }
@@ -621,7 +621,7 @@ mod tests {
             prod.send_with::<Msg>(
                 |_| false,
                 |m| {
-                    m.seq = 99; // partially filled, then…
+                    m.seq = 99; // partially filled, then...
                     panic!("fill panics");
                 },
             )
@@ -629,7 +629,7 @@ mod tests {
         assert!(unwound.is_err());
         prod.send_with::<Msg>(|_| false, |m| m.seq = 2).unwrap();
 
-        // The consumer sees 1 then 2; the tombstoned slot is
+        // The consumer sees 1 then 2, and the tombstoned slot is
         // released without delivery.
         let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
         assert_eq!(msg.seq, 1);
@@ -659,12 +659,12 @@ mod tests {
         // Simulate a long-running ring two commits shy of the
         // u32 wrap: indices at MAX-1, and each slot's seq must
         // equal the free-running position that will next claim
-        // it (positions MAX-1, MAX, 0, 1 → slots 2, 3, 0, 1).
+        // it (positions MAX-1, MAX, 0, 1 -> slots 2, 3, 0, 1).
         let start = u32::MAX - 1;
         ring.header.producer_idx.store(start, Ordering::Relaxed);
         ring.header.consumer_idx.store(start, Ordering::Relaxed);
         for (slot, pos) in [(2u32, u32::MAX - 1), (3, u32::MAX), (0, 0), (1, 1)] {
-            // SAFETY: slot < capacity; test mirrors init.
+            // SAFETY: slot < capacity, test mirrors init.
             unsafe { &*ring.seqs.add(slot as usize) }.store(pos, Ordering::Relaxed);
         }
         let (prod, mut cons) = ring.split();
@@ -791,7 +791,7 @@ mod tests {
                 });
             }
             s.spawn(move || {
-                // Global arrival order is claim order; only
+                // Global arrival order is claim order, and only
                 // per-producer FIFO is promised.
                 let mut next = [0u64; PRODUCERS as usize];
                 for _ in 0..PRODUCERS * COUNT {

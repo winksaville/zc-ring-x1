@@ -24,7 +24,7 @@ pub struct MpscProducer<'a> {
 }
 
 impl Clone for MpscProducer<'_> {
-    /// A second producing handle over the same ring; the claim
+    /// A second producing handle over the same ring, and the claim
     /// CAS serializes them.
     fn clone(&self) -> Self {
         MpscProducer { ..*self }
@@ -52,7 +52,7 @@ struct TombstoneOnUnwind<'s> {
 }
 
 impl Drop for TombstoneOnUnwind<'_> {
-    /// Unwind path only; the normal path disarms with
+    /// Unwind path only, and the normal path disarms with
     /// `mem::forget`.
     fn drop(&mut self) {
         self.seq.store(self.commit | TOMBSTONE, Ordering::Release);
@@ -93,15 +93,15 @@ impl<'a> MpscProducer<'a> {
     }
 
     /// Claim the next position, fill it in place, commit on
-    /// closure return; retry a full ring under the injected wait
+    /// closure return, and retry a full ring under the injected wait
     /// policy, then [`Full`].
     ///
-    /// - `fill` writes the message through `&mut T`; commit is by
+    /// - `fill` writes the message through `&mut T`, and commit is by
     ///   construction, so there is no abandonment state. If `fill`
     ///   panics, the unwind publishes a tombstoned commit the
     ///   consumer skips.
     /// - `on_full` is called after each failed attempt with the
-    ///   attempt count (0-based, saturating); returning `false`
+    ///   attempt count (0-based, saturating), and returning `false`
     ///   gives up. Pass `|_| false` for a single non-blocking
     ///   probe. Full means the current segment's next slot is
     ///   unread and no segment is free.

@@ -47,6 +47,13 @@ Bot-facing workflow and conventions live in
   comments, `// OK: ...` on `unwrap*` calls, ask-on-ambiguity,
   stuck detection.
 
+- [prose-check.py](prose-check.py): the check behind the prose punctuation rules
+  ([Semicolons](../agent-data/prose.md#semicolons), [Typeable punctuation
+  only](../agent-data/prose.md#typeable-punctuation-only)). It blanks what is code, reports every
+  authored banned character and prose semicolon in the tracked files, and runs in `vc-x1
+  validate`, full and fast. Frozen history, the agent-files, and the transcriptions it lists are
+  excluded.
+
 Per-cycle workflow lives in [`../AGENTS.md`](../AGENTS.md#cycle-protocol) and the files it
 links under `../agent-data/`: [jj.md](../agent-data/jj.md) for the commands,
 [versioning.md](../agent-data/versioning.md) for the `X.Y.Z-N` suffix scheme, and

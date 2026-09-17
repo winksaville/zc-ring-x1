@@ -1,6 +1,6 @@
 //! MPSC producing endpoint: [`MpscProducer`] claims a slot
 //! position by CAS, a closure fills it in place, and the
-//! commit happens on closure return — abandonment is
+//! commit happens on closure return, abandonment is
 //! unrepresentable (see the design doc's "MPSC API: closure
 //! send").
 
@@ -13,7 +13,7 @@ use crate::{Full, USER_WORDS, check_type, slot_ptr};
 /// A producing handle: `Clone` one per producing thread, then
 /// `send_with`.
 ///
-/// - `send_with` takes `&self` — exclusivity comes from the
+/// - `send_with` takes `&self`, exclusivity comes from the
 ///   claim CAS, not the borrow, so one handle may also be
 ///   shared by reference.
 pub struct MpscProducer<'a> {
@@ -30,14 +30,14 @@ pub struct MpscProducer<'a> {
 }
 
 impl Clone for MpscProducer<'_> {
-    /// A second producing handle over the same ring; the claim
+    /// A second producing handle over the same ring, the claim
     /// CAS serializes them.
     fn clone(&self) -> Self {
         MpscProducer { ..*self }
     }
 }
 
-// SAFETY: any number of producers is the protocol contract —
+// SAFETY: any number of producers is the protocol contract,
 // the shared state (producer_idx, seqs) is atomic, slot claims
 // are exclusive by CAS, and slot writes are handed off with
 // Release/Acquire ordering.
@@ -59,11 +59,11 @@ struct TombstoneOnUnwind<'s> {
 }
 
 impl Drop for TombstoneOnUnwind<'_> {
-    /// Unwind path only — the normal path disarms with
+    /// Unwind path only, the normal path disarms with
     /// `mem::forget`.
     fn drop(&mut self) {
         // Release: the (garbage) slot bytes must still be a
-        // well-defined handoff; the consumer skips the message
+        // well-defined handoff, the consumer skips the message
         // but touches the seq protocol state.
         self.seq
             .store(self.commit.wrapping_add(TOMBSTONE), Ordering::Release);
@@ -89,7 +89,7 @@ impl<'a> MpscProducer<'a> {
         }
     }
 
-    /// The header's app-owned scratch line — same contract as
+    /// The header's app-owned scratch line, same contract as
     /// the SPSC endpoints' `user()`.
     pub fn user(&self) -> &[AtomicU32; USER_WORDS] {
         &self.header.user
@@ -103,21 +103,21 @@ impl<'a> MpscProducer<'a> {
     }
 
     /// Claim the next slot position, fill it in place, commit
-    /// on closure return; retry a full ring under the injected
-    /// wait policy → [`Full`].
+    /// on closure return, retry a full ring under the injected
+    /// wait policy -> [`Full`].
     ///
-    /// - `fill` writes the message through `&mut T`; commit is
-    ///   by construction — there is no abandonment state (an
+    /// - `fill` writes the message through `&mut T`, commit is
+    ///   by construction (there is no abandonment state: an
     ///   SPSC-style guard could be dropped, and in MPSC an
     ///   abandoned *claim* wedges the queue).
     /// - `on_full` is called after each failed attempt with
-    ///   the attempt count (0-based, saturating); returning
-    ///   `false` gives up → `Err(Full)`. Pass `|_| false` for
+    ///   the attempt count (0-based, saturating), returning
+    ///   `false` gives up -> `Err(Full)`. Pass `|_| false` for
     ///   a single non-blocking probe. A send that returns
     ///   `Full` has zero protocol footprint (the overflow-FIFO
-    ///   seam — see the design doc's "Overflow readiness").
+    ///   seam, see the design doc's "Overflow readiness").
     /// - Losing a claim race to another producer is *not* a
-    ///   policy call: the system made progress; this producer
+    ///   policy call: the system made progress. This producer
     ///   just retries with the fresher index.
     /// - If `fill` panics, the unwind publishes a tombstoned
     ///   commit: the consumer releases the slot without
@@ -155,7 +155,7 @@ impl<'a> MpscProducer<'a> {
                 // Slot's previous occupant not yet released.
                 // Re-read the index first: if it moved, this
                 // was a stale pos (e.g. a tombstoned slot we
-                // raced), not a full ring — no policy call.
+                // raced), not a full ring, no policy call.
                 let cur = self.header.producer_idx.load(Ordering::Relaxed);
                 if cur != pos {
                     pos = cur;
@@ -166,7 +166,7 @@ impl<'a> MpscProducer<'a> {
                 }
                 attempt = attempt.saturating_add(1);
             } else {
-                // Another producer claimed pos; ours is stale.
+                // Another producer claimed pos. Ours is stale.
                 pos = self.header.producer_idx.load(Ordering::Relaxed);
             }
         }

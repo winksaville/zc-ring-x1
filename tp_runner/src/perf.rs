@@ -5,7 +5,7 @@
 //! - [`ProcessCounter`] counts one event for the whole process:
 //!   opened on the calling thread with `inherit`, so threads
 //!   spawned *after* [`ProcessCounter::new_raw`] are counted
-//!   too; user mode only (kernel/hypervisor excluded — the
+//!   too, and user mode only (kernel/hypervisor excluded, the
 //!   `:u` suffix in perf(1) terms). The kernel virtualizes the
 //!   PMU per task, so other processes never pollute the count.
 //! - Open before spawning workers, [`enable`], run the cell,
@@ -13,7 +13,7 @@
 //! - Raw AMD Zen 2 encodings for the demand-fill source events
 //!   are provided as constants (event `0x43`, one umask bit per
 //!   source), A/B-verified against `perf stat`. Other
-//!   microarchitectures need their own encodings — check
+//!   microarchitectures need their own encodings. Check
 //!   `perf list` and the kernel's event JSONs.
 //!
 //! [`enable`]: ProcessCounter::enable
@@ -34,7 +34,7 @@ const fn raw_amd(event: u64, umask: u64) -> u64 {
 
 /// Zen 2 `ls_refills_from_sys.ls_mabresp_lcl_cache`: demand
 /// data-cache fills served from another core's cache on the
-/// local die — the cross-core cache-line-transfer signal.
+/// local die (the cross-core cache-line-transfer signal).
 pub const ZEN2_FILLS_LCL_CACHE: u64 = raw_amd(0x43, 0x02);
 
 /// Zen 2 `ls_refills_from_sys.ls_mabresp_lcl_l2`: demand fills
@@ -54,7 +54,7 @@ pub struct ProcessCounter {
 
 impl ProcessCounter {
     /// Open a counter for a raw PMU `config` (e.g. the `ZEN2_*`
-    /// constants), disabled; call [`enable`](Self::enable) to
+    /// constants), disabled, then call [`enable`](Self::enable) to
     /// start counting. Fails with `EACCES`-flavored errors when
     /// `kernel.perf_event_paranoid` forbids self-profiling.
     pub fn new_raw(config: u64) -> io::Result<ProcessCounter> {
@@ -70,7 +70,7 @@ impl ProcessCounter {
         self.counter.enable()
     }
 
-    /// Stop counting; the accumulated value stays readable.
+    /// Stop counting. The accumulated value stays readable.
     pub fn disable(&mut self) -> io::Result<()> {
         self.counter.disable()
     }

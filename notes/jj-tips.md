@@ -162,7 +162,7 @@ tools like `gitk --all`.
 jj tracks *changes* (identified by change IDs), not individual git commits.
 When you rewrite a change (`jj describe`, `jj rebase`, `jj squash`, etc.),
 jj creates a new git commit and keeps the old one under `refs/jj/keep/*` as
-undo history. `gitk --all` sees all of these obsolete commits; `jj log` only
+undo history. `gitk --all` sees all of these obsolete commits. `jj log` only
 shows the current version of each change.
 
 ## Useful commands
@@ -188,7 +188,7 @@ the same result. Use `all()` when you have multiple branches or heads.
 Revsets (sets of revisions) are how jj addresses commits. A
 revision is identified by `@`, a chid, or a cid, and revsets are
 built from those identifiers plus the operators `-`, `+`, `..`,
-and `::`. There is a complete language available — see
+and `::`. There is a complete language available. See
 `jj help -k revsets`. The [`substep-test.sh`](substep-test.sh)
 script scaffolds the example repo used below.
 
@@ -201,7 +201,7 @@ Summary:
     change to it or its ancestors.
 - A revset is a set of revisions.
 - In many jj commands revsets can address multiple commits.
-- There is one root commit; chid=zzz sha=0 owner=root.
+- There is one root commit, chid=zzz sha=0 owner=root.
 - The root commit never has content nor description.
 - There can be multiple independent lineages of commits off root():
   - to create:
@@ -254,7 +254,7 @@ $ jj log -r @+
 ○  wxtmosqz count 2
 $ jj log -r @++
 ○  tkpvsrop count 3
-$ jj log -r @+++      # empty — nothing that far out
+$ jj log -r @+++      # empty, nothing that far out
 $ jj log -r @---      # empty
 $ jj log -r @..
 ○  tkpvsrop count 3
@@ -276,7 +276,7 @@ $ jj log -r ::@
 
 - `@-` and `@--` resolve to single revisions: parent and
   grandparent of @. `@+` and `@++` are children. The blank output
-  for `@+++` and `@---` is the empty revset — there is no revision
+  for `@+++` and `@---` is the empty revset. There is no revision
   that far away in this chain.
 - `@..` and `@::` are ranges going outward from @ toward
   descendants:
@@ -290,9 +290,9 @@ $ jj log -r ::@
     commit (here: @=count 1, base=count 0).
   - `::@` includes the root commit as well.
 
-Mnemonic: `..` and `::` both produce ranges; `::` includes the
+Mnemonic: `..` and `::` both produce ranges, and `::` includes the
 implicit endpoint (root or visible heads), `..` excludes it. The
-named operand is always part of the result on the target side; on
+named operand is always part of the result on the target side, but on
 the source side it depends on which dot-form is used (excluded by
 `..`, included by `::`).
 
@@ -326,7 +326,7 @@ $ jj log -r ::w
 #### Interpretation
 
 - `v` and `vktln` both resolve to chid `vktlnyvm` because they are
-  unambiguous prefixes within this repo — no other chid starts
+  unambiguous prefixes within this repo. No other chid starts
   with those letters.
 - `w+` resolves in two stages: `w` matches `wxtmosqz` (count 2) by
   prefix, then `+` takes its child, giving count 3.
@@ -344,7 +344,7 @@ exactly one chid matches.
 
 Each commit cross-references its counterpart in the other repo
 via an `ochid:` git trailer. That is a cross-repo convention
-rather than a jj mechanic — for the full definition (trailer
+rather than a jj mechanic. For the full definition (trailer
 syntax, per-commit mechanics, `.vc-config.toml`) see
 [Cross-repo linking (ochid trailers)](../agent-data/jj.md#cross-repo-linking-ochid-trailers)
 in AGENTS.md.

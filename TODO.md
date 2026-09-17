@@ -9,7 +9,15 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-_None._
+- After the cycle "docs: pay the punctuation debt" lands, a single-step cycle, `docs: the generic
+  Queue idea`, adds a `## Ideas` bullet and a section in `notes/ring-buffer-design.md`: a
+  `Queue<P>` with a sealed `Single` / `Multi` producer marker as a thin facade over `spsc::v3` and
+  `mpsc::v2`, `T` staying per call. Its open questions:
+  - Is the closure `send_with` the common send, with `reserve_slot_with` a `Single` extra?
+  - Is the ISR kind a guard axis (CAS or critical section) rather than a producer count? It would
+    give thumbv6m, which has no CAS, a multi-producer queue, the gap between [Execution
+    contexts](notes/ring-buffer-design.md#execution-contexts) and the embedded-floor Idea.
+  - Related: the `### Typed endpoints` Todo, and a consumer-kind axis left room for.
 
 ## In Progress
 
@@ -121,15 +129,18 @@ is most of the message, eight times the no-switch shape on the 7600X. Where the 
 up, from depth 8 on, it is paid once in hundreds of messages or never.
 
 - The lines that cross per switch, beyond the new segment's slot line that the no-switch shape
-  walks too: for spsc-v3 the consumer's give-back word, one transfer; for mpsc-v2 the old
-  segment's seal and the in-use word twice, since both sides read-modify-write it, three to four.
-  The two machines agree on that once the placement's cost per transfer is taken out, over 100 ns
-  cross-CCX on the 3900X and 15 to 20 within the 7600X's one L3.
-- Candidates: a consumer-owned give-back word for v2 again, now that the taking side is sound by
-  itself with the in-use word, so the consumer's give-back is a store to a line producers only
-  read; the seal riding in the slot word as v3's MOVED does, which v2 cannot do at the commit since
-  another producer may hold the last slot; a prefetch of the next segment's first line at the
-  take. Each measured on the stress table's switch-cost rows.
+  walks too:
+  - For spsc-v3 the consumer's give-back word, one transfer.
+  - For mpsc-v2 the old segment's seal and the in-use word twice, since both sides
+    read-modify-write it, three to four.
+  - The two machines agree on that once the placement's cost per transfer is taken out, over 100
+    ns cross-CCX on the 3900X and 15 to 20 within the 7600X's one L3.
+- Candidates, each measured on the stress table's switch-cost rows:
+  - A consumer-owned give-back word for v2 again, now that the taking side is sound by itself
+    with the in-use word, so the consumer's give-back is a store to a line producers only read.
+  - The seal riding in the slot word as v3's MOVED does, which v2 cannot do at the commit since
+    another producer may hold the last slot.
+  - A prefetch of the next segment's first line at the take.
 
 ### Comparison queues in the demo: cordyceps, crossbeam, iceoryx2
 
@@ -138,7 +149,7 @@ for cordyceps, crossbeam, and iceoryx2 beside them. Its own cycle, since each is
 decision and a harness shape:
 
 - cordyceps is a dev-dependency today, used by `tp-pool`, and the demo is the installed binary, so
-  it would become a dependency of the crate; crossbeam and iceoryx2 would be new ones, and
+  it would become a dependency of the crate. Crossbeam and iceoryx2 would be new ones, and
   iceoryx2 is a shared-memory framework with its own runtime and setup.
 - cordyceps's intrusive MPSC and crossbeam's channels move a pointer or a value, not a message in
   place, so their line is a pool buffer or a boxed message crossing, `tp-pool`'s shape, not the
@@ -260,53 +271,217 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### agent-files(proposal): v0.2.5
+### docs: pay the punctuation debt
 
 #### Problem
 
-Close-out step 4 in `AGENTS.md` and the preamble of `notes/agent-files-size.md` both say the
-agent-files line count is recorded at every close-out, so the table grew "unchanged, no agent-file
-touched" rows that record nothing and every close-out paid an edit for one. The user's call on
-2026-09-16: a row only when the cycle changed an agent-file.
+The prose rules ban semicolons and the untypeable characters (em dash, en dash, ellipsis, arrow)
+from authored text ([Semicolons](agent-data/prose.md#semicolons), [Typeable punctuation
+only](agent-data/prose.md#typeable-punctuation-only)), and a historical file pays when a cycle
+touches it. About 35 files still owe, some 660 lines with a banned character and some 360 with a
+prose semicolon, `notes/ring-buffer-design.md` the largest, so every small edit to one of them
+is either sidestepped or drags a sweep behind it. The generic Queue idea on 2026-09-17 was the
+latest edit to sidestep, and the user's call was to pay the whole debt instead.
 
 #### Solution
 
-Done as one commit. Step 4 says the row is recorded when the cycle changed an agent-file and that
-a cycle which touched none adds no row, the notes file's preamble says the same, the close-out
-rationale gains the why, and the agent-files version marker is renamed to `v0.2.5`, this cycle
-being a proposal to the payload ([Changing the agent-files](AGENTS.md#changing-the-agent-files)).
-This cycle changes agent-files, so it adds a row, and `rationale.md` leaves the count.
+Done as a ladder of four sweeps and a checker. The design file, the other notes and READMEs, the
+comments under `src/`, and the measurement crates were each swept by the joins the prose rules
+name, about 45 files and a thousand lines, the mechanical part delegated per file under written
+rules and every file verified by a word-level comparison that allows a sweep to add conjunctions
+and nothing else. `notes/prose-check.py` then made the rule checkable, found five lines the
+sweeps had missed, and joined `[validate]`, so the debt cannot return unseen.
 
 #### Acceptance check
 
-`ls agent-data` shows `agent-files-v0.2.5` and no other marker. Step 4 and the preamble carry the
-condition, `grep -n "changed an agent-file"` finding both. The size table's last row is this
-cycle's, and the three "unchanged" rows dropped at the previous close-out stay gone. The diff
-against the payload is the proposal: `AGENTS.md`, `agent-data/rationale.md`, and the marker.
+The checker, run over every tracked file outside the exclusions named in the deliberation, reports
+zero authored banned characters and zero prose semicolons, and `vc-x1 validate` passes, doctests
+included. Every inbound link to a heading whose anchor moved resolves.
 
-Passed on 2026-09-16 in the one commit.
+Passed on 2026-09-17 at the closing: `notes/prose-check.py` reports 77 files clean, `vc-x1
+validate` passes with the check inside it, and the one anchor that moved, the title heading of
+`notes/zc-msg-x1.md`, had no inbound link.
 
 #### Ladder
 
-- agent-files(proposal): v0.2.5 (done)
+- [docs: pay the punctuation debt opening][1] (done)
+- [docs: punctuation debt in ring-buffer-design.md][2] (done)
+- [docs: punctuation debt in the notes and READMEs][3] (done)
+- [docs: punctuation debt in the src comments][4] (done)
+- [docs: punctuation debt in the tp crates][5] (done)
+- [chore: a prose punctuation debt checker][6] (done)
+- [docs: pay the punctuation debt closing][7] (done)
 
 #### Deliberation
 
-- Single-step: two sentences, one rationale bullet, and a rename, with their record, are one
-  straightforward step.
-- The patch digit, v0.2.4 to v0.2.5, per Which digit in [Agent-files
-  version](agent-data/versioning.md#agent-files-version): a wording change to one step.
-- The rows since `agent-files(adoption): v0.2.4` were dropped at the previous close-out on the
-  user's call, so the table already reads as the new rule says, and this cycle's row follows it.
-- Bookmark named from the title's slug, `agent-files-proposal-v025`, the anchor algorithm
-  dropping the dots.
-- `rationale.md` leaves the count, the user's call at the review: the first draft grew the count
-  by five, one line of step 4 and four of rationale, and a rule that gains a why must not read as
-  the set growing. The rationale is the rules' why, so it is counted no more, step 4 and the
-  bullet were trimmed to two lines each, and the row notes the change of definition. The user
-  will add a Todo to vc-x1 for a `vc-x1 agent-files size` command that computes it.
+- Multi-step: about a thousand sites over 35 files is not one reviewable step.
+  - The rungs follow the kinds of text, so the first review settles the conventions the later
+    rungs repeat.
+  - The design file is a rung alone, being the largest and the one whose em dashes are mostly
+    structure.
+- Its own cycle, apart from the generic Queue idea: the sweep and the idea are different work, and
+  `git log --grep` for the idea should not land in a punctuation diff.
+  - The idea follows as a single-step cycle, held in `## Continuation notes` until then.
+- Type `docs`: comments and notes are documentation, and `style` is not a common type and is not
+  declared in `custom.md`. An earlier rung title used `style`, and it stays as published.
+- Exclusions:
+  - Frozen history, `notes/chores/` and `notes/done.md`, is left as it is, read as never touched
+    ([Frozen history](agent-data/notes.md#frozen-history-chores-and-done)). `tprobe/notes/chores/`
+    goes with it.
+  - `LICENSE-APACHE`, `.gitignore`, `Cargo.toml` files, and `Cargo.lock` are not prose.
+  - The agent-files are not swept here: their hits are specimens naming the characters, and an
+    agent-file change is its own cycle.
+  - Transcribed text keeps its characters: tool output, published commit titles, quoted external
+    text.
+- A checker rung: a byte scan cannot enforce the rule, so the check blanks code spans, fenced
+  code, and source code outside comments first. Whether `[validate]` runs it is decided at that
+  rung.
+- Delegation: the sweep goes to a lesser model per file or chunk, under written rules, and is
+  reviewed here.
+  - The first plan kept the design file's em dashes here, each being a decision. At the rung 75 of
+    its 185 turned out to be one pattern, a bold lead and a dash, so the rules could carry them
+    and the review took the rest.
+  - A word-level comparison with punctuation stripped is the review's safety net: a sweep may add
+    conjunctions and nothing else.
 
-Close-out shape: single-step, one commit, landed as it is.
+- Waiver, the user's on 2026-09-17 at the review of the notes and READMEs rung: "you have
+  permission to complete the cycle but don't land on main".
+  - It covers the work reviews, the description reviews, the per-push approvals, and the hard
+    stops of every remaining rung, the closing included, and the close-out shape, which takes
+    the default, a trapezoid.
+  - It does not cover Land: `main` stays where it is until the user's go.
+  - The rules, the validation before each push, and the records are as ever.
+
+#### Ladder details
+
+##### docs: pay the punctuation debt opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write
+this block, and bump the version-of-record. No `## Todo` entry moved, the work having arrived
+unplanned, and `## Waiting` held nothing to promote.
+
+##### docs: punctuation debt in ring-buffer-design.md
+
+The design file owes the most, 193 lines with a banned character and 128 with a prose semicolon.
+Each is resolved by the joins the prose rules name, and inbound links to a moved anchor are
+re-pointed in the same rung.
+
+- The conventions this rung settled for the rest of the ladder:
+  - A bold lead and a dash, `- **Label** - text` in the old spelling, becomes `- Label: text`,
+    per [Leads are labels, unmarked](agent-data/prose.md#leads-are-labels-unmarked), and a second
+    colon on the same line is recast as a comma or a sentence.
+  - An aside takes commas, parentheses, or two sentences, and a semicolon takes the joins in
+    [Semicolons](agent-data/prose.md#semicolons).
+  - A comment inside a fenced code block is prose and pays, the code beside it does not. An arrow
+    inside a code span is a use and becomes `->`.
+  - The multiplication sign is typeable enough to stay, not being on the banned list.
+- No heading held a banned character, so no anchor moved.
+- The 23 lines over 100 columns are the 23 the file had, tables and literal rows.
+- The file went out as seven chunks at `##` boundaries under `tmp/`, one agent each, and was
+  reassembled by concatenation. The added words were conjunctions only: and, so, since, but,
+  which.
+
+##### docs: punctuation debt in the notes and READMEs
+
+The remaining markdown outside frozen history: `README.md`, `TODO.md`, `notes/`, and the
+`tprobe` and `tp_runner` docs.
+
+- Six files paid: `TODO.md`, `notes/zc-msg-x1.md`, `notes/jj-tips.md`, and the `tp_runner` and
+  `tprobe` READMEs with `tprobe/notes/design.md`. The rest of the markdown owed nothing, the
+  semicolons of `README.md` and `notes/user-guide.md` all being code.
+- One transcription stays: the iiac-perf banner line quoted in `README.md` keeps its em dash,
+  being tool output.
+- One anchor moved: the title heading of `notes/zc-msg-x1.md` took a colon for its dash. Nothing
+  linked to it.
+- The rules sent out gained what the first review settled: no second colon, the multiplication
+  sign stays, a comment in a fence pays, a heading is reported and not changed.
+- The `TODO.md` semicolons were lists hiding in prose, now sub-bullets.
+
+##### docs: punctuation debt in the src comments
+
+The doc comments and inline comments under `src/`, `examples/`, and `tests/`, where a comment is
+prose and the code beside it is not.
+
+- Nineteen files under `src/` paid, about 350 comment lines. `examples/` and `tests/` owed
+  nothing, and neither did the v2 and v3 SPSC rings, written after the rule.
+- No string literal held a banned character, so no user-visible message changed and no test's
+  expected text moved.
+- A checker written for this rung, kept in `tmp/` until its own rung, did the finding: for a
+  source file a banned character anywhere, and a semicolon only in a comment, outside a code span
+  and outside the code of a doctest fence.
+- The code is proven untouched twice: no changed line is without a comment marker, and the
+  word-level comparison added conjunctions only.
+- A label that already ends in a colon, `SAFETY:` or `OK:`, keeps the one colon, and what followed
+  a dash or semicolon after it became a comma, a parenthesis, or a sentence.
+
+##### docs: punctuation debt in the tp crates
+
+The comments under `tprobe/`, `tp_runner/`, and `tp_matrix/`.
+
+- Ten source files and the comment heading `tp_runner/Cargo.toml` paid, 55 lines.
+- Three user-visible messages changed, the refusals `tprobe` prints when the clock cannot be
+  trusted: an em dash became a comma or a period, and `; refusing to run.` became its own
+  sentence. No test or note quoted them.
+  - A message string is prose in a source file, so its semicolon pays like a comment's.
+- A clap doc comment is the program's help text, and was treated as any other comment.
+- One agent turned an arrow into the word "means" and a comparison sign into `>=`. The
+  word-level comparison caught it and both went back, the arrow as `->`.
+- The workspace members sit outside `[validate]`, which builds the root package only, so this
+  rung also ran clippy and the tests with `--workspace`, both clean.
+
+##### chore: a prose punctuation debt checker
+
+Nothing detects a new banned character or prose semicolon. A script blanks what is code and
+expects zero elsewhere, and is the cycle's acceptance check.
+
+- The script is `notes/prose-check.py`, grown from the finder the src rung used, and `[validate]`
+  runs it in both lists, since a doc-only rung under review validates with `--fast`.
+- What counts, by kind of file:
+  - Markdown: a banned character anywhere, and a semicolon outside fences and code spans, a
+    comment inside a fence counting as prose.
+  - Source: a banned character anywhere, a semicolon in a comment outside spans and doctest code,
+    and a semicolon between two words of a string literal.
+- Its first whole-tree run found five lines the sweeps had missed: three demo legend strings,
+  a fenced shell comment in the `tp_matrix` README, and a line of this block quoting a semicolon
+  outside a span. The string rule is the one the earlier finder lacked.
+- The exclusions and the one transcription are lists at the top of the script, so a new case is
+  an edit there and a reason in the commit.
+- It builds the banned characters from code points, so it passes its own check.
+- Not covered: the `--workspace` build. The tp crates stay outside `[validate]` as before, and
+  only their punctuation is now checked on every run.
+
+##### docs: pay the punctuation debt closing
+
+Closing out the cycle.
+
+- Problem: a sweep delegated to a lesser model can change a word while fixing a mark, and a
+  thousand-line diff hides it.
+  - Solution: compare old and new as word lists with the punctuation stripped. Anything beyond
+    an added conjunction is a finding, and it caught a multiplication sign turned to `x` and an
+    arrow turned to "means".
+- Problem: the finder was written for the third rung, so the first two rungs were checked by a
+  weaker scan, and strings were checked by nothing until the fifth.
+  - Solution: none needed now, since the final checker ran over the whole tree. A sweep cycle
+    should write its checker first.
+- Problem: removing a dash or a semicolon invites a comma splice, which no checker here sees.
+  - Solution: read the added lines for `, it`, `, this`, `, that`, `, there` before the push.
+    Eight were recast, and the rule given to the agents now says two claims take a period.
+- Problem: the checker failed on itself at the closing. Its banned characters had been written
+  as escapes and reached the file as the characters, and the checker rung never saw it because
+  the file list came from git, which does not know a new file until jj commits it.
+  - Solution: the characters are built from code points, and the file list comes from
+    `jj file list`, which sees the working copy, so the count went from 76 files to 77.
+- The agent-files size table gains no row, no agent-file having changed.
+- What outlives the block: the checker's description, in `notes/README.md`.
+- Close-out shape: trapezoid, the default, under the waiver. Land waits for the user's go.
+
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
+[1]: #docs-pay-the-punctuation-debt-opening
+[2]: #docs-punctuation-debt-in-ring-buffer-designmd
+[3]: #docs-punctuation-debt-in-the-notes-and-readmes
+[4]: #docs-punctuation-debt-in-the-src-comments
+[5]: #docs-punctuation-debt-in-the-tp-crates
+[6]: #chore-a-prose-punctuation-debt-checker
+[7]: #docs-pay-the-punctuation-debt-closing
