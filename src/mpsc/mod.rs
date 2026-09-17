@@ -1,12 +1,12 @@
 //! MPSC ring: versioned sibling implementations.
 //!
-//! - Each `vN` submodule is a complete, live implementation;
-//!   historical versions stay available for testing and
+//! - Each `vN` submodule is a complete, live implementation.
+//!   Historical versions stay available for testing and
 //!   performance comparison, pinned by explicit path
 //!   (`mpsc::v0::MpscRing`, `mpsc::v1::MpscRing`,
 //!   `mpsc::v2::MpscRing`).
-//! - The re-export below selects the crate's default version;
-//!   repoint it at another `vN` to change the default without
+//! - The re-export below selects the crate's default version.
+//!   Repoint it at another `vN` to change the default without
 //!   touching type names or call sites. v1 since 2026-09-10:
 //!   v0's cost with capacity down to 1 (the design doc's "MPSC
 //!   v1: equality-seq ring"). v2 is v1 over spsc v3's

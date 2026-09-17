@@ -1,5 +1,5 @@
 //! MPSC consuming endpoint: [`MpscConsumer`] reserves the
-//! oldest committed slot through the [`MpscReadSlot`] guard —
+//! oldest committed slot through the [`MpscReadSlot`] guard,
 //! the SPSC consumer's shape, plus tombstone skipping (an
 //! unwound producer's slot is released without delivery).
 
@@ -11,7 +11,7 @@ use zerocopy::{FromBytes, Immutable, KnownLayout};
 use super::{MpscHeader, TOMBSTONE};
 use crate::{Empty, USER_WORDS, check_type, slot_ptr};
 
-/// The consuming handle: single per ring, CAS-free —
+/// The consuming handle: single per ring, CAS-free,
 /// `reserve_slot_with` the oldest committed slot, read in
 /// place, `release`.
 pub struct MpscConsumer<'a> {
@@ -23,14 +23,14 @@ pub struct MpscConsumer<'a> {
     slots: *mut u8,
     /// Geometry snapshot (see [`MpscRing`](super::MpscRing)).
     slot_size: u32,
-    /// Geometry snapshot; release stores `pos + capacity`.
+    /// Geometry snapshot, release stores `pos + capacity`.
     capacity: u32,
     /// Slot-position mask (`capacity - 1`).
     mask: u32,
     _region: PhantomData<&'a [u8]>,
 }
 
-// SAFETY: the handle owns the single-consumer role; shared
+// SAFETY: the handle owns the single-consumer role, shared
 // state (seqs, indices) is atomic with Release/Acquire
 // handoff.
 unsafe impl Send for MpscConsumer<'_> {}
@@ -57,7 +57,7 @@ impl<'a> MpscConsumer<'a> {
         }
     }
 
-    /// The header's app-owned scratch line — same contract as
+    /// The header's app-owned scratch line, same contract as
     /// the SPSC endpoints' `user()`.
     pub fn user(&self) -> &[AtomicU32; USER_WORDS] {
         &self.header.user
@@ -72,18 +72,18 @@ impl<'a> MpscConsumer<'a> {
 
     /// Reserve the oldest committed slot as a `&T`, applying
     /// an injected wait policy: retry until a message arrives
-    /// or the policy gives up → [`Empty`].
+    /// or the policy gives up -> [`Empty`].
     ///
     /// - The guard behaves as the SPSC
     ///   [`ReadSlot`](crate::ReadSlot): drop without
     ///   [`MpscReadSlot::release`] re-delivers the same slot.
     /// - Tombstoned slots (a producer panicked mid-fill) are
-    ///   released and skipped inline; skipping is progress,
+    ///   released and skipped inline, skipping is progress,
     ///   not an attempt, so the policy is not consulted for
     ///   them.
     /// - `on_empty` is called after each failed attempt with
-    ///   the attempt count (0-based, saturating); returning
-    ///   `false` gives up → `Err(Empty)`. Pass `|_| false`
+    ///   the attempt count (0-based, saturating), returning
+    ///   `false` gives up -> `Err(Empty)`. Pass `|_| false`
     ///   for a single non-blocking probe.
     pub fn reserve_slot_with<T>(
         &mut self,
@@ -114,7 +114,7 @@ impl<'a> MpscConsumer<'a> {
                 c = expected;
                 continue;
             }
-            // Not committed yet (or a peer-corrupted seq —
+            // Not committed yet (or a peer-corrupted seq,
             // degrade toward Empty, never toward reading an
             // unowned slot).
             if !on_empty(attempt) {
@@ -122,7 +122,7 @@ impl<'a> MpscConsumer<'a> {
             }
             attempt = attempt.saturating_add(1);
         }
-        // Raw pointer, not `&T` — same argument-protector
+        // Raw pointer, not `&T`, same argument-protector
         // rationale as the SPSC ReadSlot.
         let msg = slot_ptr(self.slots, c, self.mask, self.slot_size) as *const T;
         Ok(MpscReadSlot {
@@ -143,7 +143,7 @@ pub struct MpscReadSlot<'c, T> {
     header: &'c MpscHeader,
     /// The reserved slot's seq word (for the release store).
     seq: &'c AtomicU32,
-    /// The slot, viewed as the message type. Raw on purpose —
+    /// The slot, viewed as the message type. Raw on purpose,
     /// see the SPSC `ReadSlot`.
     msg: *const T,
     /// Value `consumer_idx` takes on release.
@@ -170,9 +170,9 @@ impl<T> Deref for MpscReadSlot<'_, T> {
 impl<T> MpscReadSlot<'_, T> {
     /// Free the slot for reuse.
     ///
-    /// - `consumer_idx` first (`Relaxed` — consumer-private
+    /// - `consumer_idx` first (`Relaxed`, consumer-private
     ///   resume state, racing readers of it don't exist), the
-    ///   seq store last (`Release` — the protocol-visible
+    ///   seq store last (`Release`, the protocol-visible
     ///   handoff producers acquire). A crash between the two
     ///   is outside the contract, as any torn-state crash is.
     pub fn release(self) {

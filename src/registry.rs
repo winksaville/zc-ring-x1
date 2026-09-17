@@ -1,4 +1,4 @@
-//! Descriptors and the per-process pool registry — the
+//! Descriptors and the per-process pool registry, the
 //! resolution half of the messaging layer: a [`Desc`] names a
 //! buffer as `(pool id, buffer index)` so it can ride any
 //! queue as an ordinary POD message, and the [`PoolRegistry`]
@@ -6,10 +6,10 @@
 //! doc's "Descriptor and registry design (0.7.0)").
 //!
 //! - [`PoolRegistry::into_desc`] (safe) consumes a guard into
-//!   a descriptor; ownership travels on in the descriptor.
+//!   a descriptor, and ownership travels on in the descriptor.
 //! - [`PoolRegistry::resolve`] (unsafe) validates a received
-//!   descriptor and mints the guard back; `unsafe` covers
-//!   only what validation cannot check — ownership
+//!   descriptor and mints the guard back, and `unsafe` covers
+//!   only what validation cannot check, ownership
 //!   uniqueness.
 //! - Fixed capacity, no allocation, no unregister: pool ids
 //!   are registry slot indices and never dangle.
@@ -27,7 +27,7 @@ use crate::{BufSlot, type_fits};
 ///   discipline lives in [`PoolRegistry::resolve`]'s
 ///   contract, not in this type.
 /// - Fields are raw `u32`s (not [`PoolId`]) because the wire
-///   form is untrusted by definition; validation happens at
+///   form is untrusted by definition, and validation happens at
 ///   resolve.
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -39,7 +39,7 @@ pub struct Desc {
 }
 
 /// A registered pool's identity within one process's
-/// [`PoolRegistry`] — the value [`register`](PoolRegistry::register)
+/// [`PoolRegistry`], the value [`register`](PoolRegistry::register)
 /// returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PoolId(u32);
@@ -74,9 +74,9 @@ pub enum RegistryError {
 ///
 /// - Fixed capacity `N` (const generic): no_std, zero
 ///   allocation.
-/// - `register` assigns the next slot index as the pool's id;
+/// - `register` assigns the next slot index as the pool's id, and
 ///   there is no unregister, so ids never dangle.
-/// - Registration (`&mut self`) is setup-phase; `into_desc` /
+/// - Registration (`&mut self`) is setup-phase, and `into_desc` /
 ///   `resolve` take `&self`, so one registry is shared by
 ///   reference across threads.
 pub struct PoolRegistry<'a, const N: usize> {
@@ -95,7 +95,7 @@ impl<'a, const N: usize> PoolRegistry<'a, N> {
         }
     }
 
-    /// Register a pool's resolver view; returns the assigned
+    /// Register a pool's resolver view, and returns the assigned
     /// [`PoolId`] (the next slot index), or
     /// [`RegistryError::Full`].
     pub fn register(&mut self, resolver: PoolResolver<'a>) -> Result<PoolId, RegistryError> {
@@ -108,7 +108,7 @@ impl<'a, const N: usize> PoolRegistry<'a, N> {
         Ok(PoolId(id))
     }
 
-    /// Consume a guard into its descriptor; ownership travels
+    /// Consume a guard into its descriptor, and ownership travels
     /// on in the [`Desc`] (the usage model's "in-flight"
     /// state).
     ///
@@ -144,14 +144,14 @@ impl<'a, const N: usize> PoolRegistry<'a, N> {
     ///
     /// # Safety
     ///
-    /// Validation cannot check ownership; the caller promises:
+    /// Validation cannot check ownership, and the caller promises:
     ///
     /// - `desc` came from [`into_desc`](Self::into_desc) (or
-    ///   an equivalent consumed guard) — it is not invented.
+    ///   an equivalent consumed guard). It is not invented.
     /// - It arrived over a channel establishing happens-before
-    ///   with the sender's writes (a ring commit → reserve
+    ///   with the sender's writes (a ring commit -> reserve
     ///   qualifies).
-    /// - It is resolved exactly once — a second resolve mints
+    /// - It is resolved exactly once. A second resolve mints
     ///   a second guard aliasing the same `&mut T`.
     pub unsafe fn resolve<T>(&self, desc: Desc) -> Result<BufSlot<'a, T>, RegistryError>
     where
@@ -166,8 +166,8 @@ impl<'a, const N: usize> PoolRegistry<'a, N> {
         if !type_fits::<T>(resolver.buf_size()) {
             return Err(RegistryError::BadType);
         }
-        // SAFETY: index and T geometry validated above;
-        // ownership uniqueness and ordering are the caller's
+        // SAFETY: index and T geometry validated above.
+        // Ownership uniqueness and ordering are the caller's
         // contract (this fn's # Safety).
         Ok(unsafe { resolver.slot_from_idx(desc.buf_idx) })
     }
@@ -266,7 +266,7 @@ mod tests {
         let id_b = reg.register(pool_b.resolver()).unwrap();
 
         // Mispaired id: rejected, and the guard comes back
-        // usable — no leak.
+        // usable, no leak.
         let slot = pool_a.alloc::<Msg>().unwrap();
         let (slot, err) = reg.into_desc(id_b, slot).unwrap_err();
         assert_eq!(err, RegistryError::WrongPool);
@@ -303,7 +303,7 @@ mod tests {
         reg.register(pool.resolver()).unwrap();
 
         // SAFETY: every resolve here must fail validation and
-        // mint nothing; no ownership is claimed.
+        // mint nothing, and no ownership is claimed.
         unsafe {
             let bad_pool = Desc {
                 pool_id: 7,
@@ -395,7 +395,7 @@ mod tests {
                     // SAFETY: the desc was consumed into the
                     // ring by the producer and read after the
                     // commit -> reserve handoff (happens-
-                    // before); each is resolved exactly once.
+                    // before), and each is resolved exactly once.
                     let msg = unsafe { reg.resolve::<Msg>(desc) }.unwrap();
                     assert_eq!(msg.seq, i);
                     msg.free();

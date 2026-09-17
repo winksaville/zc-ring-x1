@@ -26,7 +26,7 @@ pub struct Producer<'a> {
     _region: PhantomData<&'a [u8]>,
 }
 
-// SAFETY: the handle owns the producer role; the shared state it
+// SAFETY: the handle owns the producer role. The shared state it
 // touches (indices) is atomic, and slot writes are handed off
 // with Release/Acquire ordering.
 unsafe impl Send for Producer<'_> {}
@@ -55,7 +55,7 @@ impl<'a> Producer<'a> {
     /// never touched by the crate again.
     ///
     /// - Shared with the peer: treat contents as untrusted
-    ///   data — store values, never addresses to dereference.
+    ///   data, store values, never addresses to dereference.
     /// - See the design doc's "Blocking and user words" for
     ///   the wakeup-protocol contract it exists to host.
     pub fn user(&self) -> &[AtomicU32; USER_WORDS] {
@@ -64,7 +64,7 @@ impl<'a> Producer<'a> {
 
     /// Reserve the next free slot as a `&mut T`, applying an
     /// injected wait policy: retry until a slot frees up or
-    /// the policy gives up → [`Full`].
+    /// the policy gives up -> [`Full`].
     ///
     /// - Only one slot may be reserved at a time: the guard
     ///   holds the `&mut Producer` borrow, so a second
@@ -73,12 +73,12 @@ impl<'a> Producer<'a> {
     /// - Dropping the guard without [`WriteSlot::commit`]
     ///   abandons the reservation (nothing published).
     /// - `on_full` is called after each failed attempt with
-    ///   the attempt count (0-based, saturating); returning
-    ///   `false` gives up → `Err(Full)`. Pass `|_| false`
+    ///   the attempt count (0-based, saturating), and returning
+    ///   `false` gives up -> `Err(Full)`. Pass `|_| false`
     ///   for a single non-blocking probe.
     /// - The wait loop is the reservation itself (the guard
     ///   borrows the endpoint, so retrying could not return
-    ///   it): `producer_idx` is ours and loaded once; only
+    ///   it): `producer_idx` is ours and loaded once, but only
     ///   `consumer_idx` is re-read per attempt.
     /// - See [`policy`](crate::policy) for shipped policies
     ///   and the composition model.
@@ -95,7 +95,7 @@ impl<'a> Producer<'a> {
         let mut attempt = 0u32;
         loop {
             // `>=`, not `==`: a peer-corrupted consumer_idx
-            // makes occupancy look huge — fail Full, never hand
+            // makes occupancy look huge, fail Full, never hand
             // out a slot the protocol doesn't own.
             let c = self.header.consumer_idx.load(Ordering::Acquire);
             if p.wrapping_sub(c) < self.capacity {
@@ -109,7 +109,7 @@ impl<'a> Producer<'a> {
         // Raw pointer, not `&mut T`: a reference field would be
         // argument-protected for the whole `commit(self)` call,
         // while commit's Release store lets the consumer read
-        // the slot inside that window — UB (Miri-verified).
+        // the slot inside that window. UB (Miri-verified).
         // Deref mints short-lived references instead.
         let msg = slot_ptr(self.slots, p, self.mask, self.slot_size) as *mut T;
         Ok(WriteSlot {
@@ -126,7 +126,7 @@ impl<'a> Producer<'a> {
 pub struct WriteSlot<'p, T> {
     /// The ring's control block (for the commit store).
     header: &'p Header,
-    /// The slot, viewed as the message type. Raw on purpose —
+    /// The slot, viewed as the message type. Raw on purpose,
     /// see the comment in [`Producer::reserve_slot_with`].
     msg: *mut T,
     /// Value `producer_idx` takes on commit.
@@ -151,7 +151,7 @@ impl<T> Deref for WriteSlot<'_, T> {
 impl<T> DerefMut for WriteSlot<'_, T> {
     /// Write access to the in-slot message.
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as in deref; &mut self gives exclusivity of
+        // SAFETY: as in deref, &mut self gives exclusivity of
         // the minted reference.
         unsafe { &mut *self.msg }
     }

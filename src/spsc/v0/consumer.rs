@@ -23,7 +23,7 @@ pub struct Consumer<'a> {
     _region: PhantomData<&'a [u8]>,
 }
 
-// SAFETY: the handle owns the consumer role; see the Producer
+// SAFETY: the handle owns the consumer role. See the Producer
 // Send rationale.
 unsafe impl Send for Consumer<'_> {}
 
@@ -44,7 +44,7 @@ impl<'a> Consumer<'a> {
     /// never touched by the crate again.
     ///
     /// - Shared with the peer: treat contents as untrusted
-    ///   data — store values, never addresses to dereference.
+    ///   data, store values, never addresses to dereference.
     /// - See the design doc's "Blocking and user words" for
     ///   the wakeup-protocol contract it exists to host.
     pub fn user(&self) -> &[AtomicU32; USER_WORDS] {
@@ -53,22 +53,22 @@ impl<'a> Consumer<'a> {
 
     /// Reserve the oldest unread slot as a `&T`, applying an
     /// injected wait policy: retry until a message arrives or
-    /// the policy gives up → [`Empty`].
+    /// the policy gives up -> [`Empty`].
     ///
     /// - Only one slot may be reserved at a time: the guard
     ///   holds the `&mut Consumer` borrow, so a second
     ///   reservation before the guard is dropped or released
     ///   does not compile.
     /// - Dropping the guard without [`ReadSlot::release`]
-    ///   leaves the slot unread — the next reservation
+    ///   leaves the slot unread, the next reservation
     ///   returns it again.
     /// - `on_empty` is called after each failed attempt with
-    ///   the attempt count (0-based, saturating); returning
-    ///   `false` gives up → `Err(Empty)`. Pass `|_| false`
+    ///   the attempt count (0-based, saturating), and returning
+    ///   `false` gives up -> `Err(Empty)`. Pass `|_| false`
     ///   for a single non-blocking probe.
     /// - The wait loop is the reservation itself (the guard
     ///   borrows the endpoint, so retrying could not return
-    ///   it): `consumer_idx` is ours and loaded once; only
+    ///   it): `consumer_idx` is ours and loaded once, but only
     ///   `producer_idx` is re-read per attempt.
     /// - See [`policy`](crate::policy) for shipped policies
     ///   and the composition model.
@@ -112,7 +112,7 @@ impl<'a> Consumer<'a> {
 pub struct ReadSlot<'c, T> {
     /// The ring's control block (for the release store).
     header: &'c Header,
-    /// The slot, viewed as the message type. Raw on purpose —
+    /// The slot, viewed as the message type. Raw on purpose,
     /// see the comment in [`Consumer::reserve_slot_with`].
     msg: *const T,
     /// Value `consumer_idx` takes on release.

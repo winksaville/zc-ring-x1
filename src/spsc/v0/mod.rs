@@ -6,12 +6,12 @@
 //!   (immutable geometry, producer index, consumer index, app
 //!   user words), followed by M slots of N bytes.
 //! - Indices are free-running `AtomicU32`s, masked only at slot
-//!   access; full is `p - c == M`, no sacrificial slot.
+//!   access, and full is `p - c == M`, no sacrificial slot.
 //! - Messages move in place: the producer writes through a
 //!   [`WriteSlot`] `&mut T`, the consumer reads through a
-//!   [`ReadSlot`] `&T` — zerocopy traits bound `T`, no
+//!   [`ReadSlot`] `&T`, zerocopy traits bound `T`, no
 //!   serialization step. Each side reserves at most one slot at
-//!   a time; the guard holds the endpoint borrow until commit /
+//!   a time. The guard holds the endpoint borrow until commit /
 //!   release (or drop).
 //!
 //! [notes/ring-buffer-design.md]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/ring-buffer-design.md
@@ -28,14 +28,14 @@ mod producer;
 pub use consumer::{Consumer, ReadSlot};
 pub use producer::{Producer, WriteSlot};
 
-/// Layout marker written by [`Ring::init`]; rejects foreign
+/// Layout marker written by [`Ring::init`]. Rejects foreign
 /// regions on attach.
 const MAGIC: u32 = 0x5A43_5231; // "ZCR1"
 
 /// Bumped on any change to the region layout.
 const LAYOUT_VERSION: u32 = 2;
 
-/// Control block at offset 0 of the region — one struct spanning
+/// Control block at offset 0 of the region, one struct spanning
 /// four cache lines so each concurrently-written index owns its
 /// own line.
 ///
@@ -44,7 +44,7 @@ const LAYOUT_VERSION: u32 = 2;
 ///   paths use the handles' snapshots.
 /// - line 1: `producer_idx`, written only by the producer.
 /// - line 2: `consumer_idx`, written only by the consumer.
-/// - line 3: `user`, app-owned scratch — last, so an app
+/// - line 3: `user`, app-owned scratch, last, so an app
 ///   overrun walks into its own slot data, not an index line.
 /// - Every field is atomic: the region may be mapped by a peer
 ///   at any time, so even "immutable" fields must be free of
@@ -52,19 +52,19 @@ const LAYOUT_VERSION: u32 = 2;
 ///   this does not affect `layout_version`.
 #[repr(C)]
 pub struct Header {
-    /// Layout marker ([`MAGIC`]); stored last by init
+    /// Layout marker ([`MAGIC`]). Stored last by init
     /// (`Release`), loaded first by attach (`Acquire`), so a
     /// peer that observes it also observes the geometry.
     magic: AtomicU32,
     /// Layout version ([`LAYOUT_VERSION`]).
     layout_version: AtomicU32,
-    /// Slot size N in bytes — a [`CACHE_LINE_SIZE`] multiple.
+    /// Slot size N in bytes, a [`CACHE_LINE_SIZE`] multiple.
     slot_size: AtomicU32,
-    /// Slot count M — a power of two `<= 2^31`.
+    /// Slot count M, a power of two `<= 2^31`.
     capacity: AtomicU32,
     /// [`CACHE_LINE_SIZE`] this region was built with. The line size
     /// is a layout parameter (padding, offsets, slot granule),
-    /// so builds must agree; attach validates it like the rest
+    /// so builds must agree, and attach validates it like the rest
     /// of the geometry.
     cache_line_size: AtomicU32,
     /// Free-running count of messages committed.
@@ -79,7 +79,7 @@ pub struct Header {
 
 const _: () = assert!(size_of::<Header>() == 4 * CACHE_LINE_SIZE);
 
-/// A validated view over a ring region; split into the two
+/// A validated view over a ring region. Split into the two
 /// endpoint handles with [`Ring::split`].
 ///
 /// - Geometry is snapshotted out of the header at
@@ -103,9 +103,9 @@ pub struct Ring<'a> {
 impl<'a> Ring<'a> {
     /// Initialize a fresh region and return the ring over it.
     ///
-    /// - `slot_size` — N bytes per slot, a [`CACHE_LINE_SIZE`]
+    /// - `slot_size`: N bytes per slot, a [`CACHE_LINE_SIZE`]
     ///   multiple.
-    /// - `capacity` — M slots, a power of two `<= 2^31`.
+    /// - `capacity`: M slots, a power of two `<= 2^31`.
     /// - The region must be [`CACHE_LINE_SIZE`]-aligned and at least
     ///   `size_of::<Header>() + M * N` bytes.
     pub fn init(region: &'a mut [u8], slot_size: u32, capacity: u32) -> Result<Self, Error> {
@@ -120,7 +120,7 @@ impl<'a> Ring<'a> {
             return Err(Error::TooSmall);
         }
         // SAFETY: alignment + room for the Header checked by
-        // header_ptr; region is exclusively borrowed for 'a;
+        // header_ptr, region is exclusively borrowed for 'a,
         // any byte pattern is a valid Header (all-atomic
         // fields, plain-byte padding).
         let header = unsafe { &*header };
@@ -142,7 +142,7 @@ impl<'a> Ring<'a> {
         // (Re-initializing a region a peer is already attached
         // to is outside the contract.)
         header.magic.store(MAGIC, Ordering::Release);
-        // SAFETY: in bounds — region.len() >= header + slots.
+        // SAFETY: in bounds, region.len() >= header + slots.
         let slots = unsafe { base.add(size_of::<Header>()) };
         Ok(Ring {
             header,
@@ -162,12 +162,12 @@ impl<'a> Ring<'a> {
     /// - `region` points to `len` bytes of memory that outlive
     ///   `'a`, genuinely shared and writable (e.g. a
     ///   `MAP_SHARED` mapping).
-    /// - No other producer attaches if this side will produce;
-    ///   likewise for the consumer side (SPSC contract).
+    /// - No other producer attaches if this side will produce.
+    ///   Likewise for the consumer side (SPSC contract).
     pub unsafe fn attach(region: *mut u8, len: usize) -> Result<Self, Error> {
         let header = header_ptr(region, len)?;
         // SAFETY: alignment + room for the Header checked by
-        // header_ptr; caller guarantees the memory is live and
+        // header_ptr, caller guarantees the memory is live and
         // shared.
         let header = unsafe { &*header };
         // Acquire pairs with init's Release store of magic: a
@@ -181,14 +181,14 @@ impl<'a> Ring<'a> {
         if header.cache_line_size.load(Ordering::Relaxed) != CACHE_LINE_SIZE as u32 {
             return Err(Error::BadCacheLine);
         }
-        // Snapshot geometry once; per-op paths never re-read it.
+        // Snapshot geometry once, and per-op paths never re-read it.
         let slot_size = header.slot_size.load(Ordering::Relaxed);
         let capacity = header.capacity.load(Ordering::Relaxed);
         validate_geometry(slot_size, capacity)?;
         if (len as u64) < region_size(slot_size, capacity) {
             return Err(Error::TooSmall);
         }
-        // SAFETY: in bounds — len >= header + slots.
+        // SAFETY: in bounds, len >= header + slots.
         let slots = unsafe { region.add(size_of::<Header>()) };
         Ok(Ring {
             header,
@@ -203,7 +203,7 @@ impl<'a> Ring<'a> {
     /// Split into the producer and consumer endpoint handles.
     ///
     /// - Consuming `self` makes each handle exist at most once
-    ///   per ring per process; cross-process, one producing and
+    ///   per ring per process. Cross-process, one producing and
     ///   one consuming process is the SPSC contract.
     pub fn split(self) -> (Producer<'a>, Consumer<'a>) {
         (
@@ -220,15 +220,15 @@ impl<'a> Ring<'a> {
 }
 
 /// Validate a region base pointer and cast it to the `Header`
-/// it must start with; shared by [`Ring::init`] / [`Ring::attach`].
+/// it must start with. Shared by [`Ring::init`] / [`Ring::attach`].
 ///
 /// - Checks alignment and room for the `Header` itself. The
 ///   full-geometry length check stays with the caller: init
 ///   knows the geometry from its parameters, attach only after
 ///   reading it from the returned header.
-/// - Returns a raw pointer — no deref here. Each caller
+/// - Returns a raw pointer, no deref here. Each caller
 ///   discharges its own safety obligation (init: exclusive
-///   borrow; attach: the caller's shared-mapping contract).
+///   borrow, attach: the caller's shared-mapping contract).
 fn header_ptr(base: *mut u8, len: usize) -> Result<*const Header, Error> {
     if !(base as usize).is_multiple_of(CACHE_LINE_SIZE) {
         return Err(Error::Misaligned);
@@ -254,7 +254,7 @@ fn validate_geometry(slot_size: u32, capacity: u32) -> Result<(), Error> {
         return Err(Error::BadSlotSize);
     }
     // The `> 1 << 31` arm is unreachable (u32 powers of two are
-    // <= 2^31); it stays to document the M bound the occupancy
+    // <= 2^31), and it stays to document the M bound the occupancy
     // math relies on.
     if capacity == 0 || !capacity.is_power_of_two() || capacity > 1 << 31 {
         return Err(Error::BadCapacity);
@@ -268,7 +268,7 @@ mod tests {
     use crate::{Empty, Full};
     use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-    /// Test message; two words so a torn write would be visible.
+    /// Test message. Two words so a torn write would be visible.
     #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Debug, PartialEq)]
     #[repr(C)]
     struct Msg {
@@ -314,7 +314,7 @@ mod tests {
             Error::Misaligned
         );
         // 32-bit tripwire: N * M wraps a 32-bit usize (2^26 *
-        // 2^6 = 2^32); the u64 region_size must still reject it.
+        // 2^6 = 2^32), and the u64 region_size must still reject it.
         assert_eq!(
             Ring::init(&mut r.0, 1 << 26, 1 << 6).err().unwrap(),
             Error::TooSmall
@@ -351,7 +351,7 @@ mod tests {
         let ring = Ring::init(&mut r.0, 64, 4).unwrap();
         let (prod, mut cons) = ring.split();
         assert!(prod.user().iter().all(|w| w.load(Ordering::Relaxed) == 0));
-        // Both endpoints see the same line; a producer-side
+        // Both endpoints see the same line. A producer-side
         // store is visible through the consumer's accessor.
         prod.user()[0].store(7, Ordering::Release);
         assert_eq!(cons.user()[0].load(Ordering::Acquire), 7);
@@ -374,7 +374,7 @@ mod tests {
         ring.header.consumer_idx.store(start, Ordering::Relaxed);
         let (mut prod, mut cons) = ring.split();
 
-        // Fill: producer_idx runs MAX-1, MAX, 0, 1 — masked
+        // Fill: producer_idx runs MAX-1, MAX, 0, 1, masked
         // slot positions 2, 3, 0, 1.
         for i in 0..4u64 {
             let mut slot = prod.reserve_slot_with::<Msg>(|_| false).unwrap();
@@ -410,7 +410,7 @@ mod tests {
         }
         assert!(prod.reserve_slot_with::<Msg>(|_| false).is_err());
 
-        // Drain in order; wrap: slot 0 is reused by seq 4.
+        // Drain in order, wrap: slot 0 is reused by seq 4.
         for i in 0..4u64 {
             let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
             assert_eq!(
@@ -434,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    // Dropping the guards is the behavior under test; they have
+    // Dropping the guards is the behavior under test. They have
     // no Drop impl by design (abandon = do nothing).
     #[allow(clippy::drop_non_drop)]
     fn abandoned_guards_publish_nothing() {
@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn threaded_spsc_spin_variants() {
         // The threaded_spsc flow through the shipped
-        // policy::spin on both ends — the shipped-policy model
+        // policy::spin on both ends, the shipped-policy model
         // in use.
         const COUNT: u64 = if cfg!(miri) { 200 } else { 100_000 };
         let mut r = Region::new();

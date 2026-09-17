@@ -53,7 +53,7 @@ included. Every inbound link to a heading whose anchor moved resolves.
 - [docs: pay the punctuation debt opening][1] (done)
 - [docs: punctuation debt in ring-buffer-design.md][2] (done)
 - [docs: punctuation debt in the notes and READMEs][3] (done)
-- [docs: punctuation debt in the src comments][4]
+- [docs: punctuation debt in the src comments][4] (done)
 - [docs: punctuation debt in the tp crates][5]
 - [chore: a prose punctuation debt checker][6]
 - [docs: pay the punctuation debt closing][7]
@@ -147,6 +147,18 @@ The remaining markdown outside frozen history: `README.md`, `TODO.md`, `notes/`,
 
 The doc comments and inline comments under `src/`, `examples/`, and `tests/`, where a comment is
 prose and the code beside it is not.
+
+- Nineteen files under `src/` paid, about 350 comment lines. `examples/` and `tests/` owed
+  nothing, and neither did the v2 and v3 SPSC rings, written after the rule.
+- No string literal held a banned character, so no user-visible message changed and no test's
+  expected text moved.
+- A checker written for this rung, kept in `tmp/` until its own rung, did the finding: for a
+  source file a banned character anywhere, and a semicolon only in a comment, outside a code span
+  and outside the code of a doctest fence.
+- The code is proven untouched twice: no changed line is without a comment marker, and the
+  word-level comparison added conjunctions only.
+- A label that already ends in a colon, `SAFETY:` or `OK:`, keeps the one colon, and what followed
+  a dash or semicolon after it became a comma, a parenthesis, or a sentence.
 
 ##### docs: punctuation debt in the tp crates
 
