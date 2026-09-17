@@ -9,7 +9,15 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-_None._
+- After the cycle "docs: pay the punctuation debt" lands, a single-step cycle, `docs: the generic
+  Queue idea`, adds a `## Ideas` bullet and a section in `notes/ring-buffer-design.md`: a
+  `Queue<P>` with a sealed `Single` / `Multi` producer marker as a thin facade over `spsc::v3` and
+  `mpsc::v2`, `T` staying per call. Its open questions:
+  - Is the closure `send_with` the common send, with `reserve_slot_with` a `Single` extra?
+  - Is the ISR kind a guard axis (CAS or critical section) rather than a producer count? It would
+    give thumbv6m, which has no CAS, a multi-producer queue, the gap between [Execution
+    contexts](notes/ring-buffer-design.md#execution-contexts) and the embedded-floor Idea.
+  - Related: the `### Typed endpoints` Todo, and a consumer-kind axis left room for.
 
 ## In Progress
 
@@ -17,7 +25,102 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### docs: pay the punctuation debt
+
+#### Problem
+
+The prose rules ban semicolons and the untypeable characters (em dash, en dash, ellipsis, arrow)
+from authored text ([Semicolons](agent-data/prose.md#semicolons), [Typeable punctuation
+only](agent-data/prose.md#typeable-punctuation-only)), and a historical file pays when a cycle
+touches it. About 35 files still owe, some 660 lines with a banned character and some 360 with a
+prose semicolon, `notes/ring-buffer-design.md` the largest, so every small edit to one of them
+is either sidestepped or drags a sweep behind it. The generic Queue idea on 2026-09-17 was the
+latest edit to sidestep, and the user's call was to pay the whole debt instead.
+
+#### Solution
+
+Sweep every owing file, one rung per group of files so each review is of one kind of text, then
+add a checker that blanks code and expects zero, so the debt cannot return unseen.
+
+#### Acceptance check
+
+The checker, run over every tracked file outside the exclusions named in the deliberation, reports
+zero authored banned characters and zero prose semicolons, and `vc-x1 validate` passes, doctests
+included. Every inbound link to a heading whose anchor moved resolves.
+
+#### Ladder
+
+- [docs: pay the punctuation debt opening][1] (done)
+- [docs: punctuation debt in ring-buffer-design.md][2]
+- [docs: punctuation debt in the notes and READMEs][3]
+- [docs: punctuation debt in the src comments][4]
+- [docs: punctuation debt in the tp crates][5]
+- [chore: a prose punctuation debt checker][6]
+- [docs: pay the punctuation debt closing][7]
+
+#### Deliberation
+
+- Multi-step: about a thousand sites over 35 files is not one reviewable step.
+  - The rungs follow the kinds of text, so the first review settles the conventions the later
+    rungs repeat.
+  - The design file is a rung alone, being the largest and the one whose em dashes are mostly
+    structure.
+- Its own cycle, apart from the generic Queue idea: the sweep and the idea are different work, and
+  `git log --grep` for the idea should not land in a punctuation diff.
+  - The idea follows as a single-step cycle, held in `## Continuation notes` until then.
+- Type `docs`: comments and notes are documentation, and `style` is not a common type and is not
+  declared in `custom.md`. An earlier rung title used `style`, and it stays as published.
+- Exclusions:
+  - Frozen history, `notes/chores/` and `notes/done.md`, is left as it is, read as never touched
+    ([Frozen history](agent-data/notes.md#frozen-history-chores-and-done)). `tprobe/notes/chores/`
+    goes with it.
+  - `LICENSE-APACHE`, `.gitignore`, `Cargo.toml` files, and `Cargo.lock` are not prose.
+  - The agent-files are not swept here: their hits are specimens naming the characters, and an
+    agent-file change is its own cycle.
+  - Transcribed text keeps its characters: tool output, published commit titles, quoted external
+    text.
+- A checker rung: a byte scan cannot enforce the rule, so the check blanks code spans, fenced
+  code, and source code outside comments first. Whether `[validate]` runs it is decided at that
+  rung.
+- Delegation: the semicolon joins and the arrow and ellipsis swaps go to a lesser model per file,
+  reviewed here, and the em dashes of the design file are done here, each being a decision.
+
+#### Ladder details
+
+##### docs: pay the punctuation debt opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write
+this block, and bump the version-of-record. No `## Todo` entry moved, the work having arrived
+unplanned, and `## Waiting` held nothing to promote.
+
+##### docs: punctuation debt in ring-buffer-design.md
+
+The design file owes the most, 193 lines with a banned character and 128 with a prose semicolon.
+Each is resolved by the joins the prose rules name, and inbound links to a moved anchor are
+re-pointed in the same rung.
+
+##### docs: punctuation debt in the notes and READMEs
+
+The remaining markdown outside frozen history: `README.md`, `TODO.md`, `notes/`, and the
+`tprobe` and `tp_runner` docs.
+
+##### docs: punctuation debt in the src comments
+
+The doc comments and inline comments under `src/`, `examples/`, and `tests/`, where a comment is
+prose and the code beside it is not.
+
+##### docs: punctuation debt in the tp crates
+
+The comments under `tprobe/`, `tp_runner/`, and `tp_matrix/`.
+
+##### chore: a prose punctuation debt checker
+
+Nothing detects a new banned character or prose semicolon. A script blanks what is code and
+expects zero elsewhere, and is the cycle's acceptance check.
+
+##### docs: pay the punctuation debt closing
+
+Closing out the cycle.
 
 ## Waiting
 
@@ -260,53 +363,15 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### agent-files(proposal): v0.2.5
+_None._
 
-#### Problem
-
-Close-out step 4 in `AGENTS.md` and the preamble of `notes/agent-files-size.md` both say the
-agent-files line count is recorded at every close-out, so the table grew "unchanged, no agent-file
-touched" rows that record nothing and every close-out paid an edit for one. The user's call on
-2026-09-16: a row only when the cycle changed an agent-file.
-
-#### Solution
-
-Done as one commit. Step 4 says the row is recorded when the cycle changed an agent-file and that
-a cycle which touched none adds no row, the notes file's preamble says the same, the close-out
-rationale gains the why, and the agent-files version marker is renamed to `v0.2.5`, this cycle
-being a proposal to the payload ([Changing the agent-files](AGENTS.md#changing-the-agent-files)).
-This cycle changes agent-files, so it adds a row, and `rationale.md` leaves the count.
-
-#### Acceptance check
-
-`ls agent-data` shows `agent-files-v0.2.5` and no other marker. Step 4 and the preamble carry the
-condition, `grep -n "changed an agent-file"` finding both. The size table's last row is this
-cycle's, and the three "unchanged" rows dropped at the previous close-out stay gone. The diff
-against the payload is the proposal: `AGENTS.md`, `agent-data/rationale.md`, and the marker.
-
-Passed on 2026-09-16 in the one commit.
-
-#### Ladder
-
-- agent-files(proposal): v0.2.5 (done)
-
-#### Deliberation
-
-- Single-step: two sentences, one rationale bullet, and a rename, with their record, are one
-  straightforward step.
-- The patch digit, v0.2.4 to v0.2.5, per Which digit in [Agent-files
-  version](agent-data/versioning.md#agent-files-version): a wording change to one step.
-- The rows since `agent-files(adoption): v0.2.4` were dropped at the previous close-out on the
-  user's call, so the table already reads as the new rule says, and this cycle's row follows it.
-- Bookmark named from the title's slug, `agent-files-proposal-v025`, the anchor algorithm
-  dropping the dots.
-- `rationale.md` leaves the count, the user's call at the review: the first draft grew the count
-  by five, one line of step 4 and four of rationale, and a rule that gains a why must not read as
-  the set growing. The rationale is the rules' why, so it is counted no more, step 4 and the
-  bullet were trimmed to two lines each, and the row notes the change of definition. The user
-  will add a Todo to vc-x1 for a `vc-x1 agent-files size` command that computes it.
-
-Close-out shape: single-step, one commit, landed as it is.
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
+[1]: #docs-pay-the-punctuation-debt-opening
+[2]: #docs-punctuation-debt-in-ring-buffer-designmd
+[3]: #docs-punctuation-debt-in-the-notes-and-readmes
+[4]: #docs-punctuation-debt-in-the-src-comments
+[5]: #docs-punctuation-debt-in-the-tp-crates
+[6]: #chore-a-prose-punctuation-debt-checker
+[7]: #docs-pay-the-punctuation-debt-closing
