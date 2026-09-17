@@ -3,11 +3,11 @@
 //! `end` rather than `record(ticks)`.
 //!
 //! `start(site_id)` reads the hardware tick counter and returns
-//! an opaque [`TProbeSpanId`] carrying `(site_id, start_tsc)`;
+//! an opaque [`TProbeSpanId`] carrying `(site_id, start_tsc)`,
 //! `end(id)` reads the tick counter again and appends a complete
 //! `(site_id, start_tsc, end_tsc)` record to the probe's
 //! internal buffer. No delta math, histogram ingestion, or
-//! tick→ns conversion happens on the hot path — all of that is
+//! tick->ns conversion happens on the hot path, all of that is
 //! deferred to [`TProbeSpan::report`], which drains pending records
 //! into the histogram before rendering.
 //!
@@ -29,10 +29,10 @@ use crate::ticks;
 
 /// Opaque handle returned by [`TProbeSpan::start`], consumed by
 /// [`TProbeSpan::end`]. Carries the caller-supplied `site_id` and
-/// the start-time tick reading; no probe-internal allocation
+/// the start-time tick reading, no probe-internal allocation
 /// happens at `start` time.
 ///
-/// `#[must_use]` — dropping the id without passing it to
+/// `#[must_use]`: dropping the id without passing it to
 /// [`TProbeSpan::end`] leaks the span (no record is appended).
 #[must_use]
 #[derive(Clone, Copy, Debug)]
@@ -42,7 +42,7 @@ pub struct TProbeSpanId {
 }
 
 /// A complete span record: `(site_id, start_tsc, end_tsc)`.
-/// Appended at [`TProbeSpan::end`] time; the record buffer only
+/// Appended at [`TProbeSpan::end`] time, the record buffer only
 /// ever holds complete records. Drained into the histogram at
 /// [`TProbeSpan::report`] time.
 #[derive(Clone, Copy, Debug)]
@@ -54,7 +54,7 @@ struct Record {
 }
 
 /// A named, single-writer histogram of hardware tick-counter
-/// deltas plus a span-record buffer. Not `Sync`; cross-thread
+/// deltas plus a span-record buffer. Not `Sync`, cross-thread
 /// *sharing* is out of scope. `Send` so probes can be moved
 /// between threads (e.g. returned via a `JoinHandle<TProbeSpan>`
 /// on shutdown).
@@ -70,7 +70,7 @@ impl TProbeSpan {
     /// figures.
     ///
     /// Exits the process (code 1) if the hardware tick counter
-    /// isn't usable — see [`crate::ticks::require_ok`].
+    /// isn't usable, see [`crate::ticks::require_ok`].
     pub fn new(name: &str) -> Self {
         ticks::require_ok();
         let _ = ticks::ticks_per_ns();
@@ -84,7 +84,7 @@ impl TProbeSpan {
     /// Begin a span. Reads the hardware tick counter and
     /// returns an opaque [`TProbeSpanId`] carrying `(site_id,
     /// start_tsc)`. The id must eventually be passed to
-    /// [`TProbeSpan::end`]; a dropped id leaves no record.
+    /// [`TProbeSpan::end`], a dropped id leaves no record.
     #[inline]
     pub fn start(&mut self, site_id: u64) -> TProbeSpanId {
         TProbeSpanId {
@@ -110,12 +110,12 @@ impl TProbeSpan {
 
     /// Render a band-table report for this probe. `as_ticks`
     /// controls the display unit: `false` converts stored tick
-    /// deltas to nanoseconds (default for the CLI); `true` shows
+    /// deltas to nanoseconds (default for the CLI), `true` shows
     /// raw ticks (`-t`/`--ticks`). `decimals` is the fractional
     /// digits on every value column.
     ///
     /// Drains any pending `start`/`end` records into the histogram
-    /// before rendering: `delta = end_tsc − start_tsc`, clamped to
+    /// before rendering: `delta = end_tsc - start_tsc`, clamped to
     /// `1` since the histogram lower bound is 1.
     pub fn report(&mut self, as_ticks: bool, decimals: usize) {
         for r in self.records.drain(..) {

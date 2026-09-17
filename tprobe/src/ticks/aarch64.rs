@@ -15,7 +15,7 @@ pub fn read_ticks() -> u64 {
     // Plain `mrs` without an `isb` barrier, matching the plain
     // (unfenced) `rdtsc` in the x86_64 impl. The read can be
     // speculated a few instructions early/late, but at Generic
-    // Timer rates (54 MHz on the BCM2712 — ~18.5 ns per tick)
+    // Timer rates (54 MHz on the BCM2712, ~18.5 ns per tick)
     // that blur is well under one tick.
     let ticks: u64;
     unsafe {
@@ -35,9 +35,9 @@ pub fn ticks_per_ns() -> f64 {
     *TICKS_PER_NS.get_or_init(|| cntfrq_hz() as f64 / 1e9)
 }
 
-/// `CNTFRQ_EL0` — Generic Timer frequency in Hz, programmed by
+/// `CNTFRQ_EL0`: Generic Timer frequency in Hz, programmed by
 /// firmware at boot (54 MHz on the BCM2712 / Raspberry Pi 5).
-/// The register is architecturally 32-bit; `mrs` into a 64-bit
+/// The register is architecturally 32-bit, and `mrs` into a 64-bit
 /// register zero-extends.
 fn cntfrq_hz() -> u64 {
     let hz: u64;
@@ -59,9 +59,9 @@ pub fn require_ok() {
     // tick-to-ns conversion divide by zero downstream.
     if cntfrq_hz() == 0 {
         eprintln!(
-            "error: CNTFRQ_EL0 reads 0 — firmware did not program \
+            "error: CNTFRQ_EL0 reads 0. Firmware did not program \
              the Generic Timer frequency, so tick counts can't be \
-             converted to nanoseconds; refusing to run."
+             converted to nanoseconds. Refusing to run."
         );
         std::process::exit(1);
     }

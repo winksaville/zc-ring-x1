@@ -1,15 +1,15 @@
 //! Shared band-table renderer for tick-valued histograms.
 //!
 //! Both `TProbe` (fast path, direct-histogram) and `TProbeSpan`
-//! (scope API, records → drain) store hardware tick deltas and
-//! want the same band-table output shape — min/p1/…/p99/max
+//! (scope API, records -> drain) store hardware tick deltas and
+//! want the same band-table output shape, min/p1/...p99/max
 //! rows with first/last/range/count/mean columns, plus summary
 //! lines for mean, stdev, mean min-p99, stdev min-p99. This
 //! module provides a single implementation both can call into.
 //!
 //! Display unit is chosen by `as_ticks`: `false` converts stored
-//! tick values to nanoseconds via [`crate::ticks::ticks_per_ns`];
-//! `true` shows raw ticks.
+//! tick values to nanoseconds via [`crate::ticks::ticks_per_ns`],
+//! and `true` shows raw ticks.
 
 use hdrhistogram::Histogram;
 
@@ -24,8 +24,8 @@ const BOUNDARY_NAMES: &[&str] = &[
 ];
 
 /// Mean and stdev of the trimmed min-p99 band (samples whose
-/// mid-rank falls below 0.99), in stored units — the values the
-/// rendered report shows as `mean min-p99` / `stdev min-p99`.
+/// mid-rank falls below 0.99), in stored units (the values the
+/// rendered report shows as `mean min-p99` / `stdev min-p99`).
 /// `None` when the histogram is empty or every sample landed in
 /// the top band.
 pub(crate) fn trimmed_stats(hist: &Histogram<u64>) -> Option<(f64, f64)> {
@@ -77,14 +77,14 @@ pub(crate) enum Unit {
     Ns,
     /// Raw stored ticks (`tk`).
     Ticks,
-    /// Unitless counts (`ct`) — no conversion.
+    /// Unitless counts (`ct`), no conversion.
     Count,
 }
 
 /// Render a band-table report for `hist`. `kind` is the header
-/// label (`"tprobe"`, `"tprobe-span"`, …) and `name` is the
-/// probe's name. `unit` picks the display unit / conversion;
-/// `decimals` is the fractional digits on every value column.
+/// label (`"tprobe"`, `"tprobe-span"`, ...) and `name` is the
+/// probe's name. `unit` picks the display unit / conversion,
+/// and `decimals` is the fractional digits on every value column.
 pub(crate) fn render(kind: &str, name: &str, hist: &Histogram<u64>, unit: Unit, decimals: usize) {
     let sample_count = hist.len();
     println!("  {kind}: {name} [count={}]", fmt_commas(sample_count));
@@ -117,7 +117,7 @@ pub(crate) fn render(kind: &str, name: &str, hist: &Histogram<u64>, unit: Unit, 
         let idx = BOUNDARY_PCTS[1..]
             .iter()
             .position(|&b| mid_rank < b)
-            .unwrap_or(n_bands - 1); // OK: rank ≥ last boundary → top band
+            .unwrap_or(n_bands - 1); // OK: rank ≥ last boundary -> top band
         band_first[idx] = band_first[idx].min(value);
         band_last[idx] = band_last[idx].max(value);
         band_count[idx] += count;

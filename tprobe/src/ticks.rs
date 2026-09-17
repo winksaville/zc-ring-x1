@@ -1,12 +1,12 @@
 //! Hardware tick counter abstraction: thin wrapper over the
 //! target architecture's fixed-rate monotonic counter.
 //!
-//! Probes call three functions; the per-arch impl lives in a
+//! Probes call three functions, and the per-arch impl lives in a
 //! child module gated by `#[cfg(target_arch = ...)]`:
 //!
-//! - [`read_ticks`] — current counter value.
-//! - [`ticks_per_ns`] — calibrated conversion ratio.
-//! - [`require_ok`] — exit the process if the counter isn't
+//! - [`read_ticks`]: current counter value.
+//! - [`ticks_per_ns`]: calibrated conversion ratio.
+//! - [`require_ok`]: exit the process if the counter isn't
 //!   usable for probe measurements.
 //!
 //! `x86_64` (`rdtsc`) and `aarch64` (`CNTVCT_EL0`) are
@@ -41,12 +41,12 @@ pub fn read_ticks() -> u64 {
 
 /// Conversion ratio: counter ticks per nanosecond. Calibrated
 /// (x86_64) or read from hardware (aarch64, `CNTFRQ_EL0`).
-/// Cached — the first call does the work.
+/// Cached, the first call does the work.
 pub fn ticks_per_ns() -> f64 {
     imp::ticks_per_ns()
 }
 
-/// Verify the tick counter is usable for probe measurements;
+/// Verify the tick counter is usable for probe measurements, and
 /// exit the process (code 1) with a diagnostic if not. The
 /// checks performed depend on the target architecture.
 pub fn require_ok() {

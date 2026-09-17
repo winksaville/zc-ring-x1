@@ -3,7 +3,7 @@
 //!
 //! The caller records tick deltas (`ticks::read_ticks() −
 //! ticks::read_ticks()`) rather than nanoseconds: skipping the
-//! tick→ns conversion at record time trims a mul-shift from the
+//! tick->ns conversion at record time trims a mul-shift from the
 //! hot path, and conversion to nanoseconds, if desired, is
 //! deferred to the report phase using
 //! [`crate::ticks::ticks_per_ns`].
@@ -21,13 +21,13 @@ use crate::band_table;
 use crate::ticks;
 
 /// A named, single-writer histogram of hardware tick-counter
-/// deltas. Not `Sync`; cross-thread *sharing* is out of scope.
+/// deltas. Not `Sync`, cross-thread *sharing* is out of scope.
 /// `Send` so probes can be moved between threads (e.g. returned
 /// via a `JoinHandle<TProbe>` on shutdown).
 pub struct TProbe {
     name: String,
     hist: Histogram<u64>,
-    /// Values are unitless counts, not ticks — reports render
+    /// Values are unitless counts, not ticks. Reports render
     /// with the `ct` unit and never convert to ns.
     counts: bool,
 }
@@ -38,7 +38,7 @@ impl TProbe {
     /// figures.
     ///
     /// Exits the process (code 1) if the hardware tick counter
-    /// isn't usable — see [`crate::ticks::require_ok`].
+    /// isn't usable, see [`crate::ticks::require_ok`].
     pub fn new(name: &str) -> Self {
         ticks::require_ok();
         // Trigger calibration eagerly so the first report() doesn't
@@ -52,8 +52,8 @@ impl TProbe {
     }
 
     /// Create an empty probe whose recorded values are unitless
-    /// counts (e.g. spin attempts) rather than tick deltas;
-    /// reports render with the `ct` unit and never convert.
+    /// counts (e.g. spin attempts) rather than tick deltas.
+    /// Reports render with the `ct` unit and never convert.
     pub fn new_counts(name: &str) -> Self {
         TProbe {
             counts: true,
@@ -68,14 +68,14 @@ impl TProbe {
 
     /// Whether this probe stores unitless counts
     /// ([`new_counts`](TProbe::new_counts)) rather than tick
-    /// deltas — callers rendering values decide conversion by
+    /// deltas, callers rendering values decide conversion by
     /// this.
     pub fn is_counts(&self) -> bool {
         self.counts
     }
 
     /// Mean and stdev of the trimmed min-p99 band, in stored
-    /// units (ticks, or raw counts for a `new_counts` probe) —
+    /// units (ticks, or raw counts for a `new_counts` probe),
     /// the report's `mean min-p99` / `stdev min-p99` lines.
     /// `None` when empty.
     pub fn trimmed_stats(&self) -> Option<(f64, f64)> {
@@ -84,15 +84,15 @@ impl TProbe {
 
     /// Record a single sample, in tick-counter deltas. Values
     /// of 0 are clamped to 1 since the histogram's lower bound
-    /// is 1; back-to-back tick reads can produce 0 on fast cores.
+    /// is 1, and back-to-back tick reads can produce 0 on fast cores.
     pub fn record(&mut self, ticks: u64) {
-        self.hist.record(ticks.max(1)).unwrap(); // OK: clamped ≥1, and any real delta is under the 1e12 bound
+        self.hist.record(ticks.max(1)).unwrap(); // OK: clamped >=1, and any real delta is under the 1e12 bound
     }
 
     /// Render a band-table report for this probe. `as_ticks`
     /// controls the display unit: `false` converts stored tick
-    /// deltas to nanoseconds (default for the CLI); `true` shows
-    /// raw ticks (`-t`/`--ticks`); a [`new_counts`] probe always
+    /// deltas to nanoseconds (default for the CLI), `true` shows
+    /// raw ticks (`-t`/`--ticks`), a [`new_counts`] probe always
     /// renders unitless counts. `decimals` is the fractional
     /// digits on every value column.
     ///

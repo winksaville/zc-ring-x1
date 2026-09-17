@@ -1,7 +1,7 @@
 //! Number formatting helpers for the band-table renderer.
 
 /// Format an integer with thousands separators, e.g.
-/// `12345` → `"12,345"`.
+/// `12345` -> `"12,345"`.
 pub fn fmt_commas(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::new();
@@ -26,6 +26,6 @@ pub fn fmt_commas_f64(n: f64, decimals: usize) -> String {
         Some(i) => (&body[..i], &body[i..]),
         None => (body, ""),
     };
-    let int_num: u64 = int_part.parse().unwrap_or(0); // OK: int part of a formatted float; overflow beyond u64 formats as 0
+    let int_num: u64 = int_part.parse().unwrap_or(0); // OK: int part of a formatted float, overflow beyond u64 formats as 0
     format!("{sign}{}{frac_part}", fmt_commas(int_num))
 }

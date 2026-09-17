@@ -54,7 +54,7 @@ included. Every inbound link to a heading whose anchor moved resolves.
 - [docs: punctuation debt in ring-buffer-design.md][2] (done)
 - [docs: punctuation debt in the notes and READMEs][3] (done)
 - [docs: punctuation debt in the src comments][4] (done)
-- [docs: punctuation debt in the tp crates][5]
+- [docs: punctuation debt in the tp crates][5] (done)
 - [chore: a prose punctuation debt checker][6]
 - [docs: pay the punctuation debt closing][7]
 
@@ -163,6 +163,17 @@ prose and the code beside it is not.
 ##### docs: punctuation debt in the tp crates
 
 The comments under `tprobe/`, `tp_runner/`, and `tp_matrix/`.
+
+- Ten source files and the comment heading `tp_runner/Cargo.toml` paid, 55 lines.
+- Three user-visible messages changed, the refusals `tprobe` prints when the clock cannot be
+  trusted: an em dash became a comma or a period, and "; refusing to run." became its own
+  sentence. No test or note quoted them.
+  - A message string is prose in a source file, so its semicolon pays like a comment's.
+- A clap doc comment is the program's help text, and was treated as any other comment.
+- One agent turned an arrow into the word "means" and a comparison sign into `>=`. The
+  word-level comparison caught it and both went back, the arrow as `->`.
+- The workspace members sit outside `[validate]`, which builds the root package only, so this
+  rung also ran clippy and the tests with `--workspace`, both clean.
 
 ##### chore: a prose punctuation debt checker
 
