@@ -51,7 +51,7 @@ included. Every inbound link to a heading whose anchor moved resolves.
 #### Ladder
 
 - [docs: pay the punctuation debt opening][1] (done)
-- [docs: punctuation debt in ring-buffer-design.md][2]
+- [docs: punctuation debt in ring-buffer-design.md][2] (done)
 - [docs: punctuation debt in the notes and READMEs][3]
 - [docs: punctuation debt in the src comments][4]
 - [docs: punctuation debt in the tp crates][5]
@@ -82,8 +82,13 @@ included. Every inbound link to a heading whose anchor moved resolves.
 - A checker rung: a byte scan cannot enforce the rule, so the check blanks code spans, fenced
   code, and source code outside comments first. Whether `[validate]` runs it is decided at that
   rung.
-- Delegation: the semicolon joins and the arrow and ellipsis swaps go to a lesser model per file,
-  reviewed here, and the em dashes of the design file are done here, each being a decision.
+- Delegation: the sweep goes to a lesser model per file or chunk, under written rules, and is
+  reviewed here.
+  - The first plan kept the design file's em dashes here, each being a decision. At the rung 75 of
+    its 185 turned out to be one pattern, a bold lead and a dash, so the rules could carry them
+    and the review took the rest.
+  - A word-level comparison with punctuation stripped is the review's safety net: a sweep may add
+    conjunctions and nothing else.
 
 #### Ladder details
 
@@ -98,6 +103,21 @@ unplanned, and `## Waiting` held nothing to promote.
 The design file owes the most, 193 lines with a banned character and 128 with a prose semicolon.
 Each is resolved by the joins the prose rules name, and inbound links to a moved anchor are
 re-pointed in the same rung.
+
+- The conventions this rung settled for the rest of the ladder:
+  - A bold lead and a dash, `- **Label** - text` in the old spelling, becomes `- Label: text`,
+    per [Leads are labels, unmarked](agent-data/prose.md#leads-are-labels-unmarked), and a second
+    colon on the same line is recast as a comma or a sentence.
+  - An aside takes commas, parentheses, or two sentences, and a semicolon takes the joins in
+    [Semicolons](agent-data/prose.md#semicolons).
+  - A comment inside a fenced code block is prose and pays, the code beside it does not. An arrow
+    inside a code span is a use and becomes `->`.
+  - The multiplication sign is typeable enough to stay, not being on the banned list.
+- No heading held a banned character, so no anchor moved.
+- The 23 lines over 100 columns are the 23 the file had, tables and literal rows.
+- The file went out as seven chunks at `##` boundaries under `tmp/`, one agent each, and was
+  reassembled by concatenation. The added words were conjunctions only: and, so, since, but,
+  which.
 
 ##### docs: punctuation debt in the notes and READMEs
 
