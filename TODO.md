@@ -52,7 +52,7 @@ included. Every inbound link to a heading whose anchor moved resolves.
 
 - [docs: pay the punctuation debt opening][1] (done)
 - [docs: punctuation debt in ring-buffer-design.md][2] (done)
-- [docs: punctuation debt in the notes and READMEs][3]
+- [docs: punctuation debt in the notes and READMEs][3] (done)
 - [docs: punctuation debt in the src comments][4]
 - [docs: punctuation debt in the tp crates][5]
 - [chore: a prose punctuation debt checker][6]
@@ -90,6 +90,14 @@ included. Every inbound link to a heading whose anchor moved resolves.
   - A word-level comparison with punctuation stripped is the review's safety net: a sweep may add
     conjunctions and nothing else.
 
+- Waiver, the user's on 2026-09-17 at the review of the notes and READMEs rung: "you have
+  permission to complete the cycle but don't land on main".
+  - It covers the work reviews, the description reviews, the per-push approvals, and the hard
+    stops of every remaining rung, the closing included, and the close-out shape, which takes
+    the default, a trapezoid.
+  - It does not cover Land: `main` stays where it is until the user's go.
+  - The rules, the validation before each push, and the records are as ever.
+
 #### Ladder details
 
 ##### docs: pay the punctuation debt opening
@@ -123,6 +131,17 @@ re-pointed in the same rung.
 
 The remaining markdown outside frozen history: `README.md`, `TODO.md`, `notes/`, and the
 `tprobe` and `tp_runner` docs.
+
+- Six files paid: `TODO.md`, `notes/zc-msg-x1.md`, `notes/jj-tips.md`, and the `tp_runner` and
+  `tprobe` READMEs with `tprobe/notes/design.md`. The rest of the markdown owed nothing, the
+  semicolons of `README.md` and `notes/user-guide.md` all being code.
+- One transcription stays: the iiac-perf banner line quoted in `README.md` keeps its em dash,
+  being tool output.
+- One anchor moved: the title heading of `notes/zc-msg-x1.md` took a colon for its dash. Nothing
+  linked to it.
+- The rules sent out gained what the first review settled: no second colon, the multiplication
+  sign stays, a comment in a fence pays, a heading is reported and not changed.
+- The `TODO.md` semicolons were lists hiding in prose, now sub-bullets.
 
 ##### docs: punctuation debt in the src comments
 
@@ -244,15 +263,18 @@ is most of the message, eight times the no-switch shape on the 7600X. Where the 
 up, from depth 8 on, it is paid once in hundreds of messages or never.
 
 - The lines that cross per switch, beyond the new segment's slot line that the no-switch shape
-  walks too: for spsc-v3 the consumer's give-back word, one transfer; for mpsc-v2 the old
-  segment's seal and the in-use word twice, since both sides read-modify-write it, three to four.
-  The two machines agree on that once the placement's cost per transfer is taken out, over 100 ns
-  cross-CCX on the 3900X and 15 to 20 within the 7600X's one L3.
-- Candidates: a consumer-owned give-back word for v2 again, now that the taking side is sound by
-  itself with the in-use word, so the consumer's give-back is a store to a line producers only
-  read; the seal riding in the slot word as v3's MOVED does, which v2 cannot do at the commit since
-  another producer may hold the last slot; a prefetch of the next segment's first line at the
-  take. Each measured on the stress table's switch-cost rows.
+  walks too:
+  - For spsc-v3 the consumer's give-back word, one transfer.
+  - For mpsc-v2 the old segment's seal and the in-use word twice, since both sides
+    read-modify-write it, three to four.
+  - The two machines agree on that once the placement's cost per transfer is taken out, over 100
+    ns cross-CCX on the 3900X and 15 to 20 within the 7600X's one L3.
+- Candidates, each measured on the stress table's switch-cost rows:
+  - A consumer-owned give-back word for v2 again, now that the taking side is sound by itself
+    with the in-use word, so the consumer's give-back is a store to a line producers only read.
+  - The seal riding in the slot word as v3's MOVED does, which v2 cannot do at the commit since
+    another producer may hold the last slot.
+  - A prefetch of the next segment's first line at the take.
 
 ### Comparison queues in the demo: cordyceps, crossbeam, iceoryx2
 
@@ -261,7 +283,7 @@ for cordyceps, crossbeam, and iceoryx2 beside them. Its own cycle, since each is
 decision and a harness shape:
 
 - cordyceps is a dev-dependency today, used by `tp-pool`, and the demo is the installed binary, so
-  it would become a dependency of the crate; crossbeam and iceoryx2 would be new ones, and
+  it would become a dependency of the crate. Crossbeam and iceoryx2 would be new ones, and
   iceoryx2 is a shared-memory framework with its own runtime and setup.
 - cordyceps's intrusive MPSC and crossbeam's channels move a pointer or a value, not a message in
   place, so their line is a pool buffer or a boxed message crossing, `tp-pool`'s shape, not the
