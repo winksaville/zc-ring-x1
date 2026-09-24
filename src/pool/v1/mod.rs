@@ -647,7 +647,7 @@ mod tests {
         val: u64,
     }
 
-    /// Two lines: too big for a one-line stack.
+    /// 128 bytes: too big for a 64-byte stack.
     #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
     #[repr(C)]
     struct TwoLines {
@@ -657,8 +657,9 @@ mod tests {
     /// One cache line, the smallest buffer size.
     const LINE: u32 = CACHE_LINE_SIZE as u32;
 
-    /// The three-stack geometry most tests use: 2 one-line, 2 two-line, 2 four-line buffers.
-    const THREE: [(u32, u32); 3] = [(LINE, 2), (2 * LINE, 2), (4 * LINE, 2)];
+    /// The geometry most tests use, one pool of three stacks: two 64-byte buffers, two
+    /// 128-byte, and two 256-byte, with a 64-byte cache line.
+    const THREE_STACKS: [(u32, u32); 3] = [(LINE, 2), (2 * LINE, 2), (4 * LINE, 2)];
 
     /// Cache-line-aligned backing store, big enough for the tests' pools.
     #[repr(C, align(64))]
@@ -675,7 +676,10 @@ mod tests {
     fn header_sizes() {
         assert_eq!(size_of::<PoolHeader<1>>(), 2 * CACHE_LINE_SIZE);
         assert_eq!(size_of::<PoolHeader<3>>(), 4 * CACHE_LINE_SIZE);
-        assert_eq!(region_size(THREE), (4 + 2 + 4 + 8) as u64 * LINE as u64);
+        assert_eq!(
+            region_size(THREE_STACKS),
+            (4 + 2 + 4 + 8) as u64 * LINE as u64
+        );
     }
 
     #[test]
@@ -714,7 +718,7 @@ mod tests {
             Some(Error::TooSmall)
         );
         assert_eq!(
-            Pool::<3>::init(&mut r.0[1..], THREE).err(),
+            Pool::<3>::init(&mut r.0[1..], THREE_STACKS).err(),
             Some(Error::Misaligned)
         );
         assert_eq!(
@@ -734,7 +738,7 @@ mod tests {
         assert_eq!(err, Some(Error::BadMagic));
 
         let mut r = Region::new();
-        Pool::init(&mut r.0, THREE).unwrap();
+        Pool::init(&mut r.0, THREE_STACKS).unwrap();
         // One pointer for every attach, so no later retag invalidates the attached handle.
         let (base, len) = (r.0.as_mut_ptr(), r.0.len());
         let pool = unsafe { Pool::<3>::attach(base, len) }.unwrap();
@@ -751,7 +755,7 @@ mod tests {
     #[test]
     fn alloc_picks_the_smallest_stack_that_fits() {
         let mut r = Region::new();
-        let mut pool = Pool::init(&mut r.0, THREE).unwrap();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
         let small = pool.alloc::<Msg>().unwrap();
         let mid = pool.alloc::<TwoLines>().unwrap();
         let bytes = pool.alloc_bytes(3 * CACHE_LINE_SIZE).unwrap();
@@ -769,8 +773,8 @@ mod tests {
     #[test]
     fn empty_stack_falls_back_and_counts_misses() {
         let mut r = Region::new();
-        let mut pool = Pool::init(&mut r.0, THREE).unwrap();
-        // Two one-line buffers, then the two-line stack serves, then the four-line stack.
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
+        // Two 64-byte buffers, then the 128-byte stack serves, then the 256-byte stack.
         let bufs: [_; 6] = core::array::from_fn(|_| pool.alloc::<Msg>().unwrap());
         let sizes = bufs.each_ref().map(|b| b.buf_size);
         assert_eq!(sizes, [LINE, LINE, 2 * LINE, 2 * LINE, 4 * LINE, 4 * LINE]);
@@ -778,7 +782,7 @@ mod tests {
         // Every stack that fits is empty.
         assert_eq!(pool.alloc::<Msg>().err(), Some(Exhausted));
         assert_eq!(pool.misses(), [5, 0, 0]);
-        // A free goes back to its own stack: the one-line stack serves again, no miss.
+        // A free goes back to its own stack: the 64-byte stack serves again, no miss.
         let [a, b, c, d, e, f] = bufs;
         a.free();
         let again = pool.alloc::<Msg>().unwrap();
@@ -799,7 +803,7 @@ mod tests {
     #[test]
     fn free_is_lifo_per_stack() {
         let mut r = Region::new();
-        let mut pool = Pool::init(&mut r.0, THREE).unwrap();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
         let a = pool.alloc::<Msg>().unwrap();
         let b = pool.alloc::<Msg>().unwrap();
         let x = pool.alloc::<TwoLines>().unwrap();
@@ -818,8 +822,8 @@ mod tests {
     #[test]
     fn stacks_do_not_overlap() {
         let mut r = Region::new();
-        let end = r.0.as_ptr() as usize + region_size(THREE) as usize;
-        let mut pool = Pool::init(&mut r.0, THREE).unwrap();
+        let end = r.0.as_ptr() as usize + region_size(THREE_STACKS) as usize;
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
         let mut all: [_; 6] = [
             pool.alloc_bytes(1).unwrap(),
             pool.alloc_bytes(1).unwrap(),
@@ -841,8 +845,8 @@ mod tests {
     #[test]
     fn corrupted_stack_falls_back() {
         let mut r = Region::new();
-        let mut pool = Pool::init(&mut r.0, THREE).unwrap();
-        // A peer scribbles the one-line stack's head: that stack reads as empty, and the next
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
+        // A peer scribbles the 64-byte stack's head: that stack reads as empty, and the next
         // stack serves, never an out-of-bounds buffer.
         pool.header.heads[0].store(1000, Ordering::Relaxed);
         let buf = pool.alloc::<Msg>().unwrap();
@@ -873,7 +877,7 @@ mod tests {
     #[should_panic(expected = "size larger than the largest buffer")]
     fn too_big_bytes_panics() {
         let mut r = Region::new();
-        let mut pool = Pool::init(&mut r.0, THREE).unwrap();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
         let _ = pool.alloc_bytes(4 * CACHE_LINE_SIZE + 1);
     }
 
@@ -902,7 +906,7 @@ mod tests {
         // frees race the pops on both stacks' heads.
         const COUNT: u64 = if cfg!(miri) { 200 } else { 100_000 };
         let mut r = Region::new();
-        let mut pool = Pool::init(&mut r.0, THREE).unwrap();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
 
         let (tx, rx) = std::sync::mpsc::channel::<BufSlot<'_, Msg>>();
         std::thread::scope(|s| {
@@ -937,7 +941,7 @@ mod tests {
     fn desc_round_trip_across_stacks() {
         use crate::{Desc, PoolRegistry};
         let mut r = Region::new();
-        let mut pool = Pool::init(&mut r.0, THREE).unwrap();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
         let mut reg = PoolRegistry::<1, _>::new();
         let id = reg.register(pool.view()).unwrap();
 
@@ -983,8 +987,8 @@ mod tests {
         use crate::{PoolRegistry, RegistryError};
         let mut ra = Region::new();
         let mut rb = Region::new();
-        let mut pool_a = Pool::init(&mut ra.0, THREE).unwrap();
-        let pool_b = Pool::init(&mut rb.0, THREE).unwrap();
+        let mut pool_a = Pool::init(&mut ra.0, THREE_STACKS).unwrap();
+        let pool_b = Pool::init(&mut rb.0, THREE_STACKS).unwrap();
         let mut reg = PoolRegistry::<2, _>::new();
         let id_a = reg.register(pool_a.view()).unwrap();
         let id_b = reg.register(pool_b.view()).unwrap();
@@ -1002,7 +1006,7 @@ mod tests {
     fn to_slot_rejects_hostile_descs() {
         use crate::{Desc, PoolRegistry, RegistryError};
         let mut r = Region::new();
-        let pool = Pool::init(&mut r.0, THREE).unwrap();
+        let pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
         let mut reg = PoolRegistry::<1, _>::new();
         reg.register(pool.view()).unwrap();
         let desc = |buf_idx| Desc {
@@ -1020,7 +1024,7 @@ mod tests {
                 reg.to_slot::<Msg>(desc(u32::MAX)).err(),
                 Some(RegistryError::BadIndex)
             );
-            // Index 1 is the one-line stack's last buffer: a two-line T does not fit it, though
+            // Index 1 is the 64-byte stack's last buffer: a 128-byte T does not fit it, though
             // it fits the stack after.
             assert_eq!(
                 reg.to_slot::<TwoLines>(desc(1)).err(),
@@ -1037,7 +1041,7 @@ mod tests {
         const COUNT: u64 = if cfg!(miri) { 200 } else { 10_000 };
         let mut r = Region::new();
         let mut rr = Region::new();
-        let mut pool = Pool::init(&mut r.0, THREE).unwrap();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
         let mut reg = PoolRegistry::<1, _>::new();
         let id = reg.register(pool.view()).unwrap();
         let reg = &reg;
@@ -1082,5 +1086,490 @@ mod tests {
                 }
             });
         });
+    }
+
+    /// The small stack's buffer size in [`THREE_STACKS`], in bytes.
+    const SMALL: usize = CACHE_LINE_SIZE;
+    /// The mid stack's buffer size in [`THREE_STACKS`], in bytes.
+    const MID: usize = 2 * CACHE_LINE_SIZE;
+    /// The big stack's buffer size in [`THREE_STACKS`], in bytes.
+    const BIG: usize = 4 * CACHE_LINE_SIZE;
+
+    /// Check what a user may rely on from `alloc_bytes(size)`: at least `size` bytes, starting on
+    /// a cache line, and here exactly `expect` bytes, the size of the stack that should serve.
+    fn assert_buf(buf: &BufSlot<'_, [u8]>, size: usize, expect: usize) {
+        assert!(buf.len() >= size);
+        assert_eq!(buf.as_ptr() as usize % CACHE_LINE_SIZE, 0);
+        assert_eq!(buf.len(), expect, "a {size}-byte request");
+    }
+
+    /// Take every buffer of the [`THREE_STACKS`] pool by one-byte requests, so a scenario starts
+    /// with every stack empty. The first two come from the small stack, the other four are
+    /// fallbacks to the mid and big stacks, and the seventh request finds nothing: five misses,
+    /// all against the small stack.
+    fn exhaust_three<'a>(pool: &mut Pool<'a, 3>) -> Vec<BufSlot<'a, [u8]>> {
+        let bufs: Vec<_> = (0..6).map(|_| pool.alloc_bytes(1).unwrap()).collect();
+        let sizes: Vec<_> = bufs.iter().map(|b| b.len()).collect();
+        assert_eq!(sizes, [SMALL, SMALL, MID, MID, BIG, BIG]);
+        assert_eq!(pool.alloc_bytes(1).err(), Some(Exhausted));
+        assert_eq!(pool.misses(), [5, 0, 0]);
+        bufs
+    }
+
+    /// Remove and return a held buffer of `bytes` bytes, so a scenario can give back a buffer
+    /// of a chosen stack.
+    fn take_sized<'a>(bufs: &mut Vec<BufSlot<'a, [u8]>>, bytes: usize) -> BufSlot<'a, [u8]> {
+        let i = bufs.iter().position(|b| b.len() == bytes).unwrap();
+        bufs.swap_remove(i)
+    }
+
+    #[test]
+    fn small_free_never_serves_big() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
+        let mut bufs = exhaust_three(&mut pool);
+
+        // Give back one small buffer, so only the small stack has a free buffer.
+        take_sized(&mut bufs, SMALL).free();
+
+        // A big and a mid request: neither falls back to the smaller stack, and each counts a
+        // miss against the stack it wanted.
+        assert_eq!(pool.alloc_bytes(BIG).err(), Some(Exhausted));
+        assert_eq!(pool.alloc_bytes(MID).err(), Some(Exhausted));
+        assert_eq!(pool.misses(), [5, 1, 1]);
+
+        // The small buffer is still there for a request it fits, with no miss.
+        let small = pool.alloc_bytes(1).unwrap();
+        assert_buf(&small, 1, SMALL);
+        assert_eq!(pool.misses(), [5, 1, 1]);
+
+        small.free();
+        bufs.into_iter().for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn big_free_serves_small() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
+        let mut bufs = exhaust_three(&mut pool);
+
+        // Give back one big buffer, so only the big stack has a free buffer.
+        take_sized(&mut bufs, BIG).free();
+
+        // A one-byte request falls back past the empty small and mid stacks to the big buffer,
+        // one miss against the small stack.
+        let got = pool.alloc_bytes(1).unwrap();
+        assert_buf(&got, 1, BIG);
+        assert_eq!(pool.misses(), [6, 0, 0]);
+
+        got.free();
+        bufs.into_iter().for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn fallback_takes_the_next_larger_first() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
+        let mut bufs = exhaust_three(&mut pool);
+
+        // Give back a mid buffer, then a big one. A single LIFO list would hand out the big one
+        // first, since it was freed last, so getting the mid one first can only be the stack
+        // order at work.
+        take_sized(&mut bufs, MID).free();
+        take_sized(&mut bufs, BIG).free();
+
+        // One-byte requests take the next larger stack first: mid, then big, then nothing, each
+        // a miss against the small stack.
+        let first = pool.alloc_bytes(1).unwrap();
+        let second = pool.alloc_bytes(1).unwrap();
+        assert_buf(&first, 1, MID);
+        assert_buf(&second, 1, BIG);
+        assert_eq!(pool.alloc_bytes(1).err(), Some(Exhausted));
+        assert_eq!(pool.misses(), [8, 0, 0]);
+
+        first.free();
+        second.free();
+        bufs.into_iter().for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn a_size_lands_in_the_first_stack_that_holds_it() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
+        // (bytes asked, buffer expected): zero and every exact fit land in their own stack, one
+        // byte more in the next, and nothing here is a fallback, so no miss.
+        let cases = [
+            (0, SMALL),
+            (SMALL, SMALL),
+            (SMALL + 1, MID),
+            (MID, MID),
+            (MID + 1, BIG),
+            (BIG, BIG),
+        ];
+        for (size, expect) in cases {
+            let buf = pool.alloc_bytes(size).unwrap();
+            assert_buf(&buf, size, expect);
+            buf.free();
+        }
+        assert_eq!(pool.misses(), [0, 0, 0]);
+    }
+
+    /// One cache line of backing store, so a `Vec` of them is a line-aligned region of any
+    /// length, for pools whose geometry a seed picks.
+    #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+    #[repr(C, align(64))]
+    struct Line([u8; CACHE_LINE_SIZE]);
+
+    /// A zeroed, line-aligned heap region of at least `bytes` bytes.
+    fn heap_region(bytes: u64) -> Vec<Line> {
+        let lines = bytes.div_ceil(CACHE_LINE_SIZE as u64) as usize;
+        (0..lines).map(|_| Line([0; CACHE_LINE_SIZE])).collect()
+    }
+
+    /// A seeded LCG: one seed replays a whole run.
+    struct Lcg(u64);
+
+    impl Lcg {
+        /// The next 31 random bits.
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 33
+        }
+
+        /// A random value in `0..bound`.
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound
+        }
+    }
+
+    /// The environment variable that replays one seed, decimal or `0x` hex.
+    const SEED_VAR: &str = "ZC_POOL_SEED";
+
+    /// The seeds a randomized test runs: the one in [`SEED_VAR`] alone when it is set, else the
+    /// fixed seeds and one fresh random seed, so each run also explores a new path.
+    fn seeds() -> Vec<u64> {
+        if let Ok(text) = std::env::var(SEED_VAR) {
+            let seed = match text.strip_prefix("0x") {
+                Some(hex) => u64::from_str_radix(hex, 16),
+                None => text.parse(),
+            };
+            return vec![seed.unwrap_or_else(|_| panic!("{SEED_VAR}={text} is not a u64"))];
+        }
+        use std::hash::BuildHasher;
+        let fresh = std::collections::hash_map::RandomState::new().hash_one(0u64);
+        vec![
+            0x2545_f491_4f6c_dd1d,
+            0x9e37_79b9_7f4a_7c15,
+            0xd1b5_4a32_d192_ed03,
+            fresh,
+        ]
+    }
+
+    /// Reports how to replay a failure: dropped during a panic, it names the test, the seed,
+    /// the thread's role, and the step it had reached.
+    struct Replay {
+        /// The test's name, for the `cargo test` filter.
+        test: &'static str,
+        /// The run's seed.
+        seed: u64,
+        /// Which thread: the model, the allocator, or a freer.
+        role: String,
+        /// The step the thread had reached.
+        step: core::cell::Cell<u64>,
+    }
+
+    impl Replay {
+        /// A guard for `role` in `test` under `seed`, at step 0.
+        fn new(test: &'static str, seed: u64, role: &str) -> Self {
+            Replay {
+                test,
+                seed,
+                role: role.into(),
+                step: core::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl Drop for Replay {
+        /// Print the replay line when the thread is unwinding from a failure.
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                eprintln!(
+                    "{}: seed {:#x}, {} failed at step {}. Replay: {SEED_VAR}={:#x} cargo test \
+                     --lib {}",
+                    self.test,
+                    self.seed,
+                    self.role,
+                    self.step.get(),
+                    self.seed,
+                    self.test
+                );
+            }
+        }
+    }
+
+    /// `N` stacks of random geometry: ascending sizes one to four lines apart, and counts of
+    /// one to four buffers, small so the stacks empty often.
+    fn random_stacks<const N: usize>(rng: &mut Lcg) -> [(u32, u32); N] {
+        let mut lines = 0;
+        core::array::from_fn(|_| {
+            lines += 1 + rng.below(4) as u32;
+            (lines * LINE, 1 + rng.below(4) as u32)
+        })
+    }
+
+    /// A random request size: a stack picked at random, then a size in its range, above the
+    /// next smaller stack's size, so every stack is wanted about equally often.
+    fn random_size(rng: &mut Lcg, sizes: &[usize]) -> usize {
+        let target = rng.below(sizes.len() as u64) as usize;
+        let low = if target == 0 {
+            0
+        } else {
+            sizes[target - 1] + 1
+        };
+        low + rng.below((sizes[target] - low + 1) as u64) as usize
+    }
+
+    /// Run `f` with a stack count the seed picks, 1, 2, 3, 4, or 8, since `N` is a type.
+    macro_rules! with_random_n {
+        ($rng:expr, $f:ident($($arg:expr),*)) => {
+            match $rng.below(5) {
+                0 => $f::<1>($($arg),*),
+                1 => $f::<2>($($arg),*),
+                2 => $f::<3>($($arg),*),
+                3 => $f::<4>($($arg),*),
+                _ => $f::<8>($($arg),*),
+            }
+        };
+    }
+
+    /// Random allocs by size and frees in random order over one pool, checked step by step
+    /// against a plain model of the rule: the smallest stack that fits, else the next larger
+    /// with a free buffer, a miss against the wanted stack whenever it is empty, and
+    /// `Exhausted` when no stack from the wanted one up has a buffer. Returns the fallbacks and
+    /// the `Exhausted`s it saw, for the caller's coverage check.
+    ///
+    /// - Each held buffer carries its step in its first and last word, checked at its free, so
+    ///   two guards over one buffer would show.
+    fn model_run<const N: usize>(seed: u64, stacks: [(u32, u32); N], steps: u64) -> (u64, u64) {
+        let replay = Replay::new("allocation_matches_the_model", seed, "the model");
+        let mut rng = Lcg(seed);
+        let sizes = stacks.map(|(size, _)| size as usize);
+        let mut region = heap_region(region_size(stacks));
+        let mut pool = Pool::init(region.as_mut_bytes(), stacks).unwrap();
+
+        // The model: free buffers and misses per stack.
+        let mut free = stacks.map(|(_, count)| count);
+        let mut misses = [0u64; N];
+        let mut held: Vec<(BufSlot<'_, [u8]>, usize, u64)> = Vec::new();
+        let (mut fallbacks, mut exhausted) = (0, 0);
+
+        for step in 0..steps {
+            replay.step.set(step);
+            if !held.is_empty() && rng.below(5) < 2 {
+                let (buf, stack, tag) = held.swap_remove(rng.below(held.len() as u64) as usize);
+                let last = buf.len() - 8;
+                let head = u64::read_from_prefix(&buf[..]).unwrap().0;
+                let tail = u64::read_from_prefix(&buf[last..]).unwrap().0;
+                assert_eq!((head, tail), (tag, tag), "buffer overwritten");
+                buf.free();
+                free[stack] += 1;
+                continue;
+            }
+            let size = random_size(&mut rng, &sizes);
+            let wanted = sizes.iter().position(|&s| size <= s).unwrap();
+            if free[wanted] == 0 {
+                misses[wanted] += 1;
+            }
+            let served = (wanted..N).find(|&s| free[s] > 0);
+            match (pool.alloc_bytes(size), served) {
+                (Ok(mut buf), Some(stack)) => {
+                    assert_eq!(buf.len(), sizes[stack], "a {size}-byte request");
+                    let last = buf.len() - 8;
+                    buf[..8].copy_from_slice(&step.to_ne_bytes());
+                    buf[last..].copy_from_slice(&step.to_ne_bytes());
+                    free[stack] -= 1;
+                    held.push((buf, stack, step));
+                    fallbacks += u64::from(stack != wanted);
+                }
+                (Err(Exhausted), None) => exhausted += 1,
+                (got, want) => panic!(
+                    "a {size}-byte request got {:?}, the model says stack {want:?}",
+                    got.map(|b| b.len())
+                ),
+            }
+            assert_eq!(pool.misses(), misses);
+        }
+
+        // Every buffer back: each stack serves exactly its count again, with no miss.
+        held.into_iter().for_each(|(buf, _, _)| buf.free());
+        let before = pool.misses();
+        for (size, count) in stacks {
+            let bufs: Vec<_> = (0..count)
+                .map(|_| pool.alloc_bytes(size as usize).unwrap())
+                .collect();
+            assert!(bufs.iter().all(|b| b.len() == size as usize));
+            bufs.into_iter().for_each(BufSlot::free);
+        }
+        assert_eq!(pool.misses(), before);
+        (fallbacks, exhausted)
+    }
+
+    /// [`model_run`] with a stack count and geometry the seed picks.
+    fn model_run_random<const N: usize>(seed: u64, rng: &mut Lcg, steps: u64) -> (u64, u64) {
+        model_run::<N>(seed, random_stacks::<N>(rng), steps)
+    }
+
+    /// The model check, over a fixed four-stack geometry and over a geometry each seed picks.
+    #[test]
+    fn allocation_matches_the_model() {
+        const STEPS: u64 = if cfg!(miri) { 300 } else { 20_000 };
+        const STACKS: [(u32, u32); 4] = [(LINE, 3), (2 * LINE, 2), (4 * LINE, 4), (8 * LINE, 1)];
+        let (mut fallbacks, mut exhausted) = (0, 0);
+        for seed in seeds() {
+            let (f, e) = model_run(seed, STACKS, STEPS);
+            let mut rng = Lcg(seed ^ 0xa5a5_a5a5_a5a5_a5a5);
+            let (rf, re) = with_random_n!(rng, model_run_random(seed, &mut rng, STEPS));
+            fallbacks += f + rf;
+            exhausted += e + re;
+        }
+        // The walks reached the paths under test, not only the plain pops.
+        assert!(fallbacks > STEPS / 50 && exhausted > STEPS / 50);
+    }
+
+    /// One allocator thread and `freers` freer threads over one pool, all driven by `seed`.
+    ///
+    /// - The allocator takes random sizes, retrying on `Exhausted`, and hands each buffer to a
+    ///   random freer. It checks each buffer against its request (at least the size, on a cache
+    ///   line, from the wanted stack or a larger one), and keeps its own count of misses, which
+    ///   `misses()` must match exactly, since only the allocator counts them.
+    /// - Each freer holds what it receives and frees held buffers in random order, and frees
+    ///   one whenever nothing arrives, so the allocator always makes progress.
+    /// - Each buffer carries its message number in its first and last word and its request size
+    ///   in its second, checked by the freer, so two guards over one buffer would show.
+    /// - At the end every buffer is back, and each stack serves exactly its count.
+    fn threaded_run<const N: usize>(seed: u64, stacks: [(u32, u32); N], freers: u64, msgs: u64) {
+        const TEST: &str = "threaded_random_alloc_and_free";
+        let sizes = stacks.map(|(size, _)| size as usize);
+        let mut region = heap_region(region_size(stacks));
+        let mut pool = Pool::init(region.as_mut_bytes(), stacks).unwrap();
+
+        std::thread::scope(|s| {
+            let mut senders = Vec::new();
+            for k in 0..freers {
+                let (tx, rx) = std::sync::mpsc::channel::<BufSlot<'_, [u8]>>();
+                senders.push(tx);
+                s.spawn(move || {
+                    let replay = Replay::new(TEST, seed, &format!("freer {k}"));
+                    let mut rng = Lcg(seed ^ (k + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+                    let mut held: Vec<BufSlot<'_, [u8]>> = Vec::new();
+                    let free_one = |held: &mut Vec<BufSlot<'_, [u8]>>, rng: &mut Lcg| {
+                        let buf = held.swap_remove(rng.below(held.len() as u64) as usize);
+                        let last = buf.len() - 8;
+                        let head = u64::read_from_prefix(&buf[..]).unwrap().0;
+                        let size = u64::read_from_prefix(&buf[8..]).unwrap().0;
+                        let tail = u64::read_from_prefix(&buf[last..]).unwrap().0;
+                        assert_eq!(head, tail, "buffer of message {head} overwritten");
+                        assert!(
+                            buf.len() as u64 >= size,
+                            "message {head}: {size} bytes asked"
+                        );
+                        buf.free();
+                    };
+                    let mut received = 0;
+                    loop {
+                        replay.step.set(received);
+                        match rx.try_recv() {
+                            Ok(buf) => {
+                                received += 1;
+                                held.push(buf);
+                                if rng.below(3) == 0 {
+                                    free_one(&mut held, &mut rng);
+                                }
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                if held.is_empty() {
+                                    std::thread::yield_now();
+                                } else {
+                                    free_one(&mut held, &mut rng);
+                                }
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                        }
+                    }
+                    while !held.is_empty() {
+                        free_one(&mut held, &mut rng);
+                    }
+                });
+            }
+
+            let pool = &mut pool;
+            s.spawn(move || {
+                let replay = Replay::new(TEST, seed, "the allocator");
+                let mut rng = Lcg(seed);
+                let mut misses = [0u64; N];
+                for msg in 0..msgs {
+                    replay.step.set(msg);
+                    let size = random_size(&mut rng, &sizes);
+                    let wanted = sizes.iter().position(|&s| size <= s).unwrap();
+                    let mut buf = loop {
+                        match pool.alloc_bytes(size) {
+                            Ok(buf) => break buf,
+                            Err(Exhausted) => {
+                                misses[wanted] += 1;
+                                std::thread::yield_now();
+                            }
+                        }
+                    };
+                    let stack = sizes.iter().position(|&s| s == buf.len()).unwrap();
+                    assert!(
+                        stack >= wanted,
+                        "a {size}-byte request served by stack {stack}"
+                    );
+                    assert_eq!(buf.as_ptr() as usize % CACHE_LINE_SIZE, 0);
+                    if stack != wanted {
+                        misses[wanted] += 1;
+                    }
+                    assert_eq!(pool.misses(), misses);
+                    let last = buf.len() - 8;
+                    buf[..8].copy_from_slice(&msg.to_ne_bytes());
+                    buf[8..16].copy_from_slice(&(size as u64).to_ne_bytes());
+                    buf[last..].copy_from_slice(&msg.to_ne_bytes());
+                    senders[rng.below(freers) as usize].send(buf).unwrap();
+                }
+            });
+        });
+
+        // Every buffer back: each stack serves exactly its count again.
+        let replay = Replay::new(TEST, seed, "the final check");
+        replay.step.set(msgs);
+        for (size, count) in stacks {
+            let bufs: Vec<_> = (0..count)
+                .map(|_| pool.alloc_bytes(size as usize).unwrap())
+                .collect();
+            assert!(bufs.iter().all(|b| b.len() == size as usize));
+            bufs.into_iter().for_each(BufSlot::free);
+        }
+    }
+
+    /// [`threaded_run`] with a stack count and geometry the seed picks.
+    fn threaded_run_random<const N: usize>(seed: u64, rng: &mut Lcg, freers: u64, msgs: u64) {
+        threaded_run::<N>(seed, random_stacks::<N>(rng), freers, msgs);
+    }
+
+    /// Two threads (an allocator and one freer) and three (an allocator and two freers), each
+    /// over a random geometry per seed, the frees racing the pops on every stack's head.
+    #[test]
+    fn threaded_random_alloc_and_free() {
+        const MSGS: u64 = if cfg!(miri) { 100 } else { 20_000 };
+        for seed in seeds() {
+            for freers in [1, 2] {
+                let mut rng = Lcg(seed ^ freers);
+                with_random_n!(rng, threaded_run_random(seed, &mut rng, freers, MSGS));
+            }
+        }
     }
 }

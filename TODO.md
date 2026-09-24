@@ -52,7 +52,7 @@ buffer size, sorted smallest first.
 - [feat: segmented pool region and alloc][2] (done)
 - [feat: segmented pool in the registry][3] (done)
 - [perf: segmented pool in the alloc/free bench][4] (done)
-- [test: segmented pool allocation order][8]
+- [test: segmented pool allocation order][8] (done)
 - [refactor: segmented pool stack geometry][7]
 - [docs: segmented pool in the design note][5]
 - [feat: segmented pool v1 closing][6]
@@ -200,6 +200,55 @@ in random order against a plain model of the rule, checking after every step whi
 each request, where `Exhausted` falls, and the miss counts. Inserted at the user's call on
 2026-09-24, at the bench rung, ahead of the stack geometry rung so the tests pin today's
 behavior before the API changes.
+
+- Scenarios, over one pool of 64-, 128-, and 256-byte stacks, each starting from every stack
+  exhausted by one-byte requests, and written in bytes, what a user asks for:
+  - a 64-byte buffer free under a 256-byte and a 128-byte request: `Exhausted` for both, a miss
+    on each wanted stack, and the 64-byte buffer still serves a one-byte request
+  - only a 256-byte buffer free: a one-byte request falls back to it
+  - a 128-byte and a 256-byte buffer free, the 256-byte one freed last so a single LIFO list
+    would hand it out first: one-byte requests get the 128-byte, then the 256-byte, then
+    `Exhausted`, so the order can only be the stacks'
+  - every buffer handed out is checked for what a user may rely on: at least the size asked
+    for, and starting on a cache line
+- Size boundaries: zero and every exact fit land in their own stack, and one byte more moves to
+  the next.
+- Seeds: each randomized test runs three fixed seeds and one fresh random seed per run, and
+  `ZC_POOL_SEED=<seed>` runs that one seed alone. The seed picks everything random, the stack
+  count and geometry included.
+  - A guard in each thread prints, on a failure, the test, the seed, the thread's role, and the
+    step it reached, with the command that replays it.
+- The model test, `allocation_matches_the_model`: 20,000 steps per seed, over a fixed four-stack
+  geometry and over one the seed picks (1, 2, 3, 4, or 8 stacks, sizes one to four lines apart,
+  one to four buffers each).
+  - Allocs by size, each stack's size range about equally likely, and frees of a random held
+    buffer.
+  - After every step the serving stack, `Exhausted`, and `misses()` must match a plain model of
+    the rule, and each held buffer's step tag, in its first and last word, must survive to its
+    free.
+  - It asserts its own coverage: fallbacks and `Exhausted` each above 2% of the steps, summed
+    over the seeds.
+  - A seed replays exactly: a failure recurs at the same step.
+- The threaded test, `threaded_random_alloc_and_free`: per seed, 20,000 messages over two
+  threads (an allocator and a freer) and three (an allocator and two freers), each over a
+  geometry the seed picks.
+  - The allocator takes random sizes and hands each buffer to a random freer, and each freer
+    frees what it holds in random order, so the frees race the pops on every stack's head.
+  - The allocator checks each buffer against its request (at least the size, on a cache line,
+    never from a smaller stack) and keeps its own miss count, which `misses()` must match
+    exactly, since only the allocator counts misses.
+  - The freers check each buffer's tags. At the end every buffer is back, and each stack serves
+    exactly its count.
+  - A seed replays the plan, the sizes and the routing, but not the thread interleaving, so a
+    replayed failure recurs, though not always at the same step: a deliberate break failed at
+    steps 18, 20, 24, and 2390 under one seed. Replaying an interleaving would take a tool like
+    `loom`.
+- The tests were checked against two deliberate breaks of the rule, made and reverted before
+  the random-geometry and threaded tests joined: a fallback to any stack, smaller included,
+  failed 2 tests, and the largest stack tried first failed 6. The first break, repeated after,
+  also failed the threaded test.
+- The v1 tests pass under Miri, the model test at 300 steps and the threaded test at 100
+  messages per run.
 
 ##### refactor: segmented pool stack geometry
 
