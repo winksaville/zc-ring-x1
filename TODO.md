@@ -17,7 +17,97 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### feat: segmented pool v1
+
+#### Problem
+
+A pool has one buffer size, so an application wanting messages of several sizes builds and registers
+several pools by hand.
+
+#### Solution
+
+`pool::v1::Pool<'a, const N: usize>` keeps v0's API over one region holding N free-stacks, one per
+buffer size, sorted smallest first.
+
+- `alloc::<T>()`, `alloc_with`, and `alloc_bytes(size)` take the smallest size that fits, fall back
+  to the next larger stack when that one is empty, and count the miss against the size that was
+  wanted, so a user can tell when a size wants more buffers.
+- At N=1 the stack choice is the one size check v0 already makes, so the single-stack pool pays
+  nothing over v0.
+- `free` returns a buffer to its own stack, and a `Desc` still names a buffer by `pool_id` and
+  `buf_idx`.
+- Buffers start on a cache line, as v0's, so any `T` aligned to at most a line fits any size.
+- The default re-export stays on v0, and the rings keep taking a v0 pool.
+
+#### Acceptance check
+
+- The v1 tests pass: size choice, fallback, miss counts, exhaustion, attach validation, and a
+  descriptor round trip.
+- The demo's alloc/free bench shows v1 at N=1 within run-to-run noise of v0, and reports the N=4
+  rows for the smallest and the largest size.
+
+#### Ladder
+
+- [feat: segmented pool v1 opening][1] (done)
+- [feat: segmented pool region and alloc][2]
+- [feat: segmented pool in the registry][3]
+- [perf: segmented pool in the alloc/free bench][4]
+- [docs: segmented pool in the design note][5]
+- [feat: segmented pool v1 closing][6]
+
+#### Deliberation
+
+- Multi-step: a new pool version, its registry path, a bench, and a design section are not one
+  reviewable step.
+- A v1 beside v0: the user's direction on 2026-09-24, so the cost of segmenting is measured against
+  the pool as it is.
+- One API, N stacks: the user's direction on 2026-09-24. The same alloc family selects a stack by
+  size, and the degenerate single-stack case, the rings' and most queues', should cost nothing.
+  - `const N: usize` with runtime sizes: v0 already asserts `T`'s size on every alloc, and at N=1
+    that one comparison becomes the selection, so N=1 adds no work.
+  - Sizes fixed at compile time through a trait, with an inline `const` block picking the stack for
+    `alloc::<T>()`, would make N>1 free as well, at the cost of a clumsier API. Held until the
+    measurement says the scan matters.
+- Fallback and miss counts: the user's direction on 2026-09-24. An empty stack falls back to the
+  next larger one rather than failing, and every miss is counted against the wanted size, whether
+  the fallback then succeeds or ends in `Exhausted`.
+  - The counters live in the allocating handle, a plain count, since allocation has one owner.
+- One pool id for all the stacks, with `buf_idx` numbering buffers across the sizes: the Todo
+  entry's first thought was a registered pool per sub-pool, and one id keeps the registry and the
+  descriptor as they are, at the cost of a size-range search on resolve (one comparison at N=1).
+- Out of scope: a v1 flavor in `tp-pool`'s sweep, the rings taking a v1 pool, and compile-time
+  sizes, each a later cycle if wanted.
+
+#### Ladder details
+
+##### feat: segmented pool v1 opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
+`### Segmented pools` Todo entry into this block, and bump the version-of-record. `## Waiting` held
+nothing to promote.
+
+##### feat: segmented pool region and alloc
+
+`pool::v1`: the region header with N stack heads, each on its own cache line, `init` and `attach`,
+the alloc family with fallback and miss counts, and `BufSlot` freeing to its own stack, with tests.
+
+##### feat: segmented pool in the registry
+
+Resolve a `Desc` against a v1 pool, `buf_idx` numbering buffers across the sizes. How the registry
+holds v0 and v1 resolvers alike, a trait or an enum, is decided here.
+
+##### perf: segmented pool in the alloc/free bench
+
+The demo's `pool_alloc_free_1t` gains v1 rows: N=1 beside v0, and N=4 at its smallest and largest
+size, the cheapest and the costliest stack choice.
+
+##### docs: segmented pool in the design note
+
+A design-note section on the layout, the fallback, the miss counts, and the measured cost.
+
+##### feat: segmented pool v1 closing
+
+Closing out the cycle.
 
 ## Waiting
 
@@ -47,19 +137,6 @@ on 2026-09-13 each fell short:
   renderer shows as a data row.
 - Plain aligned text with a spanning heading: reads best in a terminal, but a paste is no longer a
   markdown table.
-
-### Segmented pools
-
-A pool has one buffer size, so an application wanting messages of several sizes builds and registers
-several pools by hand. A segmented pool holds sub-pools of different buffer sizes, and its
-`alloc(size)` takes a buffer from the smallest sub-pool that fits, returning the buffer's location
-and actual size. Typed access becomes a zero-copy cast on those bytes: the whole buffer as a `T`,
-or `T`s at offsets inside it. `alloc::<T>()` stays as `alloc(size_of::<T>())` plus the cast.
-
-- A sub-pool can be a registered pool of its own, so `Desc { pool_id, buf_idx }` already names the
-  sub-pool a buffer came from, and `free` already returns it there.
-- Buffers start on a cache line, so any `T` aligned to at most a line fits any sub-pool.
-- The user's direction on 2026-09-14, raised while settling how v3's segments come from the pool.
 
 ### SPSC v3 fast path
 
@@ -254,49 +331,12 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### docs: the generic Queue idea
-
-#### Problem
-
-SPSC v3 and MPSC v2 share their setup and their consumer and differ only in the producer, yet a
-user picks one by module path and gets two unrelated type families, so going from one producer to
-several rewrites every signature that names an endpoint. The idea of one type over both, from
-2026-09-17, lives only in `## Continuation notes`, which is ephemeral.
-
-#### Solution
-
-Recorded the idea where it lasts: a `## Generic Queue (idea)` section in
-`notes/ring-buffer-design.md`, between MPSC v2 and the messaging layer, describing `Queue<P>`, a
-thin facade whose sealed producer marker, `Single` or `Multi`, selects the v3 `Ring` or the v2
-`MpscRing`, with `T` per call. Its open questions carry a "We think" leaning each: `send_with` as
-the common send, a guard axis (CAS or critical section) under `Multi`, and room for a consumer
-marker. A `## Ideas` bullet points at it, and the Continuation notes that held it were reset.
-
-#### Acceptance check
-
-`notes/ring-buffer-design.md` has the Generic Queue section with the three open questions,
-`## Ideas` has a bullet whose link resolves to it, `## Continuation notes` reads `_None._`, and
-`vc-x1 validate` passes, the prose check included.
-
-Passed on 2026-09-24: the section and its three open questions are in place, the Ideas link
-resolves to `#generic-queue-idea`, the Continuation notes read `_None._`, and `vc-x1 validate`
-passes.
-
-#### Ladder
-
-- docs: the generic Queue idea (done)
-
-#### Deliberation
-
-- Single-step: one note section and one bullet are one reviewable step.
-- An idea, not a Todo: its open questions decide the API, so it waits in `## Ideas` for an
-  opening's triage rather than taking a rank.
-- Placement: the section follows MPSC v2 in the design note, since it is a facade over the two
-  rings described just above it, and precedes the messaging layer, which it does not touch.
-- A stale Todo retired here: `### Sweep punctuation in the design note` was done by the cycle
-  "docs: pay the punctuation debt", and its retirement rides in this commit as bookkeeping, the
-  user's go on 2026-09-24.
-
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
+[1]: #feat-segmented-pool-v1-opening
+[2]: #feat-segmented-pool-region-and-alloc
+[3]: #feat-segmented-pool-in-the-registry
+[4]: #perf-segmented-pool-in-the-allocfree-bench
+[5]: #docs-segmented-pool-in-the-design-note
+[6]: #feat-segmented-pool-v1-closing
