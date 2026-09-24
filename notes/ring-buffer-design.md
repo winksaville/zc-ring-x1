@@ -861,7 +861,7 @@ its own index.
     read, so the consumer moves and frees the old segment.
   - The endpoints hold the pool halves their roles need: the
     producer the `Pool`, its one allocator, and the consumer a
-    `PoolResolver` to free. The pool's existing contract.
+    `PoolView` to free. The pool's existing contract.
   - One link per segment, amortised over `M` messages, and
     `M = 1` is the per-message linked list, measured by the
     size sweep rather than imagined.
@@ -1945,29 +1945,29 @@ coordination) remains in [Open questions](#open-questions).
   also need a buffer-boundary divisibility check.
 - `PoolRegistry`: per-process, fixed capacity
   (const-generic array, no_std, zero allocation).
-  `register(resolver) -> PoolId` assigns the next slot
+  `register(view) -> PoolId` assigns the next slot
   index. Phase 1 has no unregister, so ids never dangle.
   Sequential assignment produces cross-process id agreement
   only when one process assigns all ids, the in-process
   slice's case. Cross-process will need registration under
   an externally agreed id (e.g. `register_at(id, ...)`),
   pending [Pool-id allocation](#pool-id-allocation).
-- `Pool::resolver() -> PoolResolver`: a non-allocating
-  view (header ref, buffer base, geometry) derived from the
+- `Pool::view() -> PoolView`: a view that cannot pop
+  (header ref, buffer base, geometry) derived from the
   existing handle, so no second region borrow and no
   Stacked Borrows retag hazard (`init` takes the region
-  pointer exactly once). Send + Sync: resolving mints
+  pointer exactly once). Send + Sync: `to_slot` mints
   guards from validated indices, and the only
   shared-memory mutation is the guards' free CAS, already
   any-thread. Cross-process later, the same view derives
   from an `attach`ed handle.
-- `into_desc(slot, pool_id)`: safe and O(1). It checks the
+- `to_desc(slot, pool_id)`: safe and O(1). It checks the
   guard's header address against the id's registry entry
   (catches id/pool mispairing), consumes the guard, and
   ownership travels on in the descriptor (the usage
   model's "in-flight" state). The error side hands the
   guard back, so a miss cannot leak the buffer.
-- `unsafe resolve::<T>(desc) -> Result<BufSlot<T>, _>`:
+- `unsafe to_slot::<T>(desc) -> Result<BufSlot<T>, _>`:
   every failure is an `Err`, never a panic: unknown pool
   id, index out of range, `T` geometry mismatch. The
   geometry case differs from `alloc` (which panics)
@@ -1975,13 +1975,17 @@ coordination) remains in [Open questions](#open-questions).
   so untrusted input must not select a panic. `unsafe`
   covers the one thing validation cannot check,
   ownership: the caller promises the desc came from
-  `into_desc`, arrived over a channel establishing
+  `to_desc`, arrived over a channel establishing
   happens-before (ring commit -> reserve qualifies), and is
-  resolved exactly once.
+  taken back exactly once.
 - `Desc` is plain data on purpose: `FromBytes` means a
   receiver mints one from shared bytes anyway, so a
   move-only ownership token would be theater, and the
-  discipline lives in resolve's contract.
+  discipline lives in `to_slot`'s contract.
+- Names: `into_desc`, `resolve`, `PoolResolver`, and
+  `resolver()` were renamed `to_desc`, `to_slot`, `PoolView`,
+  and `view()` on 2026-09-24, when the multi-stack pool made
+  the registry generic over a sealed `DescMap` trait.
 - In-buffer provenance deferred: the descriptor is the
   message's travel form (forwarding re-sends it), so no
   flow carries a buffer without its provenance, and adding an

@@ -11,4 +11,4 @@
 pub mod v0;
 pub mod v1;
 
-pub use v0::{BufSlot, Exhausted, Pool, PoolHeader, PoolResolver};
+pub use v0::{BufSlot, Exhausted, Pool, PoolHeader, PoolView};

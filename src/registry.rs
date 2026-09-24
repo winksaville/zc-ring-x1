@@ -1,34 +1,107 @@
 //! Descriptors and the per-process pool registry, the
-//! resolution half of the messaging layer: a [`Desc`] names a
+//! travel half of the messaging layer: a [`Desc`] names a
 //! buffer as `(pool id, buffer index)` so it can ride any
 //! queue as an ordinary POD message, and the [`PoolRegistry`]
 //! turns descriptors back into owned guards (see the design
 //! doc's "Descriptor and registry design (0.7.0)").
 //!
-//! - [`PoolRegistry::into_desc`] (safe) consumes a guard into
+//! - [`PoolRegistry::to_desc`] (safe) consumes a guard into
 //!   a descriptor, and ownership travels on in the descriptor.
-//! - [`PoolRegistry::resolve`] (unsafe) validates a received
+//! - [`PoolRegistry::to_slot`] (unsafe) validates a received
 //!   descriptor and mints the guard back, and `unsafe` covers
 //!   only what validation cannot check, ownership
 //!   uniqueness.
 //! - Fixed capacity, no allocation, no unregister: pool ids
 //!   are registry slot indices and never dangle.
+//! - Generic over the pool kind through [`DescMap`]: a
+//!   registry holds the pool views of one kind, v0's by default,
+//!   and dispatch is static, so each kind's path is its own
+//!   code.
 
+use core::marker::PhantomData;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::pool::PoolResolver;
+use crate::pool::PoolView;
 use crate::{BufSlot, type_fits};
+
+pub(crate) mod sealed {
+    /// Keeps [`DescMap`](super::DescMap) implemented by this
+    /// crate's pools only, since its `to_slot` mints owned
+    /// guards on the implementor's word.
+    pub trait Sealed {}
+}
+
+/// A pool's view, which cannot pop, as a [`PoolRegistry`] holds it:
+/// maps a guard to its descriptor index and a validated index
+/// back to a guard.
+///
+/// - Sealed: implemented by `pool::v0`'s and `pool::v1`'s
+///   [`PoolView`]s.
+/// - `Slot<T>` is the guard the pool's allocs mint, so a
+///   registry takes and returns the pool's own guard type.
+pub trait DescMap<'a>: sealed::Sealed + Copy {
+    /// The pool's owned buffer guard.
+    type Slot<T: ?Sized + 'a>;
+
+    /// The descriptor index of `slot` when it came from this
+    /// pool, or `None` when it came from another.
+    fn desc_idx<T: ?Sized + 'a>(&self, slot: &Self::Slot<T>) -> Option<u32>;
+
+    /// Validate descriptor index `idx` and `T`'s fit, and mint
+    /// the owned guard.
+    ///
+    /// # Safety
+    ///
+    /// As [`PoolRegistry::to_slot`]: the index came from a
+    /// consumed guard, arrived with happens-before ordering, and
+    /// is taken back exactly once.
+    unsafe fn to_slot<T>(&self, idx: u32) -> Result<Self::Slot<T>, RegistryError>
+    where
+        T: FromBytes + IntoBytes + KnownLayout + 'a;
+}
+
+// Empty on purpose: `Sealed` has no methods, and this impl is
+// the crate opting v0's view into `DescMap`, which code outside
+// the crate cannot do.
+impl sealed::Sealed for PoolView<'_> {}
+
+impl<'a> DescMap<'a> for PoolView<'a> {
+    type Slot<T: ?Sized + 'a> = BufSlot<'a, T>;
+
+    /// The guard's index when its pool's header is this one's.
+    fn desc_idx<T: ?Sized + 'a>(&self, slot: &BufSlot<'a, T>) -> Option<u32> {
+        core::ptr::eq(self.header_ptr(), slot.header_ptr()).then(|| slot.idx())
+    }
+
+    /// Bounds-check the index and `T` against the one buffer
+    /// size, then mint.
+    unsafe fn to_slot<T>(&self, idx: u32) -> Result<BufSlot<'a, T>, RegistryError>
+    where
+        T: FromBytes + IntoBytes + KnownLayout + 'a,
+    {
+        if idx >= self.buf_count() {
+            return Err(RegistryError::BadIndex);
+        }
+        if !type_fits::<T>(self.buf_size()) {
+            return Err(RegistryError::BadType);
+        }
+        // SAFETY: index and T geometry validated above.
+        // Ownership uniqueness and ordering are the caller's
+        // contract.
+        Ok(unsafe { self.slot_from_idx(idx) })
+    }
+}
 
 /// A buffer's travel form: names its pool and buffer index so
 /// any queue can carry it as an ordinary message.
 ///
 /// - Plain data on purpose: `FromBytes` means a receiver
 ///   mints one from shared bytes anyway, so ownership
-///   discipline lives in [`PoolRegistry::resolve`]'s
+///   discipline lives in [`PoolRegistry::to_slot`]'s
 ///   contract, not in this type.
 /// - Fields are raw `u32`s (not [`PoolId`]) because the wire
 ///   form is untrusted by definition, and validation happens at
-///   resolve.
+///   `to_slot`.
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct Desc {
@@ -58,11 +131,11 @@ pub enum RegistryError {
     Full,
     /// The pool id names no registered pool.
     UnknownPoolId,
-    /// `into_desc`: the guard's pool is not the id's entry.
+    /// `to_desc`: the guard's pool is not the id's entry.
     WrongPool,
-    /// `resolve`: buffer index out of range for the pool.
+    /// `to_slot`: buffer index out of range for the pool.
     BadIndex,
-    /// `resolve`: `T`'s geometry does not fit the pool's
+    /// `to_slot`: `T`'s geometry does not fit the pool's
     /// buffers. An `Err`, not the `alloc`-style panic: the
     /// descriptor selects which pool gets compared, and
     /// untrusted input must not select a panic.
@@ -70,40 +143,44 @@ pub enum RegistryError {
 }
 
 /// Per-process table mapping pool ids to this process's
-/// [`PoolResolver`] view of each pool.
+/// view of each pool, `R`, v0's [`PoolView`] by
+/// default.
 ///
 /// - Fixed capacity `N` (const generic): no_std, zero
 ///   allocation.
 /// - `register` assigns the next slot index as the pool's id, and
 ///   there is no unregister, so ids never dangle.
-/// - Registration (`&mut self`) is setup-phase, and `into_desc` /
-///   `resolve` take `&self`, so one registry is shared by
+/// - Registration (`&mut self`) is setup-phase, and `to_desc` /
+///   `to_slot` take `&self`, so one registry is shared by
 ///   reference across threads.
-pub struct PoolRegistry<'a, const N: usize> {
+pub struct PoolRegistry<'a, const N: usize, R: DescMap<'a> = PoolView<'a>> {
     /// Registered views, dense from slot 0.
-    resolvers: [Option<PoolResolver<'a>>; N],
+    views: [Option<R>; N],
     /// Number of registered pools (next id to assign).
     len: usize,
+    /// The pools' region lifetime, which `R` carries.
+    _pools: PhantomData<&'a ()>,
 }
 
-impl<'a, const N: usize> PoolRegistry<'a, N> {
+impl<'a, const N: usize, R: DescMap<'a>> PoolRegistry<'a, N, R> {
     /// An empty registry.
     pub const fn new() -> Self {
         Self {
-            resolvers: [None; N],
+            views: [None; N],
             len: 0,
+            _pools: PhantomData,
         }
     }
 
-    /// Register a pool's resolver view, and returns the assigned
+    /// Register a pool's view, and returns the assigned
     /// [`PoolId`] (the next slot index), or
     /// [`RegistryError::Full`].
-    pub fn register(&mut self, resolver: PoolResolver<'a>) -> Result<PoolId, RegistryError> {
+    pub fn register(&mut self, view: R) -> Result<PoolId, RegistryError> {
         if self.len == N {
             return Err(RegistryError::Full);
         }
         let id = self.len as u32;
-        self.resolvers[self.len] = Some(resolver);
+        self.views[self.len] = Some(view);
         self.len += 1;
         Ok(PoolId(id))
     }
@@ -112,25 +189,25 @@ impl<'a, const N: usize> PoolRegistry<'a, N> {
     /// on in the [`Desc`] (the usage model's "in-flight"
     /// state).
     ///
-    /// - O(1): checks the guard's pool identity (header
-    ///   address) against the id's entry, catching id/pool
-    ///   mispairing.
+    /// - Checks the guard's pool identity against the id's
+    ///   entry, catching id/pool mispairing: one comparison for
+    ///   a v0 pool, one per stack for a v1 pool.
     /// - The error side hands the guard back, so a miss
     ///   cannot leak the buffer.
-    pub fn into_desc<T: ?Sized>(
+    pub fn to_desc<T: ?Sized + 'a>(
         &self,
         pool_id: PoolId,
-        slot: BufSlot<'a, T>,
-    ) -> Result<Desc, (BufSlot<'a, T>, RegistryError)> {
-        let Some(resolver) = self.get(pool_id.0) else {
+        slot: R::Slot<T>,
+    ) -> Result<Desc, (R::Slot<T>, RegistryError)> {
+        let Some(view) = self.get(pool_id.0) else {
             return Err((slot, RegistryError::UnknownPoolId));
         };
-        if !core::ptr::eq(resolver.header_ptr(), slot.header_ptr()) {
+        let Some(buf_idx) = view.desc_idx(&slot) else {
             return Err((slot, RegistryError::WrongPool));
-        }
+        };
         Ok(Desc {
             pool_id: pool_id.0,
-            buf_idx: slot.idx(),
+            buf_idx,
         })
     }
 
@@ -146,30 +223,24 @@ impl<'a, const N: usize> PoolRegistry<'a, N> {
     ///
     /// Validation cannot check ownership, and the caller promises:
     ///
-    /// - `desc` came from [`into_desc`](Self::into_desc) (or
+    /// - `desc` came from [`to_desc`](Self::to_desc) (or
     ///   an equivalent consumed guard). It is not invented.
     /// - It arrived over a channel establishing happens-before
     ///   with the sender's writes (a ring commit -> reserve
     ///   qualifies).
-    /// - It is resolved exactly once. A second resolve mints
+    /// - It is taken back exactly once. A second `to_slot` mints
     ///   a second guard aliasing the same `&mut T`.
-    pub unsafe fn resolve<T>(&self, desc: Desc) -> Result<BufSlot<'a, T>, RegistryError>
+    pub unsafe fn to_slot<T>(&self, desc: Desc) -> Result<R::Slot<T>, RegistryError>
     where
-        T: FromBytes + IntoBytes + KnownLayout,
+        T: FromBytes + IntoBytes + KnownLayout + 'a,
     {
-        let Some(resolver) = self.get(desc.pool_id) else {
+        let Some(view) = self.get(desc.pool_id) else {
             return Err(RegistryError::UnknownPoolId);
         };
-        if desc.buf_idx >= resolver.buf_count() {
-            return Err(RegistryError::BadIndex);
-        }
-        if !type_fits::<T>(resolver.buf_size()) {
-            return Err(RegistryError::BadType);
-        }
-        // SAFETY: index and T geometry validated above.
-        // Ownership uniqueness and ordering are the caller's
-        // contract (this fn's # Safety).
-        Ok(unsafe { resolver.slot_from_idx(desc.buf_idx) })
+        // SAFETY: the view validates the index and T's
+        // geometry. Ownership uniqueness and ordering are the
+        // caller's contract (this fn's # Safety).
+        unsafe { view.to_slot(desc.buf_idx) }
     }
 
     /// Number of registered pools.
@@ -182,13 +253,13 @@ impl<'a, const N: usize> PoolRegistry<'a, N> {
         self.len == 0
     }
 
-    /// The resolver registered under raw id `id`, if any.
-    fn get(&self, id: u32) -> Option<&PoolResolver<'a>> {
-        self.resolvers.get(id as usize)?.as_ref()
+    /// The view registered under raw id `id`, if any.
+    fn get(&self, id: u32) -> Option<&R> {
+        self.views.get(id as usize)?.as_ref()
     }
 }
 
-impl<const N: usize> Default for PoolRegistry<'_, N> {
+impl<'a, const N: usize, R: DescMap<'a>> Default for PoolRegistry<'a, N, R> {
     /// Same as [`PoolRegistry::new`].
     fn default() -> Self {
         Self::new()
@@ -227,13 +298,13 @@ mod tests {
         let mut pool = Pool::init(&mut pr.0, LINE, 4).unwrap();
         let mut reg = PoolRegistry::<2>::new();
         assert!(reg.is_empty());
-        let id = reg.register(pool.resolver()).unwrap();
+        let id = reg.register(pool.view()).unwrap();
         assert_eq!(id.as_u32(), 0);
         assert_eq!(reg.len(), 1);
 
         let mut slot = pool.alloc::<Msg>().unwrap();
         slot.seq = 42;
-        let desc = reg.into_desc(id, slot).map_err(|(_, e)| e).unwrap();
+        let desc = reg.to_desc(id, slot).map_err(|(_, e)| e).unwrap();
         assert_eq!(
             desc,
             Desc {
@@ -242,9 +313,9 @@ mod tests {
             }
         );
 
-        // SAFETY: desc came from into_desc on this thread and
-        // is resolved exactly once.
-        let got = unsafe { reg.resolve::<Msg>(desc) }.unwrap();
+        // SAFETY: desc came from to_desc on this thread and
+        // is taken back exactly once.
+        let got = unsafe { reg.to_slot::<Msg>(desc) }.unwrap();
         assert_eq!(got.seq, 42);
         got.free();
 
@@ -256,27 +327,27 @@ mod tests {
     }
 
     #[test]
-    fn into_desc_checks_pool_identity() {
+    fn to_desc_checks_pool_identity() {
         let mut ra = Region::<POOL_BYTES>([0; POOL_BYTES]);
         let mut rb = Region::<POOL_BYTES>([0; POOL_BYTES]);
         let mut pool_a = Pool::init(&mut ra.0, LINE, 4).unwrap();
         let pool_b = Pool::init(&mut rb.0, LINE, 4).unwrap();
         let mut reg = PoolRegistry::<2>::new();
-        let id_a = reg.register(pool_a.resolver()).unwrap();
-        let id_b = reg.register(pool_b.resolver()).unwrap();
+        let id_a = reg.register(pool_a.view()).unwrap();
+        let id_b = reg.register(pool_b.view()).unwrap();
 
         // Mispaired id: rejected, and the guard comes back
         // usable, no leak.
         let slot = pool_a.alloc::<Msg>().unwrap();
-        let (slot, err) = reg.into_desc(id_b, slot).unwrap_err();
+        let (slot, err) = reg.to_desc(id_b, slot).unwrap_err();
         assert_eq!(err, RegistryError::WrongPool);
-        let desc = reg.into_desc(id_a, slot).map_err(|(_, e)| e).unwrap();
-        // SAFETY: desc came from into_desc, resolved once.
-        unsafe { reg.resolve::<Msg>(desc) }.unwrap().free();
+        let desc = reg.to_desc(id_a, slot).map_err(|(_, e)| e).unwrap();
+        // SAFETY: desc came from to_desc, taken back once.
+        unsafe { reg.to_slot::<Msg>(desc) }.unwrap().free();
     }
 
     #[test]
-    fn into_desc_unknown_pool_id() {
+    fn to_desc_unknown_pool_id() {
         let mut ra = Region::<POOL_BYTES>([0; POOL_BYTES]);
         let mut rb = Region::<POOL_BYTES>([0; POOL_BYTES]);
         let mut pool_a = Pool::init(&mut ra.0, LINE, 4).unwrap();
@@ -284,25 +355,25 @@ mod tests {
         // An id minted by a bigger registry has no entry in a
         // smaller one.
         let mut big = PoolRegistry::<2>::new();
-        big.register(pool_a.resolver()).unwrap();
-        let id_b = big.register(pool_b.resolver()).unwrap();
+        big.register(pool_a.view()).unwrap();
+        let id_b = big.register(pool_b.view()).unwrap();
         let mut small = PoolRegistry::<1>::new();
-        small.register(pool_a.resolver()).unwrap();
+        small.register(pool_a.view()).unwrap();
 
         let slot = pool_a.alloc::<Msg>().unwrap();
-        let (slot, err) = small.into_desc(id_b, slot).unwrap_err();
+        let (slot, err) = small.to_desc(id_b, slot).unwrap_err();
         assert_eq!(err, RegistryError::UnknownPoolId);
         slot.free();
     }
 
     #[test]
-    fn resolve_rejects_hostile_descs() {
+    fn to_slot_rejects_hostile_descs() {
         let mut pr = Region::<POOL_BYTES>([0; POOL_BYTES]);
         let pool = Pool::init(&mut pr.0, LINE, 4).unwrap();
         let mut reg = PoolRegistry::<1>::new();
-        reg.register(pool.resolver()).unwrap();
+        reg.register(pool.view()).unwrap();
 
-        // SAFETY: every resolve here must fail validation and
+        // SAFETY: every to_slot here must fail validation and
         // mint nothing, and no ownership is claimed.
         unsafe {
             let bad_pool = Desc {
@@ -310,7 +381,7 @@ mod tests {
                 buf_idx: 0,
             };
             assert_eq!(
-                reg.resolve::<Msg>(bad_pool).err().unwrap(),
+                reg.to_slot::<Msg>(bad_pool).err().unwrap(),
                 RegistryError::UnknownPoolId
             );
             let bad_idx = Desc {
@@ -318,7 +389,7 @@ mod tests {
                 buf_idx: 4,
             };
             assert_eq!(
-                reg.resolve::<Msg>(bad_idx).err().unwrap(),
+                reg.to_slot::<Msg>(bad_idx).err().unwrap(),
                 RegistryError::BadIndex
             );
             let ok_target = Desc {
@@ -327,7 +398,7 @@ mod tests {
             };
             // T bigger than the pool's one-line buffers.
             assert_eq!(
-                reg.resolve::<[u8; 2 * CACHE_LINE_SIZE]>(ok_target)
+                reg.to_slot::<[u8; 2 * CACHE_LINE_SIZE]>(ok_target)
                     .err()
                     .unwrap(),
                 RegistryError::BadType
@@ -340,11 +411,8 @@ mod tests {
         let mut pr = Region::<POOL_BYTES>([0; POOL_BYTES]);
         let pool = Pool::init(&mut pr.0, LINE, 4).unwrap();
         let mut reg = PoolRegistry::<1>::new();
-        reg.register(pool.resolver()).unwrap();
-        assert_eq!(
-            reg.register(pool.resolver()).unwrap_err(),
-            RegistryError::Full
-        );
+        reg.register(pool.view()).unwrap();
+        assert_eq!(reg.register(pool.view()).unwrap_err(), RegistryError::Full);
     }
 
     /// The composed protocol: descriptors carry pool-buffer
@@ -358,7 +426,7 @@ mod tests {
         let mut rr = Region::<RING_BYTES>([0; RING_BYTES]);
         let mut pool = Pool::init(&mut pr.0, LINE, 4).unwrap();
         let mut reg = PoolRegistry::<1>::new();
-        let id = reg.register(pool.resolver()).unwrap();
+        let id = reg.register(pool.view()).unwrap();
         let reg = &reg;
         let (mut producer, mut consumer) = crate::spsc::v2::Ring::init(&mut rr.0, LINE, 4)
             .unwrap()
@@ -374,7 +442,7 @@ mod tests {
                         }
                     };
                     buf.seq = i;
-                    let desc = reg.into_desc(id, buf).map_err(|(_, e)| e).unwrap();
+                    let desc = reg.to_desc(id, buf).map_err(|(_, e)| e).unwrap();
                     let mut slot = producer
                         .reserve_slot_with::<Desc>(crate::policy::spin)
                         .unwrap();
@@ -395,8 +463,8 @@ mod tests {
                     // SAFETY: the desc was consumed into the
                     // ring by the producer and read after the
                     // commit -> reserve handoff (happens-
-                    // before), and each is resolved exactly once.
-                    let msg = unsafe { reg.resolve::<Msg>(desc) }.unwrap();
+                    // before), and each is taken back exactly once.
+                    let msg = unsafe { reg.to_slot::<Msg>(desc) }.unwrap();
                     assert_eq!(msg.seq, i);
                     msg.free();
                 }

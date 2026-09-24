@@ -325,7 +325,7 @@ impl<'a> Pool<'a> {
         self.buf_count
     }
 
-    /// A non-allocating [`PoolResolver`] view of this pool,
+    /// A [`PoolView`] of this pool, a view that cannot pop,
     /// for registration in a
     /// [`PoolRegistry`](crate::PoolRegistry).
     ///
@@ -333,10 +333,10 @@ impl<'a> Pool<'a> {
     ///   pointers), so no second region borrow and no Stacked
     ///   Borrows retag hazard, `init`/`attach` take the
     ///   region pointer exactly once.
-    /// - Any number of views may exist, and none can allocate, so
+    /// - Any number of views may exist, and none can pop, so
     ///   the single-popper contract stays with this handle.
-    pub fn resolver(&self) -> PoolResolver<'a> {
-        PoolResolver {
+    pub fn view(&self) -> PoolView<'a> {
+        PoolView {
             header: self.header,
             bufs: self.bufs,
             buf_size: self.buf_size,
@@ -371,18 +371,19 @@ impl<'a> Pool<'a> {
     }
 }
 
-/// A non-allocating view over a pool: resolves validated
-/// buffer indices to owned [`BufSlot`] guards on behalf of a
+/// A view over a pool that cannot pop: maps guards to
+/// descriptor indices and validated indices back to owned
+/// [`BufSlot`] guards on behalf of a
 /// [`PoolRegistry`](crate::PoolRegistry).
 ///
-/// - Created by [`Pool::resolver`], and carries the same header
+/// - Created by [`Pool::view`], and carries the same header
 ///   ref, buffer base, and geometry snapshot as its pool.
-/// - Cannot allocate, the single-popper token stays with the
-///   owning [`Pool`] handle.
+/// - Cannot pop: taking buffers stays with the owning
+///   [`Pool`] handle, the single popper.
 /// - Identifies its pool by header address (see
-///   [`PoolRegistry::into_desc`](crate::PoolRegistry::into_desc)).
+///   [`PoolRegistry::to_desc`](crate::PoolRegistry::to_desc)).
 #[derive(Clone, Copy)]
-pub struct PoolResolver<'a> {
+pub struct PoolView<'a> {
     /// The pool's control block.
     header: &'a PoolHeader,
     /// Base of the buffer array (copy of [`Pool::bufs`]).
@@ -397,14 +398,18 @@ pub struct PoolResolver<'a> {
 // shared-memory mutation reachable through it is the minted
 // guards' free CAS, which is the free-stack's any-thread MPSC
 // push side. Allocation (the single-popper role) is not
-// reachable from a resolver.
-unsafe impl Send for PoolResolver<'_> {}
+// reachable from a view.
+//
+// Send and Sync are marker traits with no methods, so each
+// impl is empty: the `unsafe impl` is the whole statement, a
+// promise the compiler cannot infer past the raw pointer.
+unsafe impl Send for PoolView<'_> {}
 // SAFETY: all methods take &self and touch shared state only
 // through atomics (as above), so concurrent use from multiple
 // threads adds no non-atomic shared access.
-unsafe impl Sync for PoolResolver<'_> {}
+unsafe impl Sync for PoolView<'_> {}
 
-impl<'a> PoolResolver<'a> {
+impl<'a> PoolView<'a> {
     /// The pool's header address, its identity for registry
     /// lookups.
     pub(crate) fn header_ptr(&self) -> *const PoolHeader {
@@ -429,9 +434,9 @@ impl<'a> PoolResolver<'a> {
     ///   geometry against this pool.
     /// - The caller holds the buffer's ownership (the index
     ///   came from a consumed guard via
-    ///   [`PoolRegistry::into_desc`](crate::PoolRegistry::into_desc),
-    ///   arrived with happens-before ordering, and is resolved
-    ///   exactly once), minting a second live guard for one
+    ///   [`PoolRegistry::to_desc`](crate::PoolRegistry::to_desc),
+    ///   arrived with happens-before ordering, and is taken
+    ///   back exactly once), minting a second live guard for one
     ///   buffer aliases `&mut T`.
     pub(crate) unsafe fn slot_from_idx<T>(&self, idx: u32) -> BufSlot<'a, T>
     where
@@ -525,8 +530,8 @@ impl DerefMut for BufSlot<'_, [u8]> {
 
 impl<T: ?Sized> BufSlot<'_, T> {
     /// The owning pool's header address, matched against a
-    /// registry entry's [`PoolResolver::header_ptr`] by
-    /// [`PoolRegistry::into_desc`](crate::PoolRegistry::into_desc).
+    /// registry entry's [`PoolView::header_ptr`] by
+    /// [`PoolRegistry::to_desc`](crate::PoolRegistry::to_desc).
     pub(crate) fn header_ptr(&self) -> *const PoolHeader {
         self.header
     }

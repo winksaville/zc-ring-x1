@@ -38,7 +38,7 @@
 //!   when it is sent or freed.
 //! - The composed form (descriptors through the ring,
 //!   payloads at rest in pool buffers) runs between them:
-//!   alloc -> into_desc -> ring -> resolve -> free, with the
+//!   alloc -> to_desc -> ring -> to_slot -> free, with the
 //!   same placement ladder as the raw ring.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -687,10 +687,10 @@ fn mpsc1_ring_one_msg_3t() -> f64 {
 /// The composed flow on one thread pinned to the base cpu: one pool
 /// message allocated outside the timed loop. Each iteration
 /// populates it, converts guard -> descriptor, rings the
-/// descriptor across, and resolves the guard back. Return
+/// descriptor across, and takes the guard back. Return
 /// elapsed seconds.
 ///
-/// - Isolates messaging cost (into_desc + ring + resolve)
+/// - Isolates messaging cost (to_desc + ring + to_slot)
 ///   from the pool cycle: pool_alloc_free_1t reports that
 ///   separately.
 /// - The guard and the descriptor are the two exclusive
@@ -703,7 +703,7 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
     let mut pool_region = Region([0; size_of::<Region>()]);
     let mut pool = Pool::init(&mut pool_region.0, CACHE_LINE_SIZE as u32, DEPTH).unwrap(); // OK: Region is sized/aligned for the pool header + DEPTH buffers
     let mut registry = PoolRegistry::<1>::new();
-    let pool_id = registry.register(pool.resolver()).unwrap(); // OK: empty capacity-1 registry always has room
+    let pool_id = registry.register(pool.view()).unwrap(); // OK: empty capacity-1 registry always has room
     let (mut producer, mut consumer) =
         zc_ring_x1::spsc::v2::Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
             .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
@@ -717,7 +717,7 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
             for i in 0..COUNT {
                 buf_slot.seq = i;
                 let desc = registry
-                    .into_desc(pool_id, buf_slot)
+                    .to_desc(pool_id, buf_slot)
                     .map_err(|(_, e)| e)
                     .unwrap(); // OK: pool_id came from this registry's register
                 match producer.reserve_slot_with::<Desc>(|_| false) {
@@ -734,9 +734,9 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
                         let desc = *slot;
                         slot.release();
                         // SAFETY: the desc was consumed into
-                        // the ring by into_desc above and is
-                        // resolved exactly once, same thread.
-                        let msg = unsafe { registry.resolve::<Msg>(desc) }.unwrap(); // OK: desc came from into_desc on this pool
+                        // the ring by to_desc above and is
+                        // taken back exactly once, same thread.
+                        let msg = unsafe { registry.to_slot::<Msg>(desc) }.unwrap(); // OK: desc came from to_desc on this pool
                         assert_eq!(msg.seq, i);
                         msg
                     }
@@ -753,7 +753,7 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
 
 /// The composed flow producer-thread -> consumer-thread:
 /// alloc + fill pool messages on the producer, descriptors
-/// cross the SPSC ring, the consumer resolves and frees.
+/// cross the SPSC ring, the consumer takes them back and frees.
 /// Return elapsed seconds.
 ///
 /// - `pin`: `Some((p, c))` pins the producer to cpu `p` and
@@ -764,7 +764,7 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
     let mut pool_region = Region([0; size_of::<Region>()]);
     let mut pool = Pool::init(&mut pool_region.0, CACHE_LINE_SIZE as u32, DEPTH).unwrap(); // OK: Region is sized/aligned for the pool header + DEPTH buffers
     let mut registry = PoolRegistry::<1>::new();
-    let pool_id = registry.register(pool.resolver()).unwrap(); // OK: empty capacity-1 registry always has room
+    let pool_id = registry.register(pool.view()).unwrap(); // OK: empty capacity-1 registry always has room
     let registry = &registry;
     let (mut producer, mut consumer) =
         zc_ring_x1::spsc::v2::Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
@@ -786,7 +786,7 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
                 };
                 buf_slot.seq = i;
                 let desc = registry
-                    .into_desc(pool_id, buf_slot)
+                    .to_desc(pool_id, buf_slot)
                     .map_err(|(_, e)| e)
                     .unwrap(); // OK: pool_id came from this registry's register
                 let mut slot = producer.reserve_slot_with::<Desc>(policy::spin).unwrap(); // OK: policy::spin never gives up
@@ -808,8 +808,8 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
                 // SAFETY: the desc was consumed into the ring
                 // by the producer and read after the commit ->
                 // reserve handoff (happens-before). Each is
-                // resolved exactly once.
-                let msg = unsafe { registry.resolve::<Msg>(desc) }.unwrap(); // OK: descs here only come from the producer's into_desc
+                // taken back exactly once.
+                let msg = unsafe { registry.to_slot::<Msg>(desc) }.unwrap(); // OK: descs here only come from the producer's to_desc
                 assert_eq!(msg.seq, i);
                 msg.free();
             }

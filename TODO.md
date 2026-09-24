@@ -50,7 +50,7 @@ buffer size, sorted smallest first.
 
 - [feat: segmented pool v1 opening][1] (done)
 - [feat: segmented pool region and alloc][2] (done)
-- [feat: segmented pool in the registry][3]
+- [feat: segmented pool in the registry][3] (done)
 - [perf: segmented pool in the alloc/free bench][4]
 - [docs: segmented pool in the design note][5]
 - [feat: segmented pool v1 closing][6]
@@ -74,7 +74,7 @@ buffer size, sorted smallest first.
   - The counters live in the allocating handle, a plain count, since allocation has one owner.
 - One pool id for all the stacks, with `buf_idx` numbering buffers across the sizes: the Todo
   entry's first thought was a registered pool per sub-pool, and one id keeps the registry and the
-  descriptor as they are, at the cost of a size-range search on resolve (one comparison at N=1).
+  descriptor as they are, at the cost of a size-range search in `to_slot` (one comparison at N=1).
 - Vocabulary: "segment" is the rings' word and "stack" the pools', so v0 is the single-stack pool
   and v1 the multi-stack pool. The user's call on 2026-09-24, at the review of the region rung.
   - "Segmented pool" gave "segment" a second meaning beside the rings of segments, whose
@@ -113,7 +113,7 @@ the alloc family with fallback and miss counts, and `BufSlot` freeing to its own
   so `alloc_with` counts one per failed attempt. The counters are a plain `[u64; N]` in the
   allocating handle, fresh per handle.
 - `BufSlot` holds its stack's head and its stack-local index, so a free touches its own stack
-  alone. It has no header pointer yet, which is the registry rung's to add for `into_desc`.
+  alone. It has no header pointer, which the registry rung found it does not need.
 - `Exhausted` is v0's own type, re-exported, and `Error` gains `BadStackCount` for an attach whose
   `N` differs from the region's.
 - The crate docs in `src/lib.rs` name the pool family: v0 single-stack and the default, v1
@@ -124,8 +124,34 @@ the alloc family with fallback and miss counts, and `BufSlot` freeing to its own
 
 ##### feat: segmented pool in the registry
 
-Resolve a `Desc` against a v1 pool, `buf_idx` numbering buffers across the sizes. How the registry
-holds v0 and v1 resolvers alike, a trait or an enum, is decided here.
+Take a `Desc` back to a guard against a v1 pool, `buf_idx` numbering buffers across the stacks.
+How the registry holds v0 and v1 pool views alike, a trait or an enum, is decided here.
+
+- A trait, not an enum: `PoolRegistry<'a, N, R = v0::PoolView>` is generic over a sealed
+  `DescMap`, which v0's and v1's `PoolView`s implement.
+  - Dispatch is static, so v0's `to_desc` and `to_slot` make the same checks as before, moved
+    into v0's impl, and the existing call sites keep their shape, `R` inferred from `register`.
+  - The trait's `Slot<T>` is the pool's own guard, so a registry takes and returns the guard
+    type its pool mints. An enum would have needed an enum guard.
+  - The cost: one registry holds one kind of pool, v0 or v1. A process mixing them keeps two
+    registries, and their ids are separate spaces.
+  - Sealed because `to_slot` mints owned guards on the implementor's word. `Sealed`, `Send`, and
+    `Sync` have no methods, so their impls are empty, and a comment at each says so.
+- v1's descriptor index numbers the buffers across the stacks, smallest stack first, so it is
+  the stack's first index plus the stack-local one.
+  - `to_desc` finds the stack by comparing the guard's head with each stack's head, one
+    comparison per stack, so `BufSlot` needed no header pointer after all.
+  - `to_slot` finds the stack whose index range holds the index, then checks `T` against that
+    stack's size, so a `T` too big for its buffer is `BadType` even when a larger stack exists.
+- Names, the user's call on 2026-09-24 at this rung's review: "resolve" said too little.
+  - `into_desc` and `resolve` became `to_desc` and `to_slot`, a pair named by what each returns.
+    `from_desc` was the first choice, and clippy's `wrong_self_convention` reserves `from_*` for
+    constructors, which take no `self`.
+  - `PoolResolver` became `PoolView` and `resolver()` became `view()`, a view that cannot pop,
+    replacing "non-allocating", since no pool allocates memory, and the trait is `DescMap`.
+  - The rename reaches v0, the demo, `tp_matrix`, the README, and the design note, since these
+    names predate the cycle. The `alloc` family's name is a Todo of its own.
+- The v1 and registry tests pass under Miri.
 
 ##### perf: segmented pool in the alloc/free bench
 
@@ -262,7 +288,7 @@ decision and a harness shape:
 Paired DescSender (loan + send) / DescReceiver (recv) [[11]]:
 - own ring endpoint + registry access
 - the demo's ~20-line send path becomes ~3 lines
-- `resolve`'s unsafe is audited once inside the crate (recv safe by construction)
+- `to_slot`'s unsafe is audited once inside the crate (recv safe by construction)
 - guard handed back on Full
 - design against both ring flavors (SPSC + MPSC)
 - the sender is also where each sender's private overflow pending list will live.
@@ -284,6 +310,15 @@ error instead of silently violating SPSC, at the cost of a layout_version bump (
 
 `Producer<T>` / `Consumer<T>` validating `T`'s geometry once at split instead of asserting on every
 reserve_slot_with [details](notes/ring-buffer-design.md#api).
+
+### Pool alloc naming
+
+No pool allocates memory: the region is fixed at `init`, and `alloc` pops a free buffer off a
+stack. The `alloc` family's name suggests otherwise.
+
+- Candidates: `take` / `take_with` / `take_bytes`, paired with `free` or a `give_back`.
+- Reaches both pools, the registry docs, the demo, `tp_matrix`, the guide, and the README.
+- Raised by the user on 2026-09-24, at the review of `feat: segmented pool in the registry`.
 
 ## Ideas
 

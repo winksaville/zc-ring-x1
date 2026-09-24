@@ -196,10 +196,10 @@ state, with one party allowed to touch it:
   long as desired, moved between threads freely (`Send`).
   No other party, the pool included, may touch the
   bytes.
-- **in-flight**: the descriptor form, where `into_desc` consumes
+- **in-flight**: the descriptor form, where `to_desc` consumes
   the guard and ownership travels in the returned `Desc`
   (typically through a ring). The sender must no longer
-  touch the buffer. Whoever `resolve`s the descriptor owns
+  touch the buffer. Whoever takes the descriptor back with `to_slot` owns
   it, exactly once.
 - **freed**: `BufSlot::free` pushes it back, and ownership
   returns to the pool protocol the instant the CAS lands.
@@ -212,16 +212,16 @@ state, with one party allowed to touch it:
   `Send` lets it cross threads or a std channel).
 - The descriptor flow (0.7.0): register the pool in a
   per-process `PoolRegistry`, convert the guard to an
-  8-byte `Desc` with `into_desc`, and send *that* through
+  8-byte `Desc` with `to_desc`, and send *that* through
   a ring as an ordinary POD message, and the receiver
-  `resolve`s it back to an owned guard. The payload stays
+  takes it back to an owned guard with `to_slot`. The payload stays
   put in its pool buffer:
 
 ```rust,ignore
 // Sender: pool allocator + ring producer.
 let mut msg = pool.alloc::<Msg>()?;   // get a message
 msg.seq = 42;                         // fill it in place
-let desc = registry.into_desc(pool_id, msg)?; // guard -> Desc
+let desc = registry.to_desc(pool_id, msg)?; // guard -> Desc
 let mut slot = producer.reserve_slot_with::<Desc>(|_| false)?;
 *slot = desc;                         // 8 bytes, not the payload
 slot.commit();
@@ -230,15 +230,15 @@ slot.commit();
 let slot = consumer.reserve_slot_with::<Desc>(|_| false)?;
 let desc = *slot;
 slot.release();                       // ring slot free again
-// SAFETY: desc came from into_desc, arrived via the ring's
-// commit -> reserve handoff, resolved exactly once.
-let msg = unsafe { registry.resolve::<Msg>(desc) }?;
+// SAFETY: desc came from to_desc, arrived via the ring's
+// commit -> reserve handoff, taken back exactly once.
+let msg = unsafe { registry.to_slot::<Msg>(desc) }?;
 //                  ... read msg ...
 msg.free();                           // buffer back to its pool
 ```
 
 One allocation's bytes are written once and never copied,
-not by send, not by receive. (`resolve` is the one `unsafe`:
+not by send, not by receive. (`to_slot` is the one `unsafe`:
 validation rejects unknown ids / bad indices / wrong types,
 but ownership uniqueness is the caller's promise. Paired
 sender/receiver endpoints that encapsulate it, and shrink

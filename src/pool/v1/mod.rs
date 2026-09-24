@@ -20,7 +20,8 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, Ordering};
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
-use crate::{CACHE_LINE_SIZE, CacheAligned, Error};
+use crate::registry::{DescMap, sealed};
+use crate::{CACHE_LINE_SIZE, CacheAligned, Error, RegistryError, type_fits};
 
 pub use super::v0::Exhausted;
 
@@ -260,6 +261,29 @@ impl<'a, const N: usize> Pool<'a, N> {
         self.buf_counts[stack]
     }
 
+    /// A [`PoolView`] of this pool, a view that cannot pop, for registration in a
+    /// [`PoolRegistry`](crate::PoolRegistry).
+    ///
+    /// - Derived from this handle, as v0's, so no second region borrow.
+    /// - Numbers the buffers across the stacks for descriptors: stack `s`'s buffers follow the
+    ///   buffers of every smaller stack.
+    pub fn view(&self) -> PoolView<'a, N> {
+        let mut start = 0u32;
+        let starts = core::array::from_fn(|s| {
+            let first = start;
+            // Cannot wrap: init/attach bound the total count below NIL.
+            start += self.buf_counts[s];
+            first
+        });
+        PoolView {
+            header: self.header,
+            bases: self.bases,
+            buf_sizes: self.buf_sizes,
+            buf_counts: self.buf_counts,
+            starts,
+        }
+    }
+
     /// Allocations, per stack, that wanted the stack and found it empty, since this handle was
     /// made.
     ///
@@ -355,11 +379,91 @@ impl<'a, const N: usize> Pool<'a, N> {
     }
 }
 
+/// A view over a multi-stack pool that cannot pop: maps guards to descriptor indices and validated
+/// indices back to owned [`BufSlot`] guards on behalf of a [`PoolRegistry`](crate::PoolRegistry).
+///
+/// - Created by [`Pool::view`], with the same header ref, bases, and geometry snapshot.
+/// - A descriptor index numbers the buffers across the stacks, smallest stack first, so it is
+///   the stack's first index, `starts[s]`, plus the stack-local index.
+/// - Cannot pop: taking buffers stays with the owning [`Pool`] handle, the single popper.
+#[derive(Clone, Copy)]
+pub struct PoolView<'a, const N: usize> {
+    /// The pool's control block.
+    header: &'a PoolHeader<N>,
+    /// Base of each stack's buffer array.
+    bases: [*mut u8; N],
+    /// Snapshot of `header.buf_sizes`.
+    buf_sizes: [u32; N],
+    /// Snapshot of `header.buf_counts`.
+    buf_counts: [u32; N],
+    /// Descriptor index of each stack's first buffer.
+    starts: [u32; N],
+}
+
+// SAFETY: the view is read-only over its own fields. The only shared-memory mutation reachable
+// through it is the minted guards' free CAS, the stacks' any-thread push side. Allocation is not
+// reachable from a view.
+//
+// Send and Sync are marker traits with no methods, so each impl is empty: the `unsafe impl` is
+// the whole statement, a promise the compiler cannot infer past the raw pointers.
+unsafe impl<const N: usize> Send for PoolView<'_, N> {}
+// SAFETY: all methods take &self and touch shared state only through atomics, as above.
+unsafe impl<const N: usize> Sync for PoolView<'_, N> {}
+
+// Empty on purpose: `Sealed` has no methods, and this impl is the crate opting v1's view into
+// `DescMap`, which code outside the crate cannot do.
+impl<const N: usize> sealed::Sealed for PoolView<'_, N> {}
+
+impl<'a, const N: usize> DescMap<'a> for PoolView<'a, N> {
+    type Slot<T: ?Sized + 'a> = BufSlot<'a, T>;
+
+    /// The guard's descriptor index when its head is one of this pool's stack heads: one
+    /// comparison per stack, one at `N = 1`.
+    fn desc_idx<T: ?Sized + 'a>(&self, slot: &BufSlot<'a, T>) -> Option<u32> {
+        for s in 0..N {
+            if core::ptr::eq(slot.head, &*self.header.heads[s]) {
+                return Some(self.starts[s] + slot.idx);
+            }
+        }
+        None
+    }
+
+    /// Find the stack whose index range holds `idx`, check `T` against that stack's size, and
+    /// mint the guard.
+    unsafe fn to_slot<T>(&self, idx: u32) -> Result<BufSlot<'a, T>, RegistryError>
+    where
+        T: FromBytes + IntoBytes + KnownLayout + 'a,
+    {
+        // The stacks' index ranges are contiguous and ascending, so the first range ending past
+        // idx holds it. No end wraps: the total count is below NIL.
+        for s in 0..N {
+            if idx < self.starts[s] + self.buf_counts[s] {
+                let local = idx - self.starts[s];
+                if !type_fits::<T>(self.buf_sizes[s]) {
+                    return Err(RegistryError::BadType);
+                }
+                // SAFETY: local < the stack's count keeps the buffer inside the stack's array
+                // validated at init/attach.
+                let buf = unsafe { self.bases[s].add(local as usize * self.buf_sizes[s] as usize) };
+                return Ok(BufSlot {
+                    head: &self.header.heads[s],
+                    buf,
+                    buf_size: self.buf_sizes[s],
+                    idx: local,
+                    _slot: PhantomData,
+                });
+            }
+        }
+        Err(RegistryError::BadIndex)
+    }
+}
+
 /// An allocated buffer, owned until [`free`](BufSlot::free): `DerefMut` to use it as a `T` in
 /// place, or as all of its bytes for `BufSlot<[u8]>`.
 ///
 /// - Does not borrow the [`Pool`], as v0's guard.
-/// - Carries its stack's head, so free goes straight to the right stack.
+/// - Carries its stack's head, so free goes straight to the right stack, and the head names the
+///   stack for [`PoolView`]'s descriptor index.
 /// - Dropping without `free` leaks the buffer until the pool is re-initialized.
 pub struct BufSlot<'p, T: ?Sized> {
     /// The owning stack's head (for the free CAS).
@@ -824,6 +928,157 @@ mod tests {
                     assert_eq!(b.seq, i);
                     assert_eq!(b.val, i * 3);
                     b.free();
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn desc_round_trip_across_stacks() {
+        use crate::{Desc, PoolRegistry};
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, THREE).unwrap();
+        let mut reg = PoolRegistry::<1, _>::new();
+        let id = reg.register(pool.view()).unwrap();
+
+        let mut small = pool.alloc::<Msg>().unwrap();
+        let mut mid = pool.alloc::<TwoLines>().unwrap();
+        let mut big = pool.alloc_bytes(3 * CACHE_LINE_SIZE).unwrap();
+        small.seq = 1;
+        mid.words[0] = 2;
+        big[0] = 3;
+        // Descriptor indices number the buffers across the stacks, smallest stack first.
+        let small = reg.to_desc(id, small).map_err(|(_, e)| e).unwrap();
+        let mid = reg.to_desc(id, mid).map_err(|(_, e)| e).unwrap();
+        let big = reg.to_desc(id, big).map_err(|(_, e)| e).unwrap();
+        let idxs = [small, mid, big].map(|d: Desc| d.buf_idx);
+        assert_eq!(idxs, [0, 2, 4]);
+
+        // SAFETY: each desc came from to_desc on this thread and is taken back exactly once.
+        let (small, mid, big) = unsafe {
+            (
+                reg.to_slot::<Msg>(small).unwrap(),
+                reg.to_slot::<TwoLines>(mid).unwrap(),
+                reg.to_slot::<[u8; 4 * CACHE_LINE_SIZE]>(big).unwrap(),
+            )
+        };
+        assert_eq!((small.seq, mid.words[0], big[0]), (1, 2, 3));
+        assert_eq!(
+            (small.buf_size, mid.buf_size, big.buf_size),
+            (LINE, 2 * LINE, 4 * LINE)
+        );
+        small.free();
+        mid.free();
+        big.free();
+
+        // Each buffer taken back went back to its own stack: all six allocate with no miss.
+        let all: [_; 6] =
+            [1, 1, 2, 2, 4, 4].map(|lines| pool.alloc_bytes(lines * CACHE_LINE_SIZE).unwrap());
+        assert_eq!(pool.misses(), [0, 0, 0]);
+        all.into_iter().for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn to_desc_checks_pool_identity() {
+        use crate::{PoolRegistry, RegistryError};
+        let mut ra = Region::new();
+        let mut rb = Region::new();
+        let mut pool_a = Pool::init(&mut ra.0, THREE).unwrap();
+        let pool_b = Pool::init(&mut rb.0, THREE).unwrap();
+        let mut reg = PoolRegistry::<2, _>::new();
+        let id_a = reg.register(pool_a.view()).unwrap();
+        let id_b = reg.register(pool_b.view()).unwrap();
+
+        // A guard from any stack of pool a is not pool b's, and comes back usable.
+        let slot = pool_a.alloc::<TwoLines>().unwrap();
+        let (slot, err) = reg.to_desc(id_b, slot).unwrap_err();
+        assert_eq!(err, RegistryError::WrongPool);
+        let desc = reg.to_desc(id_a, slot).map_err(|(_, e)| e).unwrap();
+        // SAFETY: desc came from to_desc, taken back once.
+        unsafe { reg.to_slot::<TwoLines>(desc) }.unwrap().free();
+    }
+
+    #[test]
+    fn to_slot_rejects_hostile_descs() {
+        use crate::{Desc, PoolRegistry, RegistryError};
+        let mut r = Region::new();
+        let pool = Pool::init(&mut r.0, THREE).unwrap();
+        let mut reg = PoolRegistry::<1, _>::new();
+        reg.register(pool.view()).unwrap();
+        let desc = |buf_idx| Desc {
+            pool_id: 0,
+            buf_idx,
+        };
+
+        // SAFETY: every to_slot here must fail validation and mint nothing.
+        unsafe {
+            assert_eq!(
+                reg.to_slot::<Msg>(desc(6)).err(),
+                Some(RegistryError::BadIndex)
+            );
+            assert_eq!(
+                reg.to_slot::<Msg>(desc(u32::MAX)).err(),
+                Some(RegistryError::BadIndex)
+            );
+            // Index 1 is the one-line stack's last buffer: a two-line T does not fit it, though
+            // it fits the stack after.
+            assert_eq!(
+                reg.to_slot::<TwoLines>(desc(1)).err(),
+                Some(RegistryError::BadType)
+            );
+        }
+    }
+
+    /// Descriptors carry buffers of two stacks through an SPSC ring, producer thread to consumer
+    /// thread, the buffers recycling under pressure.
+    #[test]
+    fn desc_over_ring_cross_thread() {
+        use crate::{Desc, PoolRegistry};
+        const COUNT: u64 = if cfg!(miri) { 200 } else { 10_000 };
+        let mut r = Region::new();
+        let mut rr = Region::new();
+        let mut pool = Pool::init(&mut r.0, THREE).unwrap();
+        let mut reg = PoolRegistry::<1, _>::new();
+        let id = reg.register(pool.view()).unwrap();
+        let reg = &reg;
+        let (mut producer, mut consumer) = crate::spsc::v2::Ring::init(&mut rr.0, LINE, 4)
+            .unwrap()
+            .split();
+
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                for i in 0..COUNT {
+                    let size = if i % 2 == 0 { 1 } else { 2 * CACHE_LINE_SIZE };
+                    let mut buf = loop {
+                        match pool.alloc_sized::<Msg>(size) {
+                            Ok(buf) => break buf,
+                            Err(Exhausted) => std::hint::spin_loop(),
+                        }
+                    };
+                    buf.seq = i;
+                    let desc = reg.to_desc(id, buf).map_err(|(_, e)| e).unwrap();
+                    let mut slot = producer
+                        .reserve_slot_with::<Desc>(crate::policy::spin)
+                        .unwrap();
+                    *slot = desc;
+                    slot.commit();
+                }
+            });
+            s.spawn(move || {
+                for i in 0..COUNT {
+                    let desc = {
+                        let slot = consumer
+                            .reserve_slot_with::<Desc>(crate::policy::spin)
+                            .unwrap();
+                        let desc = *slot;
+                        slot.release();
+                        desc
+                    };
+                    // SAFETY: the desc was consumed into the ring by the producer and read after
+                    // the commit -> reserve handoff, and each is taken back exactly once.
+                    let msg = unsafe { reg.to_slot::<Msg>(desc) }.unwrap();
+                    assert_eq!(msg.seq, i);
+                    msg.free();
                 }
             });
         });

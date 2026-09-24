@@ -53,8 +53,8 @@ pub mod spsc;
 
 #[cfg(target_has_atomic = "32")]
 pub use mpsc::{MpscConsumer, MpscHeader, MpscProducer, MpscReadSlot, MpscRing, mpsc_region_size};
-pub use pool::{BufSlot, Exhausted, Pool, PoolHeader, PoolResolver};
-pub use registry::{Desc, PoolId, PoolRegistry, RegistryError};
+pub use pool::{BufSlot, Exhausted, Pool, PoolHeader, PoolView};
+pub use registry::{Desc, DescMap, PoolId, PoolRegistry, RegistryError};
 pub use spsc::{Consumer, Producer, ReadSlot, Ring, WriteSlot};
 
 /// Cache-line size the layout is built around.
@@ -155,8 +155,8 @@ fn check_type<T>(slot_size: u32) {
     );
 }
 
-/// Non-panicking form of [`check_type`], for descriptor
-/// resolve. There the pool compared against is selected by
+/// Non-panicking form of [`check_type`], for
+/// `to_slot`. There the pool compared against is selected by
 /// untrusted input, which must not be able to select a panic.
 fn type_fits<T>(slot_size: u32) -> bool {
     size_of::<T>() <= slot_size as usize && core::mem::align_of::<T>() <= CACHE_LINE_SIZE
