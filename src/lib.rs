@@ -23,6 +23,11 @@
 //!   Primitive modules hold versioned sibling implementations
 //!   (`spsc::v0`, ...) behind per-module default-version
 //!   re-exports, and this crate root re-exports the defaults.
+//! - Message pools live in the `pool` module: the default
+//!   [`Pool`] is `pool::v0`, a single-stack pool of one buffer
+//!   size, and `pool::v1` is a multi-stack pool, one stack per
+//!   buffer size, by path. "Segment" is the rings' word and
+//!   "stack" the pools'.
 //! - How to use the segmented rings, [`Ring`] and
 //!   `mpsc::v2::MpscRing`, from a pool to two threads is the
 //!   [user guide], with two complete programs in `examples/`.
@@ -36,9 +41,9 @@ use core::mem::{align_of, size_of};
 use core::sync::atomic::AtomicU32;
 
 // The MPSC ring needs CAS (the claim), so it is gated. The
-// SPSC ring protocol stays load/store-only. (The pool's
-// free-stack also uses CAS and predates the gate, see
-// notes/bugs.md.)
+// SPSC ring protocol stays load/store-only. (The pools'
+// free-stacks also use CAS and are not gated, v0 having
+// predated the gate, see notes/bugs.md.)
 #[cfg(target_has_atomic = "32")]
 pub mod mpsc;
 pub mod policy;
@@ -98,7 +103,8 @@ impl<T> core::ops::Deref for CacheAligned<T> {
 }
 
 /// Errors from region validation, the rings' `init` / `attach`,
-/// [`Ring::init`], and [`Pool::init`] / [`Pool::attach`].
+/// [`Ring::init`], [`Pool::init`] / [`Pool::attach`], and
+/// `pool::v1`'s `init` / `attach`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// Region is not [`CACHE_LINE_SIZE`]-aligned.
@@ -111,11 +117,16 @@ pub enum Error {
     /// cap, or under its floor (the MPSC v0 ring's is 2).
     BadCapacity,
     /// Pool: buffer size is zero or not a [`CACHE_LINE_SIZE`]
-    /// multiple.
+    /// multiple, or a multi-stack pool's sizes are not strictly
+    /// ascending.
     BadBufSize,
     /// Pool: buffer count is zero or `u32::MAX` (the
-    /// free-stack NIL sentinel).
+    /// free-stack NIL sentinel), or a multi-stack pool has no
+    /// stack or a total count reaching the sentinel.
     BadBufCount,
+    /// Attach: a multi-stack pool region built with another
+    /// stack count.
+    BadStackCount,
     /// Attach: magic mismatch, not a region of the expected
     /// kind.
     BadMagic,

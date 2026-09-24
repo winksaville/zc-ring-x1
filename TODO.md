@@ -26,7 +26,7 @@ several pools by hand.
 
 #### Solution
 
-`pool::v1::Pool<'a, const N: usize>` keeps v0's API over one region holding N free-stacks, one per
+`pool::v1::Pool<'a, const N: usize>` keeps v0's API over one region holding N stacks, one per
 buffer size, sorted smallest first.
 
 - `alloc::<T>()`, `alloc_with`, and `alloc_bytes(size)` take the smallest size that fits, fall back
@@ -49,7 +49,7 @@ buffer size, sorted smallest first.
 #### Ladder
 
 - [feat: segmented pool v1 opening][1] (done)
-- [feat: segmented pool region and alloc][2]
+- [feat: segmented pool region and alloc][2] (done)
 - [feat: segmented pool in the registry][3]
 - [perf: segmented pool in the alloc/free bench][4]
 - [docs: segmented pool in the design note][5]
@@ -59,8 +59,8 @@ buffer size, sorted smallest first.
 
 - Multi-step: a new pool version, its registry path, a bench, and a design section are not one
   reviewable step.
-- A v1 beside v0: the user's direction on 2026-09-24, so the cost of segmenting is measured against
-  the pool as it is.
+- A v1 beside v0: the user's direction on 2026-09-24, so the cost of several stacks is measured
+  against the pool as it is.
 - One API, N stacks: the user's direction on 2026-09-24. The same alloc family selects a stack by
   size, and the degenerate single-stack case, the rings' and most queues', should cost nothing.
   - `const N: usize` with runtime sizes: v0 already asserts `T`'s size on every alloc, and at N=1
@@ -75,6 +75,12 @@ buffer size, sorted smallest first.
 - One pool id for all the stacks, with `buf_idx` numbering buffers across the sizes: the Todo
   entry's first thought was a registered pool per sub-pool, and one id keeps the registry and the
   descriptor as they are, at the cost of a size-range search on resolve (one comparison at N=1).
+- Vocabulary: "segment" is the rings' word and "stack" the pools', so v0 is the single-stack pool
+  and v1 the multi-stack pool. The user's call on 2026-09-24, at the review of the region rung.
+  - "Segmented pool" gave "segment" a second meaning beside the rings of segments, whose
+    segments are pool buffers.
+  - The cycle keeps "segmented pool" as its name and title stem, since the opening pushed with
+    it, and the code and docs say "multi-stack".
 - Out of scope: a v1 flavor in `tp-pool`'s sweep, the rings taking a v1 pool, and compile-time
   sizes, each a later cycle if wanted.
 
@@ -90,6 +96,31 @@ nothing to promote.
 
 `pool::v1`: the region header with N stack heads, each on its own cache line, `init` and `attach`,
 the alloc family with fallback and miss counts, and `BufSlot` freeing to its own stack, with tests.
+
+- Terms: a stack is one buffer size with its own buffers, linked as v0's free-stack is. The
+  stacks follow the header in order, smallest first, and a buffer's index is local to its stack.
+- The header is `PoolHeader<N>`: the geometry words and the per-stack sizes and counts, then one
+  cache line per head. At N=1 it is two lines, as v0's.
+- `init` takes `[(buf_size, buf_count); N]`. Sizes must be strictly ascending, so the first stack
+  that fits is the smallest, and the total count stays below the sentinel, leaving room for a
+  buffer index across the stacks when the registry rung wants one.
+- The pick is a scan for the first stack that fits, and the fallback a loop over the larger
+  stacks. At N=1 the fallback range is empty.
+- The size check that v0's `check_type` makes becomes the pick. A size larger than the largest
+  stack panics, for `alloc_bytes(size)` as for `alloc::<T>()`, since both are a request the pool
+  was not built for.
+- A miss is counted once per call whose wanted stack was empty, whatever the fallback then does,
+  so `alloc_with` counts one per failed attempt. The counters are a plain `[u64; N]` in the
+  allocating handle, fresh per handle.
+- `BufSlot` holds its stack's head and its stack-local index, so a free touches its own stack
+  alone. It has no header pointer yet, which is the registry rung's to add for `into_desc`.
+- `Exhausted` is v0's own type, re-exported, and `Error` gains `BadStackCount` for an attach whose
+  `N` differs from the region's.
+- The crate docs in `src/lib.rs` name the pool family: v0 single-stack and the default, v1
+  multi-stack by path.
+- The magic differs from v0's, so neither pool attaches the other's region.
+- The v1 tests pass under Miri as well. Its first run caught a test taking the region pointer a
+  second time under a live handle, a test bug, and not the pool's.
 
 ##### feat: segmented pool in the registry
 
