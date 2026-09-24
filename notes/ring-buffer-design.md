@@ -1716,6 +1716,51 @@ The two rings differ in three mechanics, none of which changes the lifecycle abo
 | When the segment is given back | at the release of the MOVED message, one poll earlier | at the reserve after the last release, when the consumer reads the seal |
 | The free set | two words, the producer's taken bits and the consumer's given bits, free where they agree, no CAS | one in-use word, `fetch_or` to take and a clear to give back, since the parity trick is unsound for several producers |
 
+## Generic Queue (idea)
+
+SPSC v3 and MPSC v2 share their setup, `init(pool, slot_size, seg_capacity, seg_count)` and
+`split()`, and their consumer, `reserve_slot_with` then `release`, and differ only in the producer.
+A user still picks one by module path and gets two unrelated type families, so going from one
+producer to several rewrites every signature that names an endpoint. The idea is one type over
+both, recorded 2026-09-17 and not yet a Todo.
+
+- The shape: `Queue<P>`, with `P` a sealed producer marker, `Single` or `Multi`.
+  - `Queue<Single>` wraps the v3 `Ring` and `Queue<Multi>` wraps the v2 `MpscRing`, each a thin
+    facade that adds no state and no protocol.
+  - `init` and `split` have one signature for both, and `split` gives `(Sender<P>, Receiver<P>)`.
+  - Sealed, so the marker set is the crate's to extend and code generic over `P` sees every kind.
+- `T` stays per call: the facade does not fix the message type, as neither ring does, so one queue
+  still carries several message types. Fixing `T` at split is the separate [Typed
+  endpoints](../TODO.md#typed-endpoints) Todo, which could layer over this one.
+- The senders differ where the rings do:
+  - `Sender<Single>` holds the v3 `Producer`: one owner, sends through `&mut self`, not `Clone`.
+  - `Sender<Multi>` holds the v2 `MpscProducer`: `Clone`, sends through `&self`, so a second
+    producer is a clone.
+- The receiver is one API over either consumer, and `Receiver<Multi>` skips the tombstones a
+  panicking `fill` leaves, as the v2 consumer does now.
+
+### Generic Queue open questions
+
+- Is the closure `send_with` the common send, with `reserve_slot_with` a `Single` extra?
+  - MPSC v2 has only `send_with`, whose commit is by construction, since a claimed slot must
+    always be committed. SPSC v3 has only the guard, `reserve_slot_with` then `commit`.
+  - On `Single`, `send_with` is the guard inside a closure: reserve, `fill`, commit. A panic in
+    `fill` drops the guard, which abandons the slot, the SPSC counterpart of the tombstone.
+  - We think `send_with` is the common send and `reserve_slot_with` stays a `Single` extra, since
+    a guard held across arbitrary code is what a claimed multi-producer slot cannot allow.
+- Is the ISR kind a guard axis rather than a producer count?
+  - `Multi` today means the claim CAS of MPSC v2, and thumbv6m has no CAS, so a thumbv6m target
+    has no multi-producer queue. The SPSC protocol is load/store only and runs there now.
+  - On one core the claim could instead run in a critical section, interrupts off around a load
+    and a store. That is the "ISR sharing an endpoint" path of [Execution
+    contexts](#execution-contexts), done inside the producer rather than asked of the caller.
+  - So `Multi` may want a parameter naming how producers serialize, `Multi<Cas>` or
+    `Multi<CriticalSection>` in one spelling. We think this is the axis, and a producer count
+    alone is the wrong one, since the critical-section kind gives thumbv6m a multi-producer queue,
+    the gap between Execution contexts and the embedded-floor bullet in [Ideas](../TODO.md#ideas).
+- A consumer-kind axis: both rings are single-consumer, and the shape leaves room for a consumer
+  marker beside `P`, defaulted, rather than fixing the single consumer into the type for good.
+
 ## Messaging layer: pools and descriptor queues
 
 Design for the layer above the ring. The pool half is
