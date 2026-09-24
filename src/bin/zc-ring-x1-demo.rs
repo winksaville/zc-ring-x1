@@ -914,6 +914,87 @@ fn pool_alloc_free_1t() -> f64 {
     start.elapsed().as_secs_f64()
 }
 
+/// A message eight cache lines long, for the largest stack of the four-stack pool: `seq` leads,
+/// as in [`Msg`], so the loop writes the same word.
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+struct Msg8 {
+    seq: u64,
+    rest: [u64; 8 * CACHE_LINE_SIZE / 8 - 1],
+}
+
+/// A message whose sequence word the alloc/free loops write, so one loop runs over [`Msg`] and
+/// [`Msg8`] alike.
+trait Seq {
+    /// Store the sequence word.
+    fn set_seq(&mut self, seq: u64);
+    /// Load the sequence word.
+    fn seq(&self) -> u64;
+}
+
+impl Seq for Msg {
+    /// Store `seq`.
+    fn set_seq(&mut self, seq: u64) {
+        self.seq = seq;
+    }
+    /// Load `seq`.
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+}
+
+impl Seq for Msg8 {
+    /// Store `seq`.
+    fn set_seq(&mut self, seq: u64) {
+        self.seq = seq;
+    }
+    /// Load `seq`.
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+}
+
+/// The one-stack pool v1: DEPTH one-line buffers, the geometry of [`pool_alloc_free_1t`]'s v0
+/// pool.
+const POOL1_ONE_STACK: [(u32, u32); 1] = [(CACHE_LINE_SIZE as u32, DEPTH)];
+
+/// The four-stack pool v1: DEPTH buffers each of one, two, four, and eight lines.
+const POOL1_FOUR_STACKS: [(u32, u32); 4] = [
+    (CACHE_LINE_SIZE as u32, DEPTH),
+    (2 * CACHE_LINE_SIZE as u32, DEPTH),
+    (4 * CACHE_LINE_SIZE as u32, DEPTH),
+    (8 * CACHE_LINE_SIZE as u32, DEPTH),
+];
+
+/// [`pool_alloc_free_1t`]'s loop over a pool v1 of `stacks`, allocating a `T`: alloc -> write ->
+/// free COUNT messages on one thread pinned to the base cpu. Return elapsed seconds.
+///
+/// - One stack against v0 is the cost of the stack choice where it should cost nothing.
+/// - Four stacks with a `T` for the smallest is the cheapest choice, one comparison, and with a
+///   `T` for the largest the costliest, a scan of all four.
+/// - The wanted stack never empties, one buffer being out at a time, so no fallback runs.
+fn pool1_alloc_free_1t<const N: usize, T>(stacks: [(u32, u32); N]) -> f64
+where
+    T: FromBytes + IntoBytes + KnownLayout + Seq,
+{
+    let mut region = region(zc_ring_x1::pool::v1::region_size(stacks));
+    let mut pool = zc_ring_x1::pool::v1::Pool::init(region.as_mut_bytes(), stacks).unwrap(); // OK: region sized by region_size, line-aligned
+
+    let start = Instant::now();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            pin_to_cpu(base_cpu());
+            for i in 0..COUNT {
+                let mut buf_slot = pool.alloc::<T>().unwrap(); // OK: alloc+free per iteration, DEPTH never exceeded
+                buf_slot.set_seq(i);
+                std::hint::black_box(buf_slot.seq());
+                buf_slot.free();
+            }
+        });
+    });
+    start.elapsed().as_secs_f64()
+}
+
 /// The same loop through the global allocator (Box::new ->
 /// write -> drop) for comparison, pinned to the base cpu. Return
 /// elapsed seconds.
@@ -1507,6 +1588,18 @@ fn main() {
     report(
         &format!("pool_alloc_free_1t (core {base}):"),
         pool_alloc_free_1t(),
+    );
+    report(
+        &format!("pool1_alloc_free_1t 1 stack (core {base}):"),
+        pool1_alloc_free_1t::<1, Msg>(POOL1_ONE_STACK),
+    );
+    report(
+        &format!("pool1_alloc_free_1t 4 stacks, 1st (core {base}):"),
+        pool1_alloc_free_1t::<4, Msg>(POOL1_FOUR_STACKS),
+    );
+    report(
+        &format!("pool1_alloc_free_1t 4 stacks, 4th (core {base}):"),
+        pool1_alloc_free_1t::<4, Msg8>(POOL1_FOUR_STACKS),
     );
     report(
         &format!("global_alloc_free_1t (core {base}):"),

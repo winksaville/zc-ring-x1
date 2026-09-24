@@ -51,7 +51,9 @@ buffer size, sorted smallest first.
 - [feat: segmented pool v1 opening][1] (done)
 - [feat: segmented pool region and alloc][2] (done)
 - [feat: segmented pool in the registry][3] (done)
-- [perf: segmented pool in the alloc/free bench][4]
+- [perf: segmented pool in the alloc/free bench][4] (done)
+- [test: segmented pool allocation order][8]
+- [refactor: segmented pool stack geometry][7]
 - [docs: segmented pool in the design note][5]
 - [feat: segmented pool v1 closing][6]
 
@@ -157,6 +159,55 @@ How the registry holds v0 and v1 pool views alike, a trait or an enum, is decide
 
 The demo's `pool_alloc_free_1t` gains v1 rows: N=1 beside v0, and N=4 at its smallest and largest
 size, the cheapest and the costliest stack choice.
+
+- The rows: `pool1_alloc_free_1t` at one stack, and at four stacks (one, two, four, and eight
+  lines) allocating a `T` for the 1st and for the 4th stack, the same alloc -> write -> free loop
+  as v0's, pinned to the base cpu.
+- Measured 2026-09-24 with the demo, 20 runs of each row on the base cpu, ns/msg means, the
+  stdevs 0.1 or less. The scratch builds were measured and reverted, and none is in the tree:
+
+  | build | v0 | v1, 1 stack | v1, 4 stacks, 1st | v1, 4 stacks, 4th |
+  |---|---|---|---|---|
+  | v1 as committed | 9.74 | 9.12 | 11.00 | 11.03 |
+  | scratch: unchecked indexing | 9.79 | 9.12 | 11.00 | 11.06 |
+  | scratch: cold fallback | 9.85 | 10.01 | 9.96 | 10.08 |
+
+- What the builds and their disassembly showed:
+  - The 1st and 4th stacks time alike, and with `alloc` inlined four stacks cost what one does,
+    in a loop that picks the same stack every time, so the scan's branches always predict. A
+    workload mixing sizes may pay for mispredictions, and which stack each row hits is claimed
+    by its label, not checked, until the stack geometry rung asserts it.
+  - Bounds checks cost nothing: removing them in the pop changed no row.
+  - Inlining moves the numbers. At four stacks `alloc`, fallback loop included, is too big to
+    inline and stays a call, with the guard returned through memory, the 1.9 ns. A `#[cold]`
+    out-of-line fallback lets it inline.
+  - v0 is a handicapped baseline: `next_buf_idx` and `buf_ptr` are calls in the demo's loop,
+    since v0 is not generic and they are not `#[inline]`, so they cannot inline across the
+    crate boundary, while the generic v1 is compiled in the demo and inlines whole. That is
+    the 0.6 ns by which v1 at one stack beats v0.
+  - Compile-time stack sizes, a possible v2, would only speed a choice that timed as free
+    here, so the idea is dropped until a measurement says otherwise.
+- The demo's numbers are indicative only: one timed loop per row, no warmup or calibration, and
+  differences near a nanosecond that code layout alone moves, as the cold-fallback build's one
+  stack did. The comparison worth trusting is iiac-perf's, a Todo with the inlining fix.
+
+##### test: segmented pool allocation order
+
+The tests cover the simple fallback paths, but not a small buffer free while a big one is asked
+for, or a middle and a big both free under a small request. Scenario tests pin those down, with
+the size boundaries, and a model-based test drives thousands of random allocs by size and frees
+in random order against a plain model of the rule, checking after every step which stack served
+each request, where `Exhausted` falls, and the miss counts. Inserted at the user's call on
+2026-09-24, at the bench rung, ahead of the stack geometry rung so the tests pin today's
+behavior before the API changes.
+
+##### refactor: segmented pool stack geometry
+
+`init` and `region_size` take each stack as a bare `(buf_size, buf_count)` tuple, which says
+nothing at the call site. A `StackGeometry { buf_size, buf_count }` with a `const fn new` names
+the fields, the handle's parallel snapshot arrays become one `[StackGeometry; N]`, and `init`'s
+docs give each field's meaning and units. Inserted at the user's call on 2026-09-24, at the bench
+rung, so v1 lands with the named type and the design note describes it.
 
 ##### docs: segmented pool in the design note
 
@@ -311,6 +362,20 @@ error instead of silently violating SPSC, at the cost of a layout_version bump (
 `Producer<T>` / `Consumer<T>` validating `T`'s geometry once at split instead of asserting on every
 reserve_slot_with [details](notes/ring-buffer-design.md#api).
 
+### Pool inlining and an iiac-perf comparison
+
+The demo's alloc/free rows measure the compiler's inlining more than the pools, as the cycle
+`feat: segmented pool v1` found at its bench rung: v0's hot helpers cannot inline across the
+crate boundary, and v1's `alloc` stops inlining at four stacks. The demo's single timed loop per
+row is also too crude for differences near a nanosecond.
+
+- v0: `#[inline]` on `next_buf_idx`, `buf_ptr`, and the pop, so the baseline is not handicapped.
+- v1: the miss path in a `#[cold]` out-of-line fallback, so `alloc` inlines at any stack count.
+- Measure v0 and v1 at one and four stacks in [iiac-perf](https://github.com/winksaville/iiac-perf),
+  whose harness calibrates and reports distributions. Variants selected by a type parameter on
+  the pool, rather than copies of the module, would let one harness binary compare them.
+- Raised by the user on 2026-09-24, at the bench rung of `feat: segmented pool v1`.
+
 ### Pool alloc naming
 
 No pool allocates memory: the region is fixed at `init`, and `alloc` pops a free buffer off a
@@ -406,3 +471,5 @@ of this section, and the cycles before the rule in the frozen [notes/chores/](no
 [4]: #perf-segmented-pool-in-the-allocfree-bench
 [5]: #docs-segmented-pool-in-the-design-note
 [6]: #feat-segmented-pool-v1-closing
+[7]: #refactor-segmented-pool-stack-geometry
+[8]: #test-segmented-pool-allocation-order
