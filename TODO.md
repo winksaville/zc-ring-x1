@@ -53,7 +53,9 @@ buffer size, sorted smallest first.
 - [feat: segmented pool in the registry][3] (done)
 - [perf: segmented pool in the alloc/free bench][4] (done)
 - [test: segmented pool allocation order][8] (done)
-- [refactor: segmented pool stack geometry][7]
+- [refactor: segmented pool stack geometry][7] (done)
+- [feat: segmented pool byte slots from descriptors][9]
+- [test: segmented pool messages over every ring][10]
 - [docs: segmented pool in the design note][5]
 - [feat: segmented pool v1 closing][6]
 
@@ -83,8 +85,9 @@ buffer size, sorted smallest first.
     segments are pool buffers.
   - The cycle keeps "segmented pool" as its name and title stem, since the opening pushed with
     it, and the code and docs say "multi-stack".
-- Out of scope: a v1 flavor in `tp-pool`'s sweep, the rings taking a v1 pool, and compile-time
-  sizes, each a later cycle if wanted.
+- Out of scope: a v1 flavor in `tp-pool`'s sweep, the rings taking a v1 pool for their segments
+  (the `### spsc4 and mpsc3 over either pool` Todo, new versions so v3 and v2 stay the
+  baselines), and compile-time sizes, each a later cycle if wanted.
 
 #### Ladder details
 
@@ -258,6 +261,42 @@ the fields, the handle's parallel snapshot arrays become one `[StackGeometry; N]
 docs give each field's meaning and units. Inserted at the user's call on 2026-09-24, at the bench
 rung, so v1 lands with the named type and the design note describes it.
 
+- `StackGeometry { buf_size, buf_count }`, public fields and a `const fn new`, is how a caller
+  describes a stack. `init` and `region_size` take `[StackGeometry; N]`.
+- The pool orders its stacks, the user's call at this rung's planning: `init` takes them in any
+  order and sorts them by size, so the layout and the search are the pool's to change, a sorted
+  table or something else later.
+  - Two stacks of one size are refused as `BadBufSize`, a duplicate being likelier a mistake
+    than a request. `attach` still requires the region's stacks in the pool's order, since
+    `init` wrote them so.
+- No public stack index: a caller's position means nothing once the pool orders the stacks.
+  - `buf_size(stack)`, `buf_count(stack)`, and `misses()` gave way to `stacks()`, the geometry
+    in the pool's order, and `stats()`, a `StackStats { geometry, misses }` per stack, each
+    count labelled by the stack it belongs to.
+  - The handle's and the view's parallel size and count arrays are one `[StackGeometry; N]`.
+- `BufSlot::buf_size()` reports the size given, at least the size asked for, for a typed guard
+  as for a byte guard, whose `len()` already said so.
+- The demo's v1 rows check before the clock starts that a `T` is served by the stack the label
+  claims, which the bench rung could only assume.
+- Tests: new ones for `init` ordering the stacks itself, `stats()` found by size, and
+  `buf_size()` on a typed guard. The model and threaded tests hand `init` a shuffled geometry, so
+  every seed exercises the sort, and white-box tests read the handle's `misses` in the pool's
+  order. All pass, under Miri too.
+
+##### feat: segmented pool byte slots from descriptors
+
+A receiver of mixed message types learns a buffer's type from a tag inside it, but `to_slot::<T>`
+needs `T` up front, and a descriptor may be taken back only once. `to_slot_bytes` takes it back
+as bytes, the counterpart of `alloc_bytes`, and `BufSlot<[u8]>::into_typed::<T>` checks the fit
+and turns the guard typed, handing it back on a misfit, so a receiver reads the tag and matches.
+Inserted at the user's call on 2026-09-24, at the stack geometry rung.
+
+##### test: segmented pool messages over every ring
+
+Every ring carries descriptors, plain data, so each should carry messages of mixed types from a
+multi-stack pool unchanged. One test sends them through all seven rings, spsc v0 to v3 and mpsc
+v0 to v2, and dispatches them by tag on receipt. Inserted with the byte slots rung.
+
 ##### docs: segmented pool in the design note
 
 A design-note section on the layout, the fallback, the miss counts, and the measured cost.
@@ -280,6 +319,26 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 `###` heading, so a citation is a link to its anchor. Long-tail entries live in
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
+
+### spsc4 and mpsc3 over either pool
+
+`spsc::v3` and `mpsc::v2` take their segments from a `pool::v0::Pool` only, so a multi-stack
+pool cannot supply them. New versions take either pool, and v3 and v2 stay as they are, the
+baselines to measure against.
+
+- A sealed segment-source trait, "a buffer of at least N bytes, or none", implemented by both
+  pools. v1's must not panic on a size larger than its largest stack.
+- spsc4 and mpsc3: copies of v3 and v2 whose `init` takes any segment source. The pool is used
+  only in `init`, so the endpoints and every hot path are v3's and v2's code.
+- Expectation: spsc4 over a single-stack v1 pool times as spsc3 over a v0 pool, and mpsc3 as
+  mpsc2, within noise. Rows for each pair: the old ring over v0, the new ring over v0 (the copy
+  alone), over a single-stack v1, and over a multi-stack v1 with one stack for segments beside
+  the message stacks. The demo first, iiac-perf for the fine comparison.
+- Examples: one SPSC and one MPSC program with one v1 pool supplying both the ring's segments
+  and messages of several types, dispatched by tag on receipt, each MPSC producer with its own
+  pool, since a pool has one allocator.
+- The user's direction on 2026-09-24, during `feat: segmented pool v1`: new versions rather than
+  a generic `init` on v3 and v2, so the original code stays to measure against.
 
 ### Paired columns in the tp_matrix tables
 
@@ -425,6 +484,19 @@ row is also too crude for differences near a nanosecond.
   the pool, rather than copies of the module, would let one harness binary compare them.
 - Raised by the user on 2026-09-24, at the bench rung of `feat: segmented pool v1`.
 
+### Unwrap lints for the library
+
+The library has no `unwrap` or `expect` outside tests, but only by discipline. The user
+prohibits them in real code, so a lint should enforce it
+([`// OK` comments](agent-data/code.md#-ok--comments-on-unwrap-calls-rust)).
+
+- `[lints.clippy]` in `Cargo.toml`: `unwrap_used = "warn"` and `expect_used = "warn"`, so
+  validation's `-D warnings` fails any new site in library code.
+- Tests are exempt, and the demo and the examples opt out with a crate-level `#![allow(...)]`,
+  their setup panics being the right response there.
+- The `unwrap_or*` family has no lint and stays under the `// OK:` comment convention.
+- Raised by the user on 2026-09-24, at `refactor: segmented pool stack geometry`.
+
 ### Pool alloc naming
 
 No pool allocates memory: the region is fixed at `init`, and `alloc` pops a free buffer off a
@@ -522,3 +594,5 @@ of this section, and the cycles before the rule in the frozen [notes/chores/](no
 [6]: #feat-segmented-pool-v1-closing
 [7]: #refactor-segmented-pool-stack-geometry
 [8]: #test-segmented-pool-allocation-order
+[9]: #feat-segmented-pool-byte-slots-from-descriptors
+[10]: #test-segmented-pool-messages-over-every-ring

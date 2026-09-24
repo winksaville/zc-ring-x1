@@ -117,8 +117,8 @@ pub enum Error {
     /// cap, or under its floor (the MPSC v0 ring's is 2).
     BadCapacity,
     /// Pool: buffer size is zero or not a [`CACHE_LINE_SIZE`]
-    /// multiple, or a multi-stack pool's sizes are not strictly
-    /// ascending.
+    /// multiple, or a multi-stack pool has two stacks of one
+    /// size (on attach, stacks out of the pool's order).
     BadBufSize,
     /// Pool: buffer count is zero or `u32::MAX` (the
     /// free-stack NIL sentinel), or a multi-stack pool has no

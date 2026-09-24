@@ -44,6 +44,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use zc_ring_x1::pool::v1::StackGeometry;
 use zc_ring_x1::{
     BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, MpscRing, Pool, PoolRegistry,
     mpsc_region_size, policy,
@@ -956,29 +957,34 @@ impl Seq for Msg8 {
 
 /// The one-stack pool v1: DEPTH one-line buffers, the geometry of [`pool_alloc_free_1t`]'s v0
 /// pool.
-const POOL1_ONE_STACK: [(u32, u32); 1] = [(CACHE_LINE_SIZE as u32, DEPTH)];
+const POOL1_ONE_STACK: [StackGeometry; 1] = [StackGeometry::new(CACHE_LINE_SIZE as u32, DEPTH)];
 
 /// The four-stack pool v1: DEPTH buffers each of one, two, four, and eight lines.
-const POOL1_FOUR_STACKS: [(u32, u32); 4] = [
-    (CACHE_LINE_SIZE as u32, DEPTH),
-    (2 * CACHE_LINE_SIZE as u32, DEPTH),
-    (4 * CACHE_LINE_SIZE as u32, DEPTH),
-    (8 * CACHE_LINE_SIZE as u32, DEPTH),
+const POOL1_FOUR_STACKS: [StackGeometry; 4] = [
+    StackGeometry::new(CACHE_LINE_SIZE as u32, DEPTH),
+    StackGeometry::new(2 * CACHE_LINE_SIZE as u32, DEPTH),
+    StackGeometry::new(4 * CACHE_LINE_SIZE as u32, DEPTH),
+    StackGeometry::new(8 * CACHE_LINE_SIZE as u32, DEPTH),
 ];
 
 /// [`pool_alloc_free_1t`]'s loop over a pool v1 of `stacks`, allocating a `T`: alloc -> write ->
 /// free COUNT messages on one thread pinned to the base cpu. Return elapsed seconds.
 ///
+/// - `serves`: the buffer size the row claims serves a `T`, checked once before the clock
+///   starts, so the label cannot claim a stack the row does not hit.
 /// - One stack against v0 is the cost of the stack choice where it should cost nothing.
 /// - Four stacks with a `T` for the smallest is the cheapest choice, one comparison, and with a
 ///   `T` for the largest the costliest, a scan of all four.
 /// - The wanted stack never empties, one buffer being out at a time, so no fallback runs.
-fn pool1_alloc_free_1t<const N: usize, T>(stacks: [(u32, u32); N]) -> f64
+fn pool1_alloc_free_1t<const N: usize, T>(stacks: [StackGeometry; N], serves: u32) -> f64
 where
     T: FromBytes + IntoBytes + KnownLayout + Seq,
 {
     let mut region = region(zc_ring_x1::pool::v1::region_size(stacks));
     let mut pool = zc_ring_x1::pool::v1::Pool::init(region.as_mut_bytes(), stacks).unwrap(); // OK: region sized by region_size, line-aligned
+    let probe = pool.alloc::<T>().unwrap(); // OK: a fresh pool, every stack full
+    assert_eq!(probe.buf_size(), serves as usize, "the row's stack");
+    probe.free();
 
     let start = Instant::now();
     std::thread::scope(|s| {
@@ -1591,15 +1597,15 @@ fn main() {
     );
     report(
         &format!("pool1_alloc_free_1t 1 stack (core {base}):"),
-        pool1_alloc_free_1t::<1, Msg>(POOL1_ONE_STACK),
+        pool1_alloc_free_1t::<1, Msg>(POOL1_ONE_STACK, CACHE_LINE_SIZE as u32),
     );
     report(
         &format!("pool1_alloc_free_1t 4 stacks, 1st (core {base}):"),
-        pool1_alloc_free_1t::<4, Msg>(POOL1_FOUR_STACKS),
+        pool1_alloc_free_1t::<4, Msg>(POOL1_FOUR_STACKS, CACHE_LINE_SIZE as u32),
     );
     report(
         &format!("pool1_alloc_free_1t 4 stacks, 4th (core {base}):"),
-        pool1_alloc_free_1t::<4, Msg8>(POOL1_FOUR_STACKS),
+        pool1_alloc_free_1t::<4, Msg8>(POOL1_FOUR_STACKS, 8 * CACHE_LINE_SIZE as u32),
     );
     report(
         &format!("global_alloc_free_1t (core {base}):"),

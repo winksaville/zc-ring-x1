@@ -1,14 +1,15 @@
 //! Multi-stack message pool: v0's fixed-size buffers and intrusive free-stack, one stack per buffer
 //! size, over one caller-provided region.
 //!
-//! - A stack is one buffer size with its own buffers, linked as v0's free-stack is. `N` stacks,
-//!   sorted smallest first, share one [`PoolHeader`] and one region, and v0 is the single-stack
-//!   pool.
+//! - A stack is one buffer size with its own buffers, linked as v0's free-stack is. `N` stacks
+//!   share one [`PoolHeader`] and one region, and v0 is the single-stack pool.
+//! - The caller describes each stack with a [`StackGeometry`], in any order. How the stacks are
+//!   laid out and searched is the pool's choice: today sorted smallest first and scanned.
 //! - "Stack" is the pools' word and "segment" the rings': a ring segment is a pool buffer that a
 //!   ring of segments runs through.
 //! - The alloc family keeps v0's shape and picks the stack by size: the smallest stack that fits,
 //!   then the next larger one when that stack is empty. Each such miss is counted against the
-//!   stack that was wanted ([`Pool::misses`]), so a user can tell which size wants more buffers.
+//!   stack that was wanted ([`Pool::stats`]), so a user can tell which size wants more buffers.
 //! - At `N = 1` the pick is the one size comparison v0's `alloc` already makes, and the fallback
 //!   loop is empty, so the single-stack pool does v0's work.
 //! - A [`BufSlot`] frees to its own stack, so a free never searches.
@@ -37,6 +38,38 @@ const POOL_LAYOUT_VERSION: u32 = 1;
 /// - Also why the total buffer count is `< u32::MAX`: every buffer index, across the stacks,
 ///   must be distinguishable from the sentinel.
 const NIL: u32 = u32::MAX;
+
+/// One stack's geometry: how big its buffers are and how many it holds, as [`Pool::init`] takes
+/// it and [`Pool::stacks`] reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackGeometry {
+    /// Bytes per buffer, a nonzero [`CACHE_LINE_SIZE`] multiple, and no two stacks of a pool
+    /// share one.
+    pub buf_size: u32,
+    /// Buffers in the stack, nonzero, and the pool's total below `u32::MAX`.
+    pub buf_count: u32,
+}
+
+impl StackGeometry {
+    /// A stack of `buf_count` buffers of `buf_size` bytes each.
+    pub const fn new(buf_size: u32, buf_count: u32) -> Self {
+        StackGeometry {
+            buf_size,
+            buf_count,
+        }
+    }
+}
+
+/// One stack's allocation statistics, as [`Pool::stats`] reports them, labelled by the stack's
+/// geometry rather than a position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackStats {
+    /// The stack these counts are for.
+    pub geometry: StackGeometry,
+    /// Allocations that wanted this stack and found it empty, since the handle was made. A count
+    /// that keeps rising says the stack wants more buffers.
+    pub misses: u64,
+}
 
 /// Control block at offset 0 of a multi-stack pool region: cold geometry, then one contended
 /// head per stack.
@@ -79,10 +112,8 @@ pub struct Pool<'a, const N: usize> {
     header: &'a PoolHeader<N>,
     /// Base of each stack's buffer array.
     bases: [*mut u8; N],
-    /// Snapshot of `header.buf_sizes`.
-    buf_sizes: [u32; N],
-    /// Snapshot of `header.buf_counts`.
-    buf_counts: [u32; N],
+    /// Snapshot of the header's geometry, sorted smallest first.
+    stacks: [StackGeometry; N],
     /// Allocations whose wanted stack was empty, per stack.
     misses: [u64; N],
     _region: PhantomData<&'a [u8]>,
@@ -95,18 +126,22 @@ unsafe impl<const N: usize> Send for Pool<'_, N> {}
 impl<'a, const N: usize> Pool<'a, N> {
     /// Initialize a fresh region and return the pool over it, with every buffer on its stack.
     ///
-    /// - `stacks`: `(buf_size, buf_count)` per stack, sizes [`CACHE_LINE_SIZE`] multiples in
-    ///   strictly ascending order, counts nonzero, the total count `< u32::MAX`.
+    /// - `stacks`: one [`StackGeometry`] per stack, in any order.
+    ///   - `buf_size`: bytes per buffer, a nonzero [`CACHE_LINE_SIZE`] multiple. Two stacks of
+    ///     one size are refused as [`Error::BadBufSize`].
+    ///   - `buf_count`: buffers in the stack, nonzero, and the total below `u32::MAX`, else
+    ///     [`Error::BadBufCount`].
+    /// - The pool orders the stacks itself, today smallest first.
     /// - The region must be [`CACHE_LINE_SIZE`]-aligned and at least [`region_size`] bytes.
-    pub fn init(region: &'a mut [u8], stacks: [(u32, u32); N]) -> Result<Self, Error> {
-        let buf_sizes = stacks.map(|(size, _)| size);
-        let buf_counts = stacks.map(|(_, count)| count);
-        validate_stacks(&buf_sizes, &buf_counts)?;
+    pub fn init(region: &'a mut [u8], stacks: [StackGeometry; N]) -> Result<Self, Error> {
+        let mut stacks = stacks;
+        stacks.sort_unstable_by_key(|stack| stack.buf_size);
+        validate_stacks(&stacks)?;
         let len = region.len();
         // Taken exactly once, same Stacked Borrows retag hazard as v0's init.
         let base = region.as_mut_ptr();
         let header = header_ptr::<N>(base, len)?;
-        if (len as u64) < region_size_of(&buf_sizes, &buf_counts) {
+        if (len as u64) < region_size(stacks) {
             return Err(Error::TooSmall);
         }
         // SAFETY: alignment and room for the header checked by header_ptr, the region is
@@ -120,20 +155,20 @@ impl<'a, const N: usize> Pool<'a, N> {
         header
             .cache_line_size
             .store(CACHE_LINE_SIZE as u32, Ordering::Relaxed);
-        for c in 0..N {
-            header.buf_sizes[c].store(buf_sizes[c], Ordering::Relaxed);
-            header.buf_counts[c].store(buf_counts[c], Ordering::Relaxed);
+        for (c, stack) in stacks.iter().enumerate() {
+            header.buf_sizes[c].store(stack.buf_size, Ordering::Relaxed);
+            header.buf_counts[c].store(stack.buf_count, Ordering::Relaxed);
         }
         let pool = Pool {
             header,
-            bases: stack_bases(base, &buf_sizes, &buf_counts),
-            buf_sizes,
-            buf_counts,
+            bases: stack_bases(base, &stacks),
+            stacks,
             misses: [0; N],
             _region: PhantomData,
         };
         // Link each stack's buffers: i -> i + 1, last -> NIL, head -> 0.
-        for (c, &count) in buf_counts.iter().enumerate() {
+        for (c, stack) in stacks.iter().enumerate() {
+            let count = stack.buf_count;
             for i in 0..count {
                 let next = if i + 1 == count { NIL } else { i + 1 };
                 pool.next_buf_idx(c, i).store(next, Ordering::Relaxed);
@@ -173,20 +208,22 @@ impl<'a, const N: usize> Pool<'a, N> {
         if header.stack_count.load(Ordering::Relaxed) != N as u32 {
             return Err(Error::BadStackCount);
         }
-        // Snapshot geometry once. Per-op paths never re-read.
-        let buf_sizes: [u32; N] =
-            core::array::from_fn(|c| header.buf_sizes[c].load(Ordering::Relaxed));
-        let buf_counts: [u32; N] =
-            core::array::from_fn(|c| header.buf_counts[c].load(Ordering::Relaxed));
-        validate_stacks(&buf_sizes, &buf_counts)?;
-        if (len as u64) < region_size_of(&buf_sizes, &buf_counts) {
+        // Snapshot geometry once. Per-op paths never re-read. The region's stacks must already
+        // be in the pool's order, since init wrote them sorted.
+        let stacks: [StackGeometry; N] = core::array::from_fn(|c| {
+            StackGeometry::new(
+                header.buf_sizes[c].load(Ordering::Relaxed),
+                header.buf_counts[c].load(Ordering::Relaxed),
+            )
+        });
+        validate_stacks(&stacks)?;
+        if (len as u64) < region_size(stacks) {
             return Err(Error::TooSmall);
         }
         Ok(Pool {
             header,
-            bases: stack_bases(region, &buf_sizes, &buf_counts),
-            buf_sizes,
-            buf_counts,
+            bases: stack_bases(region, &stacks),
+            stacks,
             misses: [0; N],
             _region: PhantomData,
         })
@@ -197,7 +234,7 @@ impl<'a, const N: usize> Pool<'a, N> {
     ///
     /// - Roles, the validated pop, and the guard's independence from the pool are v0's
     ///   [`alloc`](super::v0::Pool::alloc)'s.
-    /// - An empty wanted stack counts one miss against it ([`misses`](Pool::misses)), whether a
+    /// - An empty wanted stack counts one miss against it ([`stats`](Pool::stats)), whether a
     ///   larger stack then serves the call or none does.
     /// - A `T` larger than the largest stack, or aligned beyond a cache line, is a programming
     ///   error and panics, as in v0.
@@ -251,14 +288,10 @@ impl<'a, const N: usize> Pool<'a, N> {
         }
     }
 
-    /// Buffer size in bytes of stack `stack` (geometry snapshot).
-    pub fn buf_size(&self, stack: usize) -> u32 {
-        self.buf_sizes[stack]
-    }
-
-    /// Buffer count of stack `stack` (geometry snapshot).
-    pub fn buf_count(&self, stack: usize) -> u32 {
-        self.buf_counts[stack]
+    /// The pool's stacks (geometry snapshot), each labelled by its own geometry. Their order is
+    /// the pool's, so a caller finds a stack by its size, never by a position.
+    pub fn stacks(&self) -> [StackGeometry; N] {
+        self.stacks
     }
 
     /// A [`PoolView`] of this pool, a view that cannot pop, for registration in a
@@ -272,24 +305,26 @@ impl<'a, const N: usize> Pool<'a, N> {
         let starts = core::array::from_fn(|s| {
             let first = start;
             // Cannot wrap: init/attach bound the total count below NIL.
-            start += self.buf_counts[s];
+            start += self.stacks[s].buf_count;
             first
         });
         PoolView {
             header: self.header,
             bases: self.bases,
-            buf_sizes: self.buf_sizes,
-            buf_counts: self.buf_counts,
+            stacks: self.stacks,
             starts,
         }
     }
 
-    /// Allocations, per stack, that wanted the stack and found it empty, since this handle was
-    /// made.
+    /// Each stack's allocation statistics, labelled by its geometry: the allocations that
+    /// wanted the stack and found it empty, since this handle was made.
     ///
     /// - A count that keeps rising says the stack wants more buffers.
-    pub fn misses(&self) -> [u64; N] {
-        self.misses
+    pub fn stats(&self) -> [StackStats; N] {
+        core::array::from_fn(|s| StackStats {
+            geometry: self.stacks[s],
+            misses: self.misses[s],
+        })
     }
 
     /// The alloc family's shared body: pick the wanted stack for `size`, pop from it, and on an
@@ -316,7 +351,7 @@ impl<'a, const N: usize> Pool<'a, N> {
     ///   programming error, as v0's `check_type`.
     fn stack_for(&self, size: usize) -> usize {
         for stack in 0..N {
-            if size <= self.buf_sizes[stack] as usize {
+            if size <= self.stacks[stack].buf_size as usize {
                 return stack;
             }
         }
@@ -332,7 +367,7 @@ impl<'a, const N: usize> Pool<'a, N> {
     ///   hazard.
     fn pop<T: ?Sized>(&self, stack: usize) -> Result<BufSlot<'a, T>, Exhausted> {
         let head_cell: &'a AtomicU32 = &self.header.heads[stack];
-        let count = self.buf_counts[stack];
+        let count = self.stacks[stack].buf_count;
         loop {
             // Acquire pairs with free's Release CAS: seeing a head index means seeing that
             // buffer's next-link store (and the freer's last writes) too.
@@ -351,7 +386,7 @@ impl<'a, const N: usize> Pool<'a, N> {
                 return Ok(BufSlot {
                     head: head_cell,
                     buf: self.buf_ptr(stack, head),
-                    buf_size: self.buf_sizes[stack],
+                    buf_size: self.stacks[stack].buf_size,
                     idx: head,
                     _slot: PhantomData,
                 });
@@ -362,7 +397,7 @@ impl<'a, const N: usize> Pool<'a, N> {
     /// The next-free-buffer index cell of buffer `idx` of stack `stack`, its first word, the
     /// intrusive stack link, meaningful only while the buffer is free.
     ///
-    /// - Callers pass `idx < buf_counts[stack]` (validated pops, init's linking loop).
+    /// - Callers pass `idx < stacks[stack].buf_count` (validated pops, init's linking loop).
     fn next_buf_idx(&self, stack: usize, idx: u32) -> &AtomicU32 {
         let p = self.buf_ptr(stack, idx) as *const AtomicU32;
         // SAFETY: idx < the stack's count keeps the buffer in the region validated at
@@ -371,11 +406,11 @@ impl<'a, const N: usize> Pool<'a, N> {
         unsafe { &*p }
     }
 
-    /// Pointer to buffer `idx` of stack `stack`, and callers pass `idx < buf_counts[stack]`.
+    /// Pointer to buffer `idx` of stack `stack`, and callers pass `idx < stacks[stack].buf_count`.
     fn buf_ptr(&self, stack: usize, idx: u32) -> *mut u8 {
         // SAFETY: idx < the stack's count, so the offset stays inside the stack's buffer array
         // validated at init/attach.
-        unsafe { self.bases[stack].add(idx as usize * self.buf_sizes[stack] as usize) }
+        unsafe { self.bases[stack].add(idx as usize * self.stacks[stack].buf_size as usize) }
     }
 }
 
@@ -392,10 +427,8 @@ pub struct PoolView<'a, const N: usize> {
     header: &'a PoolHeader<N>,
     /// Base of each stack's buffer array.
     bases: [*mut u8; N],
-    /// Snapshot of `header.buf_sizes`.
-    buf_sizes: [u32; N],
-    /// Snapshot of `header.buf_counts`.
-    buf_counts: [u32; N],
+    /// The pool's geometry snapshot, sorted smallest first.
+    stacks: [StackGeometry; N],
     /// Descriptor index of each stack's first buffer.
     starts: [u32; N],
 }
@@ -437,18 +470,19 @@ impl<'a, const N: usize> DescMap<'a> for PoolView<'a, N> {
         // The stacks' index ranges are contiguous and ascending, so the first range ending past
         // idx holds it. No end wraps: the total count is below NIL.
         for s in 0..N {
-            if idx < self.starts[s] + self.buf_counts[s] {
+            if idx < self.starts[s] + self.stacks[s].buf_count {
                 let local = idx - self.starts[s];
-                if !type_fits::<T>(self.buf_sizes[s]) {
+                if !type_fits::<T>(self.stacks[s].buf_size) {
                     return Err(RegistryError::BadType);
                 }
                 // SAFETY: local < the stack's count keeps the buffer inside the stack's array
                 // validated at init/attach.
-                let buf = unsafe { self.bases[s].add(local as usize * self.buf_sizes[s] as usize) };
+                let buf =
+                    unsafe { self.bases[s].add(local as usize * self.stacks[s].buf_size as usize) };
                 return Ok(BufSlot {
                     head: &self.header.heads[s],
                     buf,
-                    buf_size: self.buf_sizes[s],
+                    buf_size: self.stacks[s].buf_size,
                     idx: local,
                     _slot: PhantomData,
                 });
@@ -521,6 +555,12 @@ impl DerefMut for BufSlot<'_, [u8]> {
 }
 
 impl<T: ?Sized> BufSlot<'_, T> {
+    /// The size of the buffer given, in bytes: at least the size asked for, and the size of the
+    /// stack that served it. The buffer starts on a cache line.
+    pub fn buf_size(&self) -> usize {
+        self.buf_size as usize
+    }
+
     /// Push the buffer back onto its stack.
     ///
     /// - Any holder may free: this is the stack's MPSC push side. Only allocation is
@@ -548,20 +588,12 @@ impl<T: ?Sized> BufSlot<'_, T> {
     }
 }
 
-/// Bytes needed for a multi-stack pool region with the given stacks, `(buf_size, buf_count)`
-/// each, computed in u64 so a 32-bit target cannot wrap.
-pub fn region_size<const N: usize>(stacks: [(u32, u32); N]) -> u64 {
-    region_size_of(
-        &stacks.map(|(size, _)| size),
-        &stacks.map(|(_, count)| count),
-    )
-}
-
-/// [`region_size`] over the split geometry arrays.
-fn region_size_of<const N: usize>(buf_sizes: &[u32; N], buf_counts: &[u32; N]) -> u64 {
+/// Bytes needed for a multi-stack pool region with the given stacks, in any order, computed in
+/// u64 so a 32-bit target cannot wrap.
+pub fn region_size<const N: usize>(stacks: [StackGeometry; N]) -> u64 {
     let mut bytes = size_of::<PoolHeader<N>>() as u64;
-    for c in 0..N {
-        bytes += buf_sizes[c] as u64 * buf_counts[c] as u64;
+    for stack in stacks {
+        bytes += stack.buf_size as u64 * stack.buf_count as u64;
     }
     bytes
 }
@@ -569,18 +601,14 @@ fn region_size_of<const N: usize>(buf_sizes: &[u32; N], buf_counts: &[u32; N]) -
 /// The base of each stack's buffer array: the stacks follow the header in order, each
 /// `buf_size * buf_count` bytes.
 ///
-/// - Callers have validated the region's length against [`region_size_of`], so every base is in
+/// - Callers have validated the region's length against [`region_size`], so every base is in
 ///   bounds.
-fn stack_bases<const N: usize>(
-    base: *mut u8,
-    buf_sizes: &[u32; N],
-    buf_counts: &[u32; N],
-) -> [*mut u8; N] {
+fn stack_bases<const N: usize>(base: *mut u8, stacks: &[StackGeometry; N]) -> [*mut u8; N] {
     let mut offset = size_of::<PoolHeader<N>>();
     core::array::from_fn(|c| {
         // SAFETY: offset is at most the region size validated by the caller.
         let p = unsafe { base.add(offset) };
-        offset += buf_sizes[c] as usize * buf_counts[c] as usize;
+        offset += stacks[c].buf_size as usize * stacks[c].buf_count as usize;
         p
     })
 }
@@ -600,33 +628,30 @@ fn header_ptr<const N: usize>(base: *mut u8, len: usize) -> Result<*const PoolHe
     Ok(base as *const PoolHeader<N>)
 }
 
-/// Shared stack checks for [`Pool::init`] and [`Pool::attach`].
+/// Shared stack checks for [`Pool::init`], after its sort, and [`Pool::attach`].
 ///
 /// - Sizes: nonzero [`CACHE_LINE_SIZE`] multiples, strictly ascending, so the first stack that
-///   fits is the smallest.
+///   fits is the smallest. After init's sort, only two stacks of one size fail the order.
 /// - Counts: each nonzero, the total below [`NIL`], so a buffer index across the stacks never
 ///   reads as the sentinel.
 /// - `N = 0` is refused as a bad count: a pool with no stack serves nothing.
-fn validate_stacks<const N: usize>(
-    buf_sizes: &[u32; N],
-    buf_counts: &[u32; N],
-) -> Result<(), Error> {
+fn validate_stacks<const N: usize>(stacks: &[StackGeometry; N]) -> Result<(), Error> {
     if N == 0 {
         return Err(Error::BadBufCount);
     }
     let mut total = 0u64;
     for c in 0..N {
-        let size = buf_sizes[c];
+        let size = stacks[c].buf_size;
         if size == 0 || !(size as usize).is_multiple_of(CACHE_LINE_SIZE) {
             return Err(Error::BadBufSize);
         }
-        if c > 0 && size <= buf_sizes[c - 1] {
+        if c > 0 && size <= stacks[c - 1].buf_size {
             return Err(Error::BadBufSize);
         }
-        if buf_counts[c] == 0 {
+        if stacks[c].buf_count == 0 {
             return Err(Error::BadBufCount);
         }
-        total += buf_counts[c] as u64;
+        total += stacks[c].buf_count as u64;
     }
     if total >= NIL as u64 {
         return Err(Error::BadBufCount);
@@ -659,7 +684,12 @@ mod tests {
 
     /// The geometry most tests use, one pool of three stacks: two 64-byte buffers, two
     /// 128-byte, and two 256-byte, with a 64-byte cache line.
-    const THREE_STACKS: [(u32, u32); 3] = [(LINE, 2), (2 * LINE, 2), (4 * LINE, 2)];
+    const THREE_STACKS: [StackGeometry; 3] = [geom(LINE, 2), geom(2 * LINE, 2), geom(4 * LINE, 2)];
+
+    /// A stack of `buf_count` buffers of `buf_size` bytes, short for the tests' tables.
+    const fn geom(buf_size: u32, buf_count: u32) -> StackGeometry {
+        StackGeometry::new(buf_size, buf_count)
+    }
 
     /// Cache-line-aligned backing store, big enough for the tests' pools.
     #[repr(C, align(64))]
@@ -686,35 +716,48 @@ mod tests {
     fn init_rejects_bad_stacks() {
         let mut r = Region::new();
         let err = |r: &mut Region, stacks| Pool::<3>::init(&mut r.0, stacks).err();
+        // Two stacks of one size, in any order.
         assert_eq!(
-            err(&mut r, [(LINE, 2), (LINE, 2), (4 * LINE, 2)]),
+            err(&mut r, [geom(LINE, 2), geom(LINE, 2), geom(4 * LINE, 2)]),
             Some(Error::BadBufSize)
         );
         assert_eq!(
-            err(&mut r, [(2 * LINE, 2), (LINE, 2), (4 * LINE, 2)]),
+            err(
+                &mut r,
+                [geom(4 * LINE, 2), geom(LINE, 2), geom(4 * LINE, 1)]
+            ),
             Some(Error::BadBufSize)
         );
         assert_eq!(
-            err(&mut r, [(LINE - 1, 2), (2 * LINE, 2), (4 * LINE, 2)]),
+            err(
+                &mut r,
+                [geom(LINE - 1, 2), geom(2 * LINE, 2), geom(4 * LINE, 2)]
+            ),
             Some(Error::BadBufSize)
         );
         assert_eq!(
-            err(&mut r, [(LINE, 2), (2 * LINE, 0), (4 * LINE, 2)]),
+            err(
+                &mut r,
+                [geom(LINE, 2), geom(2 * LINE, 0), geom(4 * LINE, 2)]
+            ),
             Some(Error::BadBufCount)
         );
         assert_eq!(
             err(
                 &mut r,
                 [
-                    (LINE, u32::MAX / 2),
-                    (2 * LINE, u32::MAX / 2),
-                    (4 * LINE, 1)
+                    geom(LINE, u32::MAX / 2),
+                    geom(2 * LINE, u32::MAX / 2),
+                    geom(4 * LINE, 1)
                 ]
             ),
             Some(Error::BadBufCount)
         );
         assert_eq!(
-            err(&mut r, [(LINE, 2), (2 * LINE, 2), (4 * LINE, 8)]),
+            err(
+                &mut r,
+                [geom(LINE, 2), geom(2 * LINE, 2), geom(4 * LINE, 8)]
+            ),
             Some(Error::TooSmall)
         );
         assert_eq!(
@@ -742,8 +785,7 @@ mod tests {
         // One pointer for every attach, so no later retag invalidates the attached handle.
         let (base, len) = (r.0.as_mut_ptr(), r.0.len());
         let pool = unsafe { Pool::<3>::attach(base, len) }.unwrap();
-        assert_eq!(pool.buf_size(2), 4 * LINE);
-        assert_eq!(pool.buf_count(1), 2);
+        assert_eq!(pool.stacks(), THREE_STACKS);
         // Another stack count is another layout.
         let err = unsafe { Pool::<2>::attach(base, len) }.err();
         assert_eq!(err, Some(Error::BadStackCount));
@@ -764,7 +806,7 @@ mod tests {
         // The size actually given, at least the size asked for.
         assert_eq!(bytes.len(), 4 * CACHE_LINE_SIZE);
         assert_eq!(bytes.as_ptr() as usize % CACHE_LINE_SIZE, 0);
-        assert_eq!(pool.misses(), [0, 0, 0]);
+        assert_eq!(pool.misses, [0, 0, 0]);
         small.free();
         mid.free();
         bytes.free();
@@ -778,22 +820,22 @@ mod tests {
         let bufs: [_; 6] = core::array::from_fn(|_| pool.alloc::<Msg>().unwrap());
         let sizes = bufs.each_ref().map(|b| b.buf_size);
         assert_eq!(sizes, [LINE, LINE, 2 * LINE, 2 * LINE, 4 * LINE, 4 * LINE]);
-        assert_eq!(pool.misses(), [4, 0, 0]);
+        assert_eq!(pool.misses, [4, 0, 0]);
         // Every stack that fits is empty.
         assert_eq!(pool.alloc::<Msg>().err(), Some(Exhausted));
-        assert_eq!(pool.misses(), [5, 0, 0]);
+        assert_eq!(pool.misses, [5, 0, 0]);
         // A free goes back to its own stack: the 64-byte stack serves again, no miss.
         let [a, b, c, d, e, f] = bufs;
         a.free();
         let again = pool.alloc::<Msg>().unwrap();
         assert_eq!(again.buf_size, LINE);
-        assert_eq!(pool.misses(), [5, 0, 0]);
+        assert_eq!(pool.misses, [5, 0, 0]);
         // A larger size never falls back to a smaller stack.
         c.free();
         let two = pool.alloc::<TwoLines>().unwrap();
         assert_eq!(two.buf_size, 2 * LINE);
         assert_eq!(pool.alloc::<TwoLines>().err(), Some(Exhausted));
-        assert_eq!(pool.misses(), [5, 1, 0]);
+        assert_eq!(pool.misses, [5, 1, 0]);
         for buf in [again, b, d, e, f] {
             buf.free();
         }
@@ -851,25 +893,71 @@ mod tests {
         pool.header.heads[0].store(1000, Ordering::Relaxed);
         let buf = pool.alloc::<Msg>().unwrap();
         assert_eq!(buf.buf_size, 2 * LINE);
-        assert_eq!(pool.misses(), [1, 0, 0]);
+        assert_eq!(pool.misses, [1, 0, 0]);
         buf.free();
     }
 
     #[test]
     fn single_stack_is_v0_shaped() {
         let mut r = Region::new();
-        let mut pool = Pool::init(&mut r.0, [(LINE, 4)]).unwrap();
+        let mut pool = Pool::init(&mut r.0, [geom(LINE, 4)]).unwrap();
         let bufs: [_; 4] = core::array::from_fn(|_| pool.alloc::<Msg>().unwrap());
         assert_eq!(pool.alloc::<Msg>().err(), Some(Exhausted));
-        assert_eq!(pool.misses(), [1]);
+        assert_eq!(pool.misses, [1]);
         bufs.into_iter().for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn init_orders_the_stacks_itself() {
+        // The same three stacks, given largest first.
+        let mut r = Region::new();
+        let reversed = [geom(4 * LINE, 2), geom(2 * LINE, 2), geom(LINE, 2)];
+        let mut pool = Pool::init(&mut r.0, reversed).unwrap();
+        // The pool reports them in its own order, and serves as if given smallest first.
+        assert_eq!(pool.stacks(), THREE_STACKS);
+        let bufs = exhaust_three(&mut pool);
+        bufs.into_iter().for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn stats_label_each_stack_by_its_geometry() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
+        let bufs = exhaust_three(&mut pool);
+        // The five misses belong to the 64-byte stack, found by its size, not a position.
+        let stats = pool.stats();
+        let small = stats
+            .iter()
+            .find(|s| s.geometry.buf_size == SMALL as u32)
+            .unwrap();
+        assert_eq!(small.misses, 5);
+        assert_eq!(small.geometry, geom(LINE, 2));
+        assert!(
+            stats
+                .iter()
+                .filter(|s| s.geometry != small.geometry)
+                .all(|s| s.misses == 0)
+        );
+        bufs.into_iter().for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn buf_size_reports_the_size_given() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, THREE_STACKS).unwrap();
+        // A typed guard, whose deref is the `T`, still reports its whole buffer.
+        let msg = pool.alloc::<Msg>().unwrap();
+        let two = pool.alloc::<TwoLines>().unwrap();
+        assert_eq!((msg.buf_size(), two.buf_size()), (SMALL, MID));
+        msg.free();
+        two.free();
     }
 
     #[test]
     #[should_panic(expected = "size larger than the largest buffer")]
     fn too_big_type_panics() {
         let mut r = Region::new();
-        let mut pool = Pool::init(&mut r.0, [(LINE, 4)]).unwrap();
+        let mut pool = Pool::init(&mut r.0, [geom(LINE, 4)]).unwrap();
         let _ = pool.alloc::<TwoLines>();
     }
 
@@ -884,7 +972,7 @@ mod tests {
     #[test]
     fn alloc_with_policy_counts_and_gives_up() {
         let mut r = Region::new();
-        let mut pool = Pool::init(&mut r.0, [(LINE, 2), (2 * LINE, 1)]).unwrap();
+        let mut pool = Pool::init(&mut r.0, [geom(LINE, 2), geom(2 * LINE, 1)]).unwrap();
         let held: [_; 3] = core::array::from_fn(|_| pool.alloc::<Msg>().unwrap());
         let mut seen = Vec::new();
         let err = pool
@@ -896,7 +984,7 @@ mod tests {
         assert_eq!(err, Some(Exhausted));
         assert_eq!(seen, [0, 1, 2]);
         // One miss for the third alloc, then one per failed attempt.
-        assert_eq!(pool.misses(), [4, 0]);
+        assert_eq!(pool.misses, [4, 0]);
         held.into_iter().for_each(BufSlot::free);
     }
 
@@ -978,7 +1066,7 @@ mod tests {
         // Each buffer taken back went back to its own stack: all six allocate with no miss.
         let all: [_; 6] =
             [1, 1, 2, 2, 4, 4].map(|lines| pool.alloc_bytes(lines * CACHE_LINE_SIZE).unwrap());
-        assert_eq!(pool.misses(), [0, 0, 0]);
+        assert_eq!(pool.misses, [0, 0, 0]);
         all.into_iter().for_each(BufSlot::free);
     }
 
@@ -1112,7 +1200,7 @@ mod tests {
         let sizes: Vec<_> = bufs.iter().map(|b| b.len()).collect();
         assert_eq!(sizes, [SMALL, SMALL, MID, MID, BIG, BIG]);
         assert_eq!(pool.alloc_bytes(1).err(), Some(Exhausted));
-        assert_eq!(pool.misses(), [5, 0, 0]);
+        assert_eq!(pool.misses, [5, 0, 0]);
         bufs
     }
 
@@ -1136,12 +1224,12 @@ mod tests {
         // miss against the stack it wanted.
         assert_eq!(pool.alloc_bytes(BIG).err(), Some(Exhausted));
         assert_eq!(pool.alloc_bytes(MID).err(), Some(Exhausted));
-        assert_eq!(pool.misses(), [5, 1, 1]);
+        assert_eq!(pool.misses, [5, 1, 1]);
 
         // The small buffer is still there for a request it fits, with no miss.
         let small = pool.alloc_bytes(1).unwrap();
         assert_buf(&small, 1, SMALL);
-        assert_eq!(pool.misses(), [5, 1, 1]);
+        assert_eq!(pool.misses, [5, 1, 1]);
 
         small.free();
         bufs.into_iter().for_each(BufSlot::free);
@@ -1160,7 +1248,7 @@ mod tests {
         // one miss against the small stack.
         let got = pool.alloc_bytes(1).unwrap();
         assert_buf(&got, 1, BIG);
-        assert_eq!(pool.misses(), [6, 0, 0]);
+        assert_eq!(pool.misses, [6, 0, 0]);
 
         got.free();
         bufs.into_iter().for_each(BufSlot::free);
@@ -1185,7 +1273,7 @@ mod tests {
         assert_buf(&first, 1, MID);
         assert_buf(&second, 1, BIG);
         assert_eq!(pool.alloc_bytes(1).err(), Some(Exhausted));
-        assert_eq!(pool.misses(), [8, 0, 0]);
+        assert_eq!(pool.misses, [8, 0, 0]);
 
         first.free();
         second.free();
@@ -1211,7 +1299,7 @@ mod tests {
             assert_buf(&buf, size, expect);
             buf.free();
         }
-        assert_eq!(pool.misses(), [0, 0, 0]);
+        assert_eq!(pool.misses, [0, 0, 0]);
     }
 
     /// One cache line of backing store, so a `Vec` of them is a line-aligned region of any
@@ -1313,12 +1401,23 @@ mod tests {
 
     /// `N` stacks of random geometry: ascending sizes one to four lines apart, and counts of
     /// one to four buffers, small so the stacks empty often.
-    fn random_stacks<const N: usize>(rng: &mut Lcg) -> [(u32, u32); N] {
+    fn random_stacks<const N: usize>(rng: &mut Lcg) -> [StackGeometry; N] {
         let mut lines = 0;
         core::array::from_fn(|_| {
             lines += 1 + rng.below(4) as u32;
-            (lines * LINE, 1 + rng.below(4) as u32)
+            geom(lines * LINE, 1 + rng.below(4) as u32)
         })
+    }
+
+    /// `stacks` in a random order, so `init` is handed the geometry unsorted.
+    fn shuffled<const N: usize>(
+        mut stacks: [StackGeometry; N],
+        rng: &mut Lcg,
+    ) -> [StackGeometry; N] {
+        for i in (1..N).rev() {
+            stacks.swap(i, rng.below(i as u64 + 1) as usize);
+        }
+        stacks
     }
 
     /// A random request size: a stack picked at random, then a size in its range, above the
@@ -1354,15 +1453,18 @@ mod tests {
     ///
     /// - Each held buffer carries its step in its first and last word, checked at its free, so
     ///   two guards over one buffer would show.
-    fn model_run<const N: usize>(seed: u64, stacks: [(u32, u32); N], steps: u64) -> (u64, u64) {
+    fn model_run<const N: usize>(seed: u64, stacks: [StackGeometry; N], steps: u64) -> (u64, u64) {
         let replay = Replay::new("allocation_matches_the_model", seed, "the model");
         let mut rng = Lcg(seed);
-        let sizes = stacks.map(|(size, _)| size as usize);
+        let sizes = stacks.map(|stack| stack.buf_size as usize);
         let mut region = heap_region(region_size(stacks));
-        let mut pool = Pool::init(region.as_mut_bytes(), stacks).unwrap();
+        // The pool gets the stacks in a random order, the model keeps them sorted.
+        let given = shuffled(stacks, &mut rng);
+        let mut pool = Pool::init(region.as_mut_bytes(), given).unwrap();
+        assert_eq!(pool.stacks(), stacks);
 
         // The model: free buffers and misses per stack.
-        let mut free = stacks.map(|(_, count)| count);
+        let mut free = stacks.map(|stack| stack.buf_count);
         let mut misses = [0u64; N];
         let mut held: Vec<(BufSlot<'_, [u8]>, usize, u64)> = Vec::new();
         let (mut fallbacks, mut exhausted) = (0, 0);
@@ -1401,20 +1503,24 @@ mod tests {
                     got.map(|b| b.len())
                 ),
             }
-            assert_eq!(pool.misses(), misses);
+            assert_eq!(pool.misses, misses);
         }
 
         // Every buffer back: each stack serves exactly its count again, with no miss.
         held.into_iter().for_each(|(buf, _, _)| buf.free());
-        let before = pool.misses();
-        for (size, count) in stacks {
+        let before = pool.misses;
+        for StackGeometry {
+            buf_size: size,
+            buf_count: count,
+        } in stacks
+        {
             let bufs: Vec<_> = (0..count)
                 .map(|_| pool.alloc_bytes(size as usize).unwrap())
                 .collect();
             assert!(bufs.iter().all(|b| b.len() == size as usize));
             bufs.into_iter().for_each(BufSlot::free);
         }
-        assert_eq!(pool.misses(), before);
+        assert_eq!(pool.misses, before);
         (fallbacks, exhausted)
     }
 
@@ -1427,7 +1533,12 @@ mod tests {
     #[test]
     fn allocation_matches_the_model() {
         const STEPS: u64 = if cfg!(miri) { 300 } else { 20_000 };
-        const STACKS: [(u32, u32); 4] = [(LINE, 3), (2 * LINE, 2), (4 * LINE, 4), (8 * LINE, 1)];
+        const STACKS: [StackGeometry; 4] = [
+            geom(LINE, 3),
+            geom(2 * LINE, 2),
+            geom(4 * LINE, 4),
+            geom(8 * LINE, 1),
+        ];
         let (mut fallbacks, mut exhausted) = (0, 0);
         for seed in seeds() {
             let (f, e) = model_run(seed, STACKS, STEPS);
@@ -1451,11 +1562,13 @@ mod tests {
     /// - Each buffer carries its message number in its first and last word and its request size
     ///   in its second, checked by the freer, so two guards over one buffer would show.
     /// - At the end every buffer is back, and each stack serves exactly its count.
-    fn threaded_run<const N: usize>(seed: u64, stacks: [(u32, u32); N], freers: u64, msgs: u64) {
+    fn threaded_run<const N: usize>(seed: u64, stacks: [StackGeometry; N], freers: u64, msgs: u64) {
         const TEST: &str = "threaded_random_alloc_and_free";
-        let sizes = stacks.map(|(size, _)| size as usize);
+        let sizes = stacks.map(|stack| stack.buf_size as usize);
         let mut region = heap_region(region_size(stacks));
-        let mut pool = Pool::init(region.as_mut_bytes(), stacks).unwrap();
+        let given = shuffled(stacks, &mut Lcg(seed ^ 0x5bd1_e995));
+        let mut pool = Pool::init(region.as_mut_bytes(), given).unwrap();
+        assert_eq!(pool.stacks(), stacks);
 
         std::thread::scope(|s| {
             let mut senders = Vec::new();
@@ -1533,7 +1646,7 @@ mod tests {
                     if stack != wanted {
                         misses[wanted] += 1;
                     }
-                    assert_eq!(pool.misses(), misses);
+                    assert_eq!(pool.misses, misses);
                     let last = buf.len() - 8;
                     buf[..8].copy_from_slice(&msg.to_ne_bytes());
                     buf[8..16].copy_from_slice(&(size as u64).to_ne_bytes());
@@ -1546,7 +1659,11 @@ mod tests {
         // Every buffer back: each stack serves exactly its count again.
         let replay = Replay::new(TEST, seed, "the final check");
         replay.step.set(msgs);
-        for (size, count) in stacks {
+        for StackGeometry {
+            buf_size: size,
+            buf_count: count,
+        } in stacks
+        {
             let bufs: Vec<_> = (0..count)
                 .map(|_| pool.alloc_bytes(size as usize).unwrap())
                 .collect();
