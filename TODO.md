@@ -9,14 +9,22 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- The cycle `feat: attachable SPSC v4` is closed on its bookmark `feat-attachable-spsc-v4`, every
-  rung pushed, and not landed: the user's waiver of 2026-09-25 covered the pushes and excluded
-  Land. Land is the user's go: restore the plain names (`zc-ring-x1`, `zc-ring-x1-demo`, and
-  `tp_matrix`'s dependency), `vc-x1 validate --fast`, `jj squash` into the closing, the trapezoid
-  reshape (the recorded choice, the user's to change), fast-forward `main`, install, delete the
-  bookmark.
-- Next cycle after Land: `### Test an inter-application message`, whose decisions are in its
-  entry, over `spsc::v4`.
+- The cycle `fix: spsc v4 roles survive their holders` is open on bookmark
+  `fix-spsc-v4-roles-survive-their-holders`, its opening pushed, both repos clean. Next is the rung
+  `feat: spsc v4 claims name their holder`, then the two after it, the docs rung, and the closing.
+  The block below is the plan, settled with the user on 2026-09-25 through three revisions
+  (claim for life, then release parks, then this), and the deliberation says why each was left.
+- Owed on the messages thread `m-7`: a correcting line, `m-7-2` to iiac-perf, saying `split` is
+  refused (the multi-process shape, each app owning the ring it reads) and that the fix is a
+  named, checkpointed claim with `release` and `take_over_*` rather than a claim for life, plus
+  the landmark's sha-link at Land. A write to `../vc-x1-messages` under its README, on the user's
+  go. `m-7-1` and iiac-perf's `m-7-0` are uncommitted there, committing being the closer's.
+- The design decisions of 2026-09-25 beyond this cycle are in the design note's open questions
+  (Naming and transport, MPMC: shared and copied, Message header shape's fields) and in the
+  phase-2 bullet under Pool topology and phasing, and in the Todo entry `### Shared allocation`.
+  The pool half of crash recovery, an owner word in the in-buffer header and a sweeper, has no
+  Todo entry yet and is named in this block's deliberation, to be written as one after the header
+  question is picked up.
 
 ## In Progress
 
@@ -24,7 +32,168 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### fix: spsc v4 roles survive their holders
+
+#### Problem
+
+A v4 endpoint's `Drop` releases its role claim, so a role can be taken again on a ring that has
+run, and the new endpoint, starting in segment 0 at position 0, can never work: the retaken
+consumer reports `Empty` with a message committed and waiting, the retaken producer `Full` on an
+empty ring, and both hang under a spin policy. Nothing says so at the claim. Reported by iiac-perf
+in `m-7`, with two more pushbacks: `producer()` reads as a getter for what is a one-time,
+cross-process claim, and every in-process caller pays two unwraps for claims that cannot fail on a
+fresh ring, which is refused. Behind the bug is the requirement the fix must meet: a process that
+holds a role and crashes is replaced, its role taken over by another process that continues the
+ring, and a role handed over on purpose the same way.
+
+#### Solution
+
+A claim names its holder, an endpoint checkpoints its state into the region at every segment
+switch and at its release, a claim resumes a released role and a takeover replaces a dead holder's
+from the checkpoint and a scan of one segment, and a destructor never touches shared memory.
+
+- The claims line, one cache line of segment 0's control block, holds per role a state (free,
+  held, released), a holder id the app chooses and the crate never interprets, and the
+  checkpoint: `cur`, `pos`, and the producer's `taken` and `claimable` or the consumer's `given`.
+  Each segment's info line holds its two resume positions. The control block does not grow.
+- `Drop` writes nothing. `release(self)` on either endpoint writes an exact checkpoint and flips
+  held to released. Switches write `cur`, `taken` or `given`, and the segment's resume position,
+  one or two stores on the switch path, which already writes shared memory, and nothing on the
+  message path.
+- `claim_producer(id)` and `claim_consumer(id)` replace `producer()` and `consumer()`: on a free
+  role the endpoint starts at zero, on a released role it loads the checkpoint and continues, in
+  this process or another, and on a held role it is `Err(RoleTaken)`.
+- `take_over_producer(id)` and `take_over_consumer(id)` replace a held claim, the caller vouching
+  the holder is gone: they load the switch-time checkpoint and find `pos` by scanning the
+  checkpointed segment's seq words, the consumer's next slot the oldest committed one, the
+  producer's the first claimable one. A replacement consumer loses nothing, since the slot the
+  dead one was reading is still committed, and a replacement producer loses at most the slot the
+  dead one had reserved and not committed.
+- No `split`: two claims are the API, in-process as across processes.
+- The design note states the rule, a destructor never touches shared memory, the inbox model (a
+  ring belongs to the process that reads it, in a region it owns, named `(region, first_segment)`,
+  every producer a joiner), the handoff as release then claim, the takeover as the supervisor's
+  call with the crate recording and recovering and never judging liveness, and the pool half of
+  the requirement, an owner word in the in-buffer header and a sweeper, as the cycles after
+  shared allocation. The guide's joining section follows.
+
+#### Acceptance check
+
+- iiac-perf's scenario as a test: a ring of two segments of four slots, three messages sent and
+  received, both roles released, and each claimed again, from the same `Ring` and from a second
+  attached one, continues the ring, the next messages in order across a segment switch. A claim
+  while a role is held is `Err(RoleTaken)`, and a dropped endpoint, never released, leaves its
+  role held. Under Miri too.
+- The takeover as a test: each endpoint forgotten mid-run (`mem::forget`) after at least one
+  switch, the consumer with a message committed and unread, the producer with a slot reserved and
+  uncommitted, and `take_over_*` from a second attached handle continues: every message the dead
+  consumer had not released arrives, in order, and the producer's stream resumes with at most
+  the uncommitted slot rewritten. Under Miri too.
+- `tp_matrix` and the demo build their v4 pairs by two claims, `grep` finds no `split` in
+  `src/spsc/v4` and no `Drop` in `src/` outside tests that writes shared memory, and `tp-stream`'s
+  v4 rows at depths 8 and up read within run-to-run noise of the tables in the design note's v4
+  section, since the message path is untouched.
+- The design note names the rule, the inbox model, the handoff, and the takeover, and the guide's
+  joining section says how a role is released, reclaimed, and taken over.
+
+#### Ladder
+
+- [fix: spsc v4 roles survive their holders opening][1] (done)
+- [feat: spsc v4 claims name their holder][2]
+- [feat: spsc v4 endpoints checkpoint at each switch][3]
+- [feat: spsc v4 claim resumes and takeover replaces][4]
+- [docs: destructors never touch shared memory][5]
+- [fix: spsc v4 roles survive their holders closing][6]
+
+#### Deliberation
+
+- The requirement, the user's on 2026-09-25: a pool shared by processes cannot lose what a
+  crashed process held. A crashed consumer is restarted or replaced and takes over its duties,
+  its in-progress work lost and nothing else. "A claim is for life" and then "release parks the
+  role" were proposed and found short of it, since neither answers a holder that never releases.
+- Three mechanisms, and only the crate's two are here: a claim names its holder and endpoints
+  checkpoint (this cycle), and buffers name their holder so a sweeper reclaims them (an owner
+  word in the in-buffer header, with the length and the count that header already owes, the
+  cycles after shared allocation). Judging that a holder is dead stays out of a no_std crate: the
+  id is the app's, `take_over_*` is the app vouching, and a supervisor process that restarts
+  consumers is where the judgment lives.
+- Checkpoint at the switch, not per message: `cur`, `taken`, `given`, and the resume table change
+  only on the switch path, which writes shared memory already, so recording them there costs one
+  or two stores per switch. `pos` within the segment is the one thing left unrecorded, and the
+  seq words hold it, so a takeover scans at most `seg_capacity` words once. The message path is
+  untouched, which the acceptance check measures.
+- What a takeover loses, exactly: a consumer nothing, since an unreleased slot is still committed
+  and read again, a producer at most one reserved, uncommitted slot, rewritten. The same for a
+  release, whose checkpoint is exact.
+- The claims word gains a third state per role, released, so a claim can tell "never taken" from
+  "parked" from "held", and only a takeover replaces a held one.
+- The rule, not just the fix: the v4 `Drop` was the crate's only destructor writing shared memory,
+  and its failure mode was the bug, since a process that dies never runs a destructor and one
+  that runs it leaves a lie. Written as a rule so the next attachable ring, an MPSC, starts from
+  it, and so teardown and takeover are always deliberate calls.
+- Names: `claim_*` says a role is taken, `release` that it is given back with its state,
+  `take_over_*` that a holder is being replaced. `producer()` read as a getter, iiac-perf's point,
+  taken.
+- `split` stays out: iiac-perf's point, that in-process callers cannot fail a claim on a fresh
+  ring yet pay two unwraps, was taken at first and then refused by the user on 2026-09-25 on the
+  multi-process shape: each app creates its own ring and consumes it, and joins the other's as
+  producer, so no process holds both roles of one ring and a call that claims both is for a
+  program nobody writes. Two claims, each a `Result`, is the API everywhere.
+- The model this settles, from the same discussion: a pool is a shared allocator with no roles,
+  any process allocates from any pool it maps (the shared-allocation Todo, behind the
+  inter-application test), rings have the roles, and the shapes are meant to survive a network
+  transport, recorded in the design note's open questions at this opening.
+- The bench's leak, raised beside the pushbacks, is out of scope: the endpoints borrow the region
+  and a detached `spawn` needs `'static`, which only a leaked region gives. A std-only owning
+  `Region` wrapper is the answer and a follow-up, the piece the inter-application test wants.
+- Ahead of `### Test an inter-application message`: that test is the API's first consumer, so
+  the API settles first.
+- From a message, not a Todo entry: `m-7` in the messages repo is the source, so the opening
+  moves no entry. The reply `m-7-1` said all three were taken with a claim for life and promised
+  the landmark's sha-link at Land, and it owes a correcting line: `split` refused, and the fix
+  now a named, checkpointed claim with release and takeover.
+
+#### Ladder details
+
+##### fix: spsc v4 roles survive their holders opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write
+this block from `m-7`, bump the version-of-record, and rename the artifact to `-dev`,
+`tp_matrix`'s dependency following. `## Waiting` held nothing to promote. The continuation notes
+from the previous cycle described its Land, which is done, so they are reset. The reply `m-7-1`
+was written in the messages repo under its protocol, uncommitted there, since committing is the
+closer's by default. At the user's call the design note also gained, in this commit, the
+decisions of the day's discussion beyond the fix: the shared pool as the default (under Pool
+topology and phasing), the in-buffer header's fields, MPMC's two variants, and Naming and
+transport, each as an open question so the next cycles find them.
+
+##### feat: spsc v4 claims name their holder
+
+The claims line laid out as states, holder ids, and checkpoint words, `claim_producer(id)` and
+`claim_consumer(id)` writing the id and refusing a held role, `Drop` removed from both endpoints,
+`release(self)` flipping held to released, and the tools and the demo on the new names.
+
+##### feat: spsc v4 endpoints checkpoint at each switch
+
+Every switch writes `cur`, the free-set word, and the segment's resume position into the region,
+and `release` writes the exact checkpoint, `pos` included, so a released role carries everything a
+successor needs.
+
+##### feat: spsc v4 claim resumes and takeover replaces
+
+A claim on a released role loads the checkpoint and continues, `take_over_*` replaces a held role
+from the switch-time checkpoint and a scan of the checkpointed segment, and the tests of the
+acceptance check's first two clauses.
+
+##### docs: destructors never touch shared memory
+
+The rule, the inbox model, the handoff, the takeover and whose judgment it is, and the pool half
+named as later cycles, in the design note, the guide's joining section and errors table following,
+the module docs and the README on the new names.
+
+##### fix: spsc v4 roles survive their holders closing
+
+Closing out the cycle.
 
 ## Waiting
 
@@ -58,6 +227,35 @@ prove the message arrived intact.
     re-executing itself was rejected as the harder pattern to follow.
   - The region is a file under the target directory, mapped `MAP_SHARED` through `libc`, which
     becomes a Linux dev-dependency. The consumer creates and sizes it, the producer attaches.
+
+### Shared allocation: a pool any process can allocate from
+
+A pool has one allocator, the single-popper rule of its free-stack, so two processes that each
+originate messages need a pool each, and a process may only ever reuse buffers another allocated.
+The design note's phase 2, a head the poppers CAS as an (index, generation) pair so a stale view
+fails, lets any number of processes allocate from one pool.
+
+- `pool::v2`: v1's multi-stack pool with each stack's head widened to `(index, generation)`,
+  the generation bumped on every pop and both halves CAS'd as one word, `alloc` on `&self` and
+  the handle `Sync`, so several threads or processes hold allocating handles over one pool. Its
+  own magic and layout, so v0 and v1 stay as built, the baselines to measure against.
+- The head word: 64 bits, a 32-bit index beside a 32-bit generation, so a shared pool needs
+  `target_has_atomic = "64"` and the single-popper pools keep building wherever 32-bit atomics
+  do. A packed 32-bit head, the index and the generation sharing the word, is the option for a
+  32-bit target at the cost of buffer count and generation width, and is not the first build.
+- Free is unchanged, any process pushes with one CAS as now, and the popper's validation stays:
+  every link bounds-checked, pops per attempt capped.
+- Costs to measure: the 64-bit CAS against v1's 32-bit one in the demo's alloc/free rows, and N
+  allocators contending on one head line, which the note's mitigation answers with a small
+  private pool per allocator and the shared one as the fallback.
+- The per-handle miss counters stay per handle, so a process reads its own misses, not the
+  pool's, and the docs say so.
+- Trigger: the first workload where two processes must originate messages from one pool without
+  a lending protocol. The inter-application test does not need it: one process allocates, the
+  other returns or forwards, and a hub or a credit scheme covers more shapes with one allocator.
+- From the discussion on 2026-09-25 of processes sharing a pool: a descriptor is the ownership
+  token, any process holding one may read, forward, or free the buffer through its own attached
+  view, and only allocation is single-owner, so this entry is the one limit on sharing a pool.
 
 ### Improve stream tests
 
@@ -376,358 +574,12 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### feat: attachable SPSC v4
-
-#### Problem
-
-A v3 ring's table of segments, the pointers every message goes through, exists only in the process
-that ran `init`, so no second process can join the ring, and the design cannot be measured against
-one that keeps the table in shared memory without changing v3 itself.
-
-#### Solution
-
-`spsc::v4`, v3's protocol verbatim over a ring that describes itself in the region, so a second
-process attaches through the pool, and v3 stays as built, the baseline to measure against.
-
-- Offsets, not pointers: `Segments` holds each segment's byte offset from the pool's buffer array
-  and one base pointer, so the table is the same in every process and a slot access is one add
-  over v3's.
-- The control block: segment 0's header grows from one line to four: magic, layout version, the
-  geometry, `seg_count`, and `given` on the first, the role claims word on the second, then the
-  segment table, 32 pool buffer indices, on the last two. Every segment reserves the four lines,
-  so the layout stays uniform and `segment_size` is v3's plus 192 bytes.
-- `Ring::attach(&pool, first_segment)` reads the control block through an attached `Pool`,
-  validates every field and index against the pool's geometry, and builds `Segments` through the
-  loader `init` uses. `Ring::first_segment()` gives the index the initializing process hands to
-  the other. Every hostile control block is an `Err`, never a panic.
-- Roles by name, no `split`: `ring.producer()` and `ring.consumer()` each claim their role by a
-  CAS on a claims word in the control block, from a `Ring` that `init` or `attach` returned, and
-  a role already held anywhere, in this process or another, is `Err(RoleTaken)`. Dropping an
-  endpoint releases its role.
-- Join, not resume: a claimed endpoint starts in segment 0 at position 0, as v3's do after
-  `split`, so attach is for a process joining before its role has run.
-- The default `Ring` stays v3 until v4 measures, and the pool gains `pub(crate)` accessors for
-  its base and a buffer's offset by index.
-
-#### Acceptance check
-
-- The attach test: a ring initialized through one `Pool` handle, a second `Ring` attached through
-  `Pool::attach` over the same region, the producer from one and the consumer from the other,
-  messages across several segment switches received in order, then the reverse pairing, and each
-  hostile control block an `Err`. Under Miri too.
-- The claims: a second `producer()` while the first is held, from the same `Ring` or a second
-  attached one, is `Err(RoleTaken)`, and succeeds once the first is dropped, the consumer alike.
-- The comparison: `tp-matrix` and `tp-stream` rows for v3 and v4 at depths 1, 8, 64, and 1024,
-  across the CCX and on the SMT pair, recorded in the design note. Prediction on record: v4
-  within run-to-run noise of v3 where no switch happens.
-
-Result, 2026-09-25: the first two clauses pass, 18 tests in `spsc::v4` under `cargo test` and
-under Miri, with one shape change: the attach test holds two attached handles rather than the
-initializing one and an attached one, since Stacked Borrows forbids writing through both, so the
-initializing handle is dropped once it has the first segment's index. The third clause is a
-finding, not a pass: the rows are recorded, both tools twice, and the prediction failed. v4
-streams 0.6 to 2.8 ns per message slower than v3 where no switch happens, 5 to 16 percent, on
-every pinned placement in both runs, while the single-thread loop reads v4 faster and the depth-1
-round trip moves one line fewer. The cause is not the added add, and it is not found. The
-`### SPSC v3 fast path` Todo measures v4 beside v3 and looks for it there.
-
-#### Ladder
-
-- [feat: attachable SPSC v4 opening][1] (done)
-- [feat: spsc v4 as a copy of v3][2] (done)
-- [feat: spsc v4 control block and offsets][3] (done)
-- [feat: spsc v4 attach and role claims][4] (done)
-- [perf: spsc v4 in the measurement tools][5] (done)
-- [docs: spsc v4 in the design note and guide][6] (done)
-- [perf: spsc v4 in the segment stress table][8] (done)
-- [feat: attachable SPSC v4 closing][7] (done)
-
-#### Deliberation
-
-- A v4, not a change to v3: the user's call on 2026-09-25, so the two measure side by side, as
-  each ring version has against the one before it.
-  - v3's fast-path Todo stays a Todo for both, so the v3/v4 difference is the offsets and the
-    control block alone. Fixing the per-message table copy in v4 only would confound the
-    comparison.
-- Offsets in `Segments`: the user's idea on 2026-09-25. Pointers in the table are already
-  `base + offset` computed at `init`, so storing the offset and one base changes nothing about
-  correctness, and the table becomes plain data that is the same in every process.
-  - It is the design note's own rule, Offsets only, everywhere, applied to the ring's table.
-  - The cost is one add per slot access, measured by the tools rung rather than assumed, and two
-    more lines at the front of each segment.
-  - The shared table holds the pool's buffer indices, `u32` each, since a byte offset needs `u64`
-    and the pool already validates an index and turns it into a pointer. The private `Segments`
-    holds byte offsets, computed once at load, so the hot path stays at one add.
-- A control block in segment 0, four lines: one line cannot hold the table (32 indices are
-  128 bytes), the claims word wants a line of its own, and a separate pool buffer would waste
-  most of one. Every segment reserving the
-  same lines keeps the layout uniform, memory being the only cost.
-  - The shape is meant for MPSC v2's successor as well, whose `SegmentHeader` is already a
-    three-line struct with a seal, a claim word, and an in-use word, so a later attachable MPSC
-    puts the same block ahead of them.
-- Roles by name instead of `split`: the user's call on 2026-09-25. `split` hands every attacher
-  both endpoints and leaves the SPSC contract to the caller's discipline, where a claimed role is
-  an `Err` a second producer sees, and a process holds only the endpoint it uses.
-  - The `### Endpoint claims word` Todo asked for this in the single-region rings at the cost of a
-    layout bump. v4's control block is new, so it takes the claims word for free, and that Todo
-    keeps its entry for v0 through v2.
-  - The claims line is its own cache line, so the CAS at attach and the store at drop never share
-    a line with `given`. One CAS at claim and one store at drop, nothing on the message path.
-  - A crashed process leaves its role claimed. Recovery, a forced claim or a reset, is named as
-    deferred, since a fresh region per run is the inter-application test's case.
-- Join, not resume: v2's `attach` has the same limit, its endpoints starting at position 0, and
-  recovering a mid-run position from the seq words is a design of its own. Named in the design
-  note, not built here.
-- Attach first, as its own cycle: the `### Test an inter-application message` Todo needs it, and
-  the user chose this ordering over folding attach into the test's cycle or testing over v2
-  first, so each record has one subject.
-- The copy is its own rung, so the offsets rung's diff shows the design change and nothing else.
-  - No `examples/spsc_v4_segments.rs`: the examples share no code, each a standalone program, so a
-    copy would be a third near-duplicate showing nothing the tools' rows do not. The first program
-    that needs v4 is the inter-application bin of the next cycle.
-- The tools rung is what makes "side by side" true: `tp-matrix`, `tp-stream`, and the demo gain
-  v4 beside v3, and the comparison is the acceptance check's second clause.
-- The either-pool Todo had reserved the name spsc4. It is retitled to "next versions" at this
-  opening.
-
-#### Ladder details
-
-##### feat: attachable SPSC v4 opening
-
-The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
-`### SPSC v3 attach` Todo entry into this block in its v4 form, bump the version-of-record, and
-rename the artifact to `-dev`, `tp_matrix`'s dependency following the package name. `## Waiting`
-held nothing to promote. The inter-application test's
-decisions went into its Todo entry, and the either-pool Todo was retitled.
-
-- Waiver, the user's on 2026-09-25 at this opening: "proceed completing this cycle except for
-  landing on main". It covers every rung's work review, description review, and push, the closing
-  included, and it does not cover Land, so `main` waits for the user.
-
-##### feat: spsc v4 as a copy of v3
-
-`src/spsc/v4` as a verbatim copy of v3 with its tests, so the next rung's diff is the design
-change alone. No example is copied.
-
-- The copy differs from v3 in its module docs alone: the intro names what the copy is for and
-  that v4 behaves as v3 until the rungs after it land, and the guide reference says the guide
-  is v3's. `spsc/mod.rs` lists the module, and the default `Ring` stays v3.
-- v3 has no magic to make distinct: nothing in its region names the ring, which is the control
-  block rung's problem. `mpsc::v2` keeps importing v3's `check_body_type`, `seq_of`, and
-  `validate_geometry`, and the copy has its own.
-- The 14 copied tests pass.
-
-##### feat: spsc v4 control block and offsets
-
-`Segments` as offsets from the pool's buffer array, and segment 0's four-line control block
-written by `init`: the geometry line (magic, layout version, geometry, `seg_count`, `given`), the
-claims line, and the two lines of the segment table.
-
-- `SegmentHeader` is a `repr(C)` struct of three cache-aligned parts: `info`, a line of seven
-  `AtomicU32`s (magic `"ZCR4"`, layout version, `slot_size`, `seg_capacity`, `seg_count`, the
-  segment's own number, and `given`), `claims`, one word on its own line, and `table`, 32 words
-  over two lines. Every segment carries the four lines, so `segment_size` grew by 192 bytes and
-  the slots of every segment start at one offset.
-  - `info` is written in every segment, so each names the ring it belongs to and its number.
-    `claims` and `table` are meaningful in segment 0 only, `NO_SEGMENT` (`u32::MAX`) filling the
-    table past `seg_count`.
-  - `init` stores the magic last, with Release, so a reader that sees it sees the block. The
-    claims word is zero until the next rung uses it.
-- `Segments` is `base`, the pool's buffer array in this process, `slots`, each segment's slot
-  array as a byte offset from `base`, and `header0`, segment 0's header as an offset. `seq` and
-  `body` add the offset to the base, and `given` is `header0`'s field rather than a stored
-  pointer. The table is `[usize; 32]`, the same 256 bytes v3's pointers were, so the per-message
-  copy the fast-path Todo names is unchanged between the two.
-- The offsets are from the buffer array, not the region base as the plan said: the pool's
-  `bufs` raw pointer carries the region's provenance, so adding an offset to it reaches any
-  buffer, where a pointer derived from the `&PoolHeader` reference could reach the header alone
-  under Stacked Borrows. `Pool::bufs_ptr()` is the `pub(crate)` accessor, and `BufSlot::idx()`
-  already existed for the table's entries.
-- `Ring::first_segment()` is the buffer index of segment 0, held in the `Ring` so the attach rung
-  can hand it out and take it in.
-- Tests: `control_block_names_the_ring` reads every field of every segment's `info`, the table
-  against the private offsets, and the claims word, and the layout test and the pool buffer size
-  follow the four lines. All 15 pass, under Miri too.
-
-##### feat: spsc v4 attach and role claims
-
-`Ring::attach(&pool, first_segment)` and `Ring::first_segment()`, the pool's `pub(crate)` base and
-offset accessors, the shared loader, `producer()` and `consumer()` claiming through the claims
-word with release on drop, `split` removed, and the tests of the acceptance check's first two
-clauses.
-
-- `attach` is `unsafe`, as the pools' is and for the same reason `to_slot` is: validation checks
-  every field of the control block, every table entry against the pool's count and against the
-  entries before it, and every segment's own header against the block, but it cannot tell a
-  ring's segment from a buffer freed and reused since, and the ring writes seq words into every
-  segment it is told it has. The contract is that `first_segment` came from a ring over this
-  pool whose segments are still its own.
-  - The failures are all `Err`: `BadSegment` (new) for an index outside the pool, one named
-    twice, a segment 0 that says it is another segment, or a segment whose header disagrees with
-    the block, and the existing `BadMagic`, `BadLayoutVersion`, the geometry errors, and
-    `TooSmall`.
-  - `Segments::load` builds the table for `init` and `attach` alike, from the buffer indices.
-- Roles: `producer()` and `consumer()` take `&self`, so a `Ring` outlives the roles it hands out
-  and either process may take one role and leave the other. The claim is one `fetch_or` with
-  AcqRel on the claims line, `RoleTaken` (new) when the bit was set, and a set bit needs no undo
-  since the or changed nothing. `Drop` on each endpoint clears its bit with Release.
-  - `split` is gone from v4, and the tests take the pair through an `endpoints` helper.
-- Stacked Borrows shaped the tests: the handle `init` returns holds pointers under the `&mut` it
-  took, and the first write through an attached handle, which holds the region's own raw
-  pointer, invalidates them, the hazard the pools' `attach` notes. So `attach_joins_the_ring`
-  drops the initializing handle once it has the first segment's index and attaches twice, one
-  handle per role, as two processes would, and the hostile-block test edits the block through
-  the attached handle. Real processes share no borrow stack, and the inter-application test
-  will hold one handle each.
-- `attach_joins_the_ring` runs the producer from one attached handle and the consumer from the
-  other over several segment switches, checks the claims are one word across handles, and
-  reverses the pairing on a second ring, since a joined endpoint starts at position 0 and a ring
-  already run is not rejoined. `roles_are_claimed_once` covers the claim, the refusal, and the
-  release. All 18 pass, under Miri too.
-
-##### perf: spsc v4 in the measurement tools
-
-v4 rows beside v3's in `tp-matrix`, `tp-stream`, and the demo, and the measurement of the
-acceptance check's second clause.
-
-- The tools: `Flavor::SpscV4` (`spsc-v4`) in `tp_matrix`, `run_cell` and `run_stream` dispatching
-  to it, and `spsc_pair!`'s segmented arm now takes the ring and its `segment_size` instead of
-  naming v3, with a `segmented_roles` arm for a ring whose endpoints are taken by name. The demo
-  gains the same arm, the `spsc4_ring_one_msg_1t` / `_2t` loops, and the depth-sweep flavor. The
-  banners and legends name `spsc-v4`, and the tp_matrix README counts 32 cells.
-  - The segment-stress table stays v3 and mpsc-v2: its subject is the switch cost, which v4 does
-    not change, and its macros bind the v3 pair by name.
-- Measured 2026-09-25 on the 3900X, `tp-stream` and `tp-matrix` at `-d 1 --depth 1,8,64,1024`,
-  two segments, each run twice, and the demo once. Prediction on record: v4 within run-to-run
-  noise of v3 where no switch happens. Stream ns per message, v3 / v4, run 1 then run 2:
-
-  | placement | d=1 | d=8 | d=64 | d=1024 |
-  |---|---|---|---|---|
-  | 11,10 CCX | 74.0 / 75.5, 67.5 / 68.3 | 15.9 / 18.1, 14.3 / 16.4 | 14.3 / 15.1, 13.0 / 13.6 | 13.7 / 15.4, 12.3 / 13.9 |
-  | 11,8 x-CCX | 228.7 / 231.5, 227.2 / 231.1 | 49.0 / 48.8, 48.8 / 48.2 | 23.7 / 22.1, 24.2 / 23.2 | 16.1 / 19.3, 16.1 / 16.8 |
-  | 11,23 SMT | 31.3 / 33.4, 31.3 / 33.2 | 17.2 / 20.0, 17.1 / 19.9 | 17.2 / 20.0, 17.1 / 19.9 | 17.2 / 20.0, 17.1 / 19.9 |
-  | unpinned | 62.0 / 64.4, 60.9 / 64.0 | 15.0 / 16.0, 14.8 / 15.4 | 12.7 / 12.9, 12.3 / 13.5 | 11.7 / 12.9, 11.9 / 13.0 |
-
-  The round trip, main's send and the worker's receive in ns, v3 / v4, run 1 then run 2, and
-  the cross-core fills per round trip from run 1:
-
-  | placement | depth | m.send | w.recv | xfills/RT |
-  |---|---|---|---|---|
-  | 11,10 CCX | 1 | 16.7 / 15.9, 17.0 / 15.7 | 132.0 / 101.3, 132.0 / 101.2 | 9.001 / 8.004 |
-  | 11,10 CCX | 8 | 12.9 / 13.1, 12.5 / 13.3 | 110.7 / 107.6, 109.3 / 105.1 | 3.191 / 3.214 |
-  | 11,10 CCX | 64 | 13.1 / 13.1, 12.7 / 13.3 | 90.1 / 99.2, 89.0 / 98.9 | 2.168 / 2.150 |
-  | 11,10 CCX | 1024 | 13.1 / 13.1, 12.7 / 13.3 | 96.8 / 98.0, 96.9 / 98.2 | 2.006 / 2.005 |
-  | 11,8 x-CCX | 1 | 21.9 / 29.5, 65.2 / 31.9 | 481.7 / 351.3, 472.8 / 355.0 | 8.969 / 8.035 |
-  | 11,8 x-CCX | 64 | 13.1 / 13.4, 12.3 / 13.3 | 276.0 / 266.0, 282.2 / 264.7 | 2.134 / 2.217 |
-  | 11,8 x-CCX | 1024 | 13.2 / 13.8, 12.4 / 13.4 | 273.6 / 264.0, 276.2 / 260.8 | 2.021 / 2.022 |
-  | 11,23 SMT | 1 | 24.8 / 25.5, 24.8 / 25.1 | 114.3 / 116.7, 114.1 / 114.0 | 0.0004 / 0.0004 |
-  | 11,23 SMT | 64 | 17.6 / 18.4, 17.6 / 18.5 | 113.0 / 116.8, 112.6 / 116.5 | 0.0004 / 0.0004 |
-  | 11,23 SMT | 1024 | 18.0 / 18.5, 18.0 / 18.5 | 111.6 / 115.3, 111.6 / 115.4 | 0.0005 / 0.0006 |
-
-  The demo, one segment at depth 64, ns per message: the single-thread loop v3 20.5 and v4
-  19.5, and the two-thread loop v3 / v4 at 21.6 / 23.5 on the CCX, 28.7 / 32.3 across it, 20.0 /
-  21.4 on the SMT pair, and 23.8 / 26.6 unpinned. The depth sweep's single-thread rows read v4
-  under v3 at every depth, 19.5 to 23.7 against 20.3 to 24.7.
-- Readings, the prediction failed and the failure is not the add:
-  - Streaming with no switch, v4 runs 0.6 to 2.8 ns per message slower than v3 on every pinned
-    placement in both runs, 5 to 16 percent, the most on the SMT pair (17.1 against 19.9 at every
-    depth, the two runs agreeing to 0.1), and at depth 1024 across the CCX. The sends of the
-    round trip read 0.2 to 0.9 ns slower, and its receives 4 ns slower on the SMT pair.
-  - The single-thread loop, the instruction path alone, reads v4 a nanosecond under v3, so the
-    added offset add is not the cost. The fills per message read the same or fewer for v4. What
-    two threads pay that one does not is not found here, and the code delta is 16 bytes in the
-    copied table, one add per slot access, and three more header lines ahead of the slots.
-  - v4 wins where the ring switches on every message: the round trip at depth 1 moves 8 lines
-    against v3's 9 and its receive runs a fifth to a quarter faster (101 against 132 ns on the
-    CCX, 351 against 477 across it). We think the claims line is a spacer: v3's `given` word
-    shares its 128-byte pair with slot 0, which the adjacent-line prefetcher drags along on every
-    give-back, and v4's shares it with the untouched claims line.
-  - The comparison to trust is the one the fast-path Todo makes, since both rings copy the table
-    per message and that copy is more than half of v3's gap to v2. The `### SPSC v3 fast path`
-    Todo measures v4 beside v3 when it runs, and the cause of the two-thread gap is looked for
-    there, with v4's stream rows as the mark.
-
-##### docs: spsc v4 in the design note and guide
-
-A "SPSC v4: attachable segments" section in the design note with the comparison, v3's Limits
-bullet pointing at it, the user guide's attach section, and the README's ring list.
-
-- The design note section: what v4 is for, the offsets and why they are from the buffer array,
-  the four-line control block and why the table holds indices, attach and what it validates and
-  what it cannot, roles by name and the claims word, join not resume, the Stacked Borrows finding
-  from the tests, the prediction, both runs' tables, the readings, and a verdict that keeps v3 as
-  the default and sends the two-thread gap to the fast-path Todo.
-- The user guide: SPSC v4 named in "What the rings are", the `attach` limit narrowed to v3 and
-  MPSC v2, a "Joining from another process" section with the two processes' code and the rules
-  (no `split`, `first_segment` handed over by the caller, `attach` unsafe for what it cannot
-  check, join before the role has run), and the errors table's `attach` and role rows.
-- The v4 module docs say what v4 adds to v3 instead of that it is a copy, the crate docs and the
-  README name `spsc::v4` by path, and `notes/README.md`'s design-doc entry lists it.
-
-##### perf: spsc v4 in the segment stress table
-
-The demo's segment stress table, the switch cost's home, runs spsc-v3 and mpsc-v2 alone, so v4's
-switch cost is unmeasured. v4 rows beside v3's in every line of it. Inserted at the user's call
-on 2026-09-25, after the closing had pushed and before Land, as a rung ahead of the closing.
-
-- The stress macros spell their pair `segmented segments` by name, so `spsc4_pair!` is a one-arm
-  macro that forwards that spelling to `spsc_pair!`'s `segmented_roles` arm, and the three
-  macros bind `spsc4_burst_1t`, `spsc4_lagging_2t`, and `spsc4_stream_2t` through it. The table
-  gains a v4 row after each v3 row: the burst, the lagging consumer at every placement, and the
-  switch-cost pairs single-threaded and streaming across the CCX. The banner and the module docs
-  name it.
-- Measured 2026-09-25 on the 3900X, one demo run, so indicative as the demo's numbers are:
-
-  | line | placement | shape | ns/msg | switches | sw/msg | switch ns |
-  |---|---|---|---|---|---|---|
-  | spsc3 burst 1t | core 11 | 4x64 | 22.2 | 11,719 | 0.012 | - |
-  | spsc4 burst 1t | core 11 | 4x64 | 22.4 | 11,719 | 0.012 | - |
-  | spsc3 burst 1t | core 11 | 1x32 | 22.3 | 0 | 0.000 | - |
-  | spsc3 burst 1t | core 11 | 32x1 | 29.2 | 968,750 | 0.969 | 7.1 |
-  | spsc4 burst 1t | core 11 | 1x32 | 22.8 | 0 | 0.000 | - |
-  | spsc4 burst 1t | core 11 | 32x1 | 34.1 | 968,750 | 0.969 | 11.7 |
-  | spsc3 stream 2t | 11,8 x-CCX | 1x32 | 33.5 | 0 | 0.000 | - |
-  | spsc3 stream 2t | 11,8 x-CCX | 32x1 | 157.1 | 999,989 | 1.000 | 123.6 |
-  | spsc4 stream 2t | 11,8 x-CCX | 1x32 | 57.9 | 0 | 0.000 | - |
-  | spsc4 stream 2t | 11,8 x-CCX | 32x1 | 177.8 | 999,983 | 1.000 | 119.9 |
-
-  The lagging rows use every segment on both rings at every placement with the same switch
-  counts, 11,718 to 11,732, so v4 switches as v3 does.
-- Readings: the switch itself costs v4 more single-threaded, 11.7 against 7.1 ns per switch, a
-  4.6 ns gap where the two-thread stream at depth 1 had none in the tools rung's tables (the
-  round trip there favored v4). Streaming across the CCX the switch costs the same, 120 against
-  124, and the one-segment stream read 57.9 against 33.5 in this run, a gap the tools' two runs
-  at depth 64 (22.1 and 23.2 against 23.7 and 24.2) do not show, so it is one run's number until
-  the fast-path Todo repeats it. Nothing here changes the cycle's verdict.
-
-##### feat: attachable SPSC v4 closing
-
-Closing out the cycle: the acceptance check run and its result recorded above, the block moved to
-`## Closed`, and the continuation notes written for the user's return, since Land is outside the
-waiver.
-
-- Close-out shape: trapezoid, the default, recorded here for Land. The user was away for the
-  cycle's rungs and may choose otherwise at Land, which reshapes nothing until then.
-- What outlives the cycle is in the design note's SPSC v4 section, written by the docs rung: the
-  design, the Stacked Borrows finding, the measurement, and the verdict. Two Todo entries gained
-  a line: `### Endpoint claims word`, which v4 has and the single-region rings still want, and
-  `### SPSC v3 fast path`, which now measures v4 beside v3 and owns the two-thread gap.
-- The artifact is `zc-ring-x1-dev` with `zc-ring-x1-demo-dev` until Land restores the names,
-  `tp_matrix`'s dependency with them.
-- No agent-file changed in this cycle, so `notes/agent-files-size.md` gains no row.
-- Amended after its push, at the user's call on 2026-09-25: the rung `perf: spsc v4 in the
-  segment stress table` was inserted ahead of this closing while the bookmark was a draft, so
-  this commit was rebased onto it and its record updated, a content amend that keeps the
-  description and the trailer.
-
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[1]: #feat-attachable-spsc-v4-opening
-[2]: #feat-spsc-v4-as-a-copy-of-v3
-[3]: #feat-spsc-v4-control-block-and-offsets
-[4]: #feat-spsc-v4-attach-and-role-claims
-[5]: #perf-spsc-v4-in-the-measurement-tools
-[6]: #docs-spsc-v4-in-the-design-note-and-guide
-[7]: #feat-attachable-spsc-v4-closing
-[8]: #perf-spsc-v4-in-the-segment-stress-table
+[1]: #fix-spsc-v4-roles-survive-their-holders-opening
+[2]: #feat-spsc-v4-claims-name-their-holder
+[3]: #feat-spsc-v4-endpoints-checkpoint-at-each-switch
+[4]: #feat-spsc-v4-claim-resumes-and-takeover-replaces
+[5]: #docs-destructors-never-touch-shared-memory
+[6]: #fix-spsc-v4-roles-survive-their-holders-closing

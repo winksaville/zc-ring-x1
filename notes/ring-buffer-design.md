@@ -2234,6 +2234,16 @@ marking: push the buffer onto the pool's free-stack.
   not a redesign, since hot paths keep the cheap single-popper
   version. Heterogeneity mitigates meanwhile: a small private
   hot-path pool plus a big shared fallback pool.
+  - Decided 2026-09-25: the shared pool becomes the default,
+    not an option. A pool is a shared-memory allocator with no
+    roles, any process allocates from any pool it maps, and
+    `Ring::init` takes `&Pool`, so a process builds its ring
+    in whichever pool it likes. The single-popper pools stay
+    as the baselines and for the 32-bit targets. The Todo
+    entry `Shared allocation: a pool any process can allocate
+    from` holds the plan, behind the inter-application test,
+    which needs only one allocator, and ahead of any
+    multi-process MPSC, whose every producer allocates.
 - MPSC ring (future sibling): multi-producer queues need
   a different ring protocol (CAS-claimed producer index,
   per-slot sequence state), and it slots in as a sibling
@@ -2563,6 +2573,83 @@ future in-buffer header, and its layout against the
 embedded next-link, the link is load-bearing for three
 states (free-stack, pending FIFO, future lists), so they
 must be laid out together when that header lands.
+
+- Two consumers of the header named on 2026-09-25, so its
+  fields are now known even though its layout is not: a
+  **length**, since a message that crosses a wire must say how
+  many bytes it is ([Naming and transport](#naming-and-transport)),
+  and a **count**, the readers still holding a buffer that
+  several consumers share, freed by the last ([MPMC: shared
+  and copied](#mpmc-shared-and-copied)). The type-tag stays
+  the payload's first word, by the sender's convention, so the
+  header holds what the sender's type cannot: length, count,
+  and the next-link.
+
+#### MPMC: shared and copied
+
+Off the table on 2026-09-25, and coming back, so its two
+variants are named now, since they are two mechanisms and
+only one is a ring's:
+
+- **Shared**: one buffer, N consumers. A descriptor delivered
+  to each, the buffer freed by the last reader, which is the
+  count in the in-buffer header ([Message header
+  shape](#message-header-shape)). The ring changes little,
+  and the pool's buffer gains a header.
+- **Copied**: N buffers, one per consumer. Something reads
+  the message once and writes N copies into N inboxes. That
+  is not a ring at all, it is a bridge, the same component a
+  network transport needs, so the copied variant arrives with
+  the transport work rather than with a ring.
+
+#### Naming and transport
+
+The design is meant to work over a LAN or the Internet as well
+as shared memory, off the table on 2026-09-25 and expected to
+be the next large change, so the shapes settled now are the
+ones a transport would keep. Performance over a wire is a
+different order, and finding a ring and taking a role must
+work the same.
+
+- **The inbox model is the socket model**: a ring belongs to
+  the process that reads it, which creates it in a region it
+  owns and lives as long as its inbox does, and every producer
+  joins it. Over a wire that is a listener and its connections,
+  so the ownership story does not change, only the transport.
+- **Claims are the verb on both**: `claim_producer` over
+  shared memory is a CAS on a word in the ring's control block,
+  and over a wire it is a request the ring's owner grants or
+  refuses, with `RoleTaken` the same answer. A claim is for
+  life, ending with the region or the connection, never by a
+  destructor.
+- **A ring is found by name, not by address.** In shared
+  memory a ring's address is `(region, first_segment)`, over a
+  wire it is `(host, port, ring id)`. An app asks for a name
+  through one `find` and gets an endpoint, so the resolver is
+  the only thing a transport replaces. The setup-plane
+  question above becomes "a name resolves to a transport and
+  an address", and the first inter-application program
+  resolves its name in one function even while that function
+  is two lines.
+- **Zero-copy ends at the wire.** Descriptors never cross
+  hosts, a bridge copies payloads, so a message must be
+  self-describing: the type-tag it has and the length the
+  header gains. `zerocopy` `repr(C)` messages are already
+  wire-shaped bytes, and endianness is the one open decision,
+  native today and fixed at the bridge when hosts differ.
+- **Pools stay local by design**: a pool is a region's
+  memory, so it never spans hosts, "any pool from anywhere"
+  means anywhere in the shared-memory domain, and a bridge is
+  a process with a pool on each side. The network's unit is
+  the message copy, never the buffer.
+- **Endpoints as a trait**: the ring test over every ring
+  drives seven rings through one `DescTx` / `DescRx` pair, and
+  the `Message` trait idea carries a transport seam. An app
+  written against a producer / consumer trait with the
+  wait-policy closure is one a socket-backed endpoint can
+  implement, "the policy gave up" meaning the same thing, so
+  the inter-application program is where that trait first
+  earns its place.
 
 ## Measurement placements: the base cpu and its partners
 
