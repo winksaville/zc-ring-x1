@@ -438,10 +438,7 @@ impl<'a> PoolView<'a> {
     ///   arrived with happens-before ordering, and is taken
     ///   back exactly once), minting a second live guard for one
     ///   buffer aliases `&mut T`.
-    pub(crate) unsafe fn slot_from_idx<T>(&self, idx: u32) -> BufSlot<'a, T>
-    where
-        T: FromBytes + IntoBytes + KnownLayout,
-    {
+    pub(crate) unsafe fn slot_from_idx<T: ?Sized>(&self, idx: u32) -> BufSlot<'a, T> {
         // SAFETY: idx < buf_count (caller contract), so the
         // offset stays inside the buffer array validated at
         // init/attach.
@@ -525,6 +522,33 @@ impl DerefMut for BufSlot<'_, [u8]> {
         // SAFETY: as in deref, and &mut self gives exclusivity of
         // the minted slice.
         unsafe { core::slice::from_raw_parts_mut(self.buf, self.buf_size as usize) }
+    }
+}
+
+impl<'p> BufSlot<'p, [u8]> {
+    /// Turn a guard over the buffer's bytes into a guard over a
+    /// `T`, after checking `T` fits the buffer, or hand the byte
+    /// guard back unchanged.
+    ///
+    /// - For a receiver that learns a message's type from its
+    ///   bytes, a tag read through the byte guard, and then
+    ///   wants it typed.
+    /// - A misfit is an `Err`, not a panic, since the type
+    ///   chosen follows from bytes that arrived.
+    pub fn into_typed<T>(self) -> Result<BufSlot<'p, T>, Self>
+    where
+        T: FromBytes + IntoBytes + KnownLayout,
+    {
+        if !crate::type_fits::<T>(self.buf_size) {
+            return Err(self);
+        }
+        Ok(BufSlot {
+            header: self.header,
+            buf: self.buf,
+            buf_size: self.buf_size,
+            idx: self.idx,
+            _slot: PhantomData,
+        })
     }
 }
 

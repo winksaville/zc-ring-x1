@@ -54,7 +54,7 @@ buffer size, sorted smallest first.
 - [perf: segmented pool in the alloc/free bench][4] (done)
 - [test: segmented pool allocation order][8] (done)
 - [refactor: segmented pool stack geometry][7] (done)
-- [feat: segmented pool byte slots from descriptors][9]
+- [feat: segmented pool byte slots from descriptors][9] (done)
 - [test: segmented pool messages over every ring][10]
 - [docs: segmented pool in the design note][5]
 - [feat: segmented pool v1 closing][6]
@@ -291,6 +291,19 @@ as bytes, the counterpart of `alloc_bytes`, and `BufSlot<[u8]>::into_typed::<T>`
 and turns the guard typed, handing it back on a misfit, so a receiver reads the tag and matches.
 Inserted at the user's call on 2026-09-24, at the stack geometry rung.
 
+- `DescMap` gains `to_slot_bytes`, and `PoolRegistry::to_slot_bytes(desc)` calls it: the index
+  validated, no type to check, since every buffer is valid as bytes. A descriptor is taken back
+  once, by `to_slot` or `to_slot_bytes`, never both.
+- `into_typed` lives on both pools' byte guards and checks size and alignment with the same
+  `type_fits` as `to_slot`, a misfit an `Err` that hands the byte guard back, since the type
+  follows from bytes that arrived.
+- v1's view shares one index lookup, `locate`, and one guard minting, `mint`, between the typed
+  and the byte path. v0's `slot_from_idx` lost a trait bound it never used, so it mints a byte
+  guard too, and v0's alloc and free paths are untouched.
+- Tests: three message types (16, 112, and 400 bytes) from one three-stack pool taken back as
+  bytes and dispatched by tag, a misfit handed back and reused, hostile descriptors refused,
+  and v0's byte round trip. All pass, under Miri too.
+
 ##### test: segmented pool messages over every ring
 
 Every ring carries descriptors, plain data, so each should carry messages of mixed types from a
@@ -319,6 +332,19 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 `###` heading, so a citation is a link to its anchor. Long-tail entries live in
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
+
+### Unwrap lints for the library
+
+The library has no `unwrap` or `expect` outside tests, but only by discipline. The user
+prohibits them in real code, so a lint should enforce it
+([`// OK` comments](agent-data/code.md#-ok--comments-on-unwrap-calls-rust)).
+
+- `[lints.clippy]` in `Cargo.toml`: `unwrap_used = "warn"` and `expect_used = "warn"`, so
+  validation's `-D warnings` fails any new site in library code.
+- Tests are exempt, and the demo and the examples opt out with a crate-level `#![allow(...)]`,
+  their setup panics being the right response there.
+- The `unwrap_or*` family has no lint and stays under the `// OK:` comment convention.
+- Raised by the user on 2026-09-24, at `refactor: segmented pool stack geometry`.
 
 ### spsc4 and mpsc3 over either pool
 
@@ -483,19 +509,6 @@ row is also too crude for differences near a nanosecond.
   whose harness calibrates and reports distributions. Variants selected by a type parameter on
   the pool, rather than copies of the module, would let one harness binary compare them.
 - Raised by the user on 2026-09-24, at the bench rung of `feat: segmented pool v1`.
-
-### Unwrap lints for the library
-
-The library has no `unwrap` or `expect` outside tests, but only by discipline. The user
-prohibits them in real code, so a lint should enforce it
-([`// OK` comments](agent-data/code.md#-ok--comments-on-unwrap-calls-rust)).
-
-- `[lints.clippy]` in `Cargo.toml`: `unwrap_used = "warn"` and `expect_used = "warn"`, so
-  validation's `-D warnings` fails any new site in library code.
-- Tests are exempt, and the demo and the examples opt out with a crate-level `#![allow(...)]`,
-  their setup panics being the right response there.
-- The `unwrap_or*` family has no lint and stays under the `// OK:` comment convention.
-- Raised by the user on 2026-09-24, at `refactor: segmented pool stack geometry`.
 
 ### Pool alloc naming
 

@@ -467,28 +467,55 @@ impl<'a, const N: usize> DescMap<'a> for PoolView<'a, N> {
     where
         T: FromBytes + IntoBytes + KnownLayout + 'a,
     {
-        // The stacks' index ranges are contiguous and ascending, so the first range ending past
-        // idx holds it. No end wraps: the total count is below NIL.
-        for s in 0..N {
-            if idx < self.starts[s] + self.stacks[s].buf_count {
-                let local = idx - self.starts[s];
-                if !type_fits::<T>(self.stacks[s].buf_size) {
-                    return Err(RegistryError::BadType);
-                }
-                // SAFETY: local < the stack's count keeps the buffer inside the stack's array
-                // validated at init/attach.
-                let buf =
-                    unsafe { self.bases[s].add(local as usize * self.stacks[s].buf_size as usize) };
-                return Ok(BufSlot {
-                    head: &self.header.heads[s],
-                    buf,
-                    buf_size: self.stacks[s].buf_size,
-                    idx: local,
-                    _slot: PhantomData,
-                });
-            }
+        let (stack, local) = self.locate(idx).ok_or(RegistryError::BadIndex)?;
+        if !type_fits::<T>(self.stacks[stack].buf_size) {
+            return Err(RegistryError::BadType);
         }
-        Err(RegistryError::BadIndex)
+        // SAFETY: locate bounds local by the stack's count, and T fits. Ownership uniqueness
+        // and ordering are the caller's contract.
+        Ok(unsafe { self.mint(stack, local) })
+    }
+
+    /// Find the stack whose index range holds `idx`, and mint the guard over its bytes.
+    unsafe fn to_slot_bytes(&self, idx: u32) -> Result<BufSlot<'a, [u8]>, RegistryError> {
+        let (stack, local) = self.locate(idx).ok_or(RegistryError::BadIndex)?;
+        // SAFETY: locate bounds local by the stack's count, and every buffer is valid as bytes.
+        // Ownership uniqueness and ordering are the caller's contract.
+        Ok(unsafe { self.mint(stack, local) })
+    }
+}
+
+impl<'a, const N: usize> PoolView<'a, N> {
+    /// The stack and stack-local index of descriptor index `idx`, or `None` past the last
+    /// buffer.
+    ///
+    /// - The stacks' index ranges are contiguous and ascending, so the first range ending past
+    ///   idx holds it. No end wraps: the total count is below NIL.
+    fn locate(&self, idx: u32) -> Option<(usize, u32)> {
+        (0..N)
+            .find(|&s| idx < self.starts[s] + self.stacks[s].buf_count)
+            .map(|s| (s, idx - self.starts[s]))
+    }
+
+    /// Mint the guard for buffer `local` of stack `stack`.
+    ///
+    /// # Safety
+    ///
+    /// - `local` is below the stack's count ([`locate`](Self::locate) ensures it), and `T`, when
+    ///   sized, fits the stack's buffers.
+    /// - The caller holds the buffer's ownership, as [`DescMap::to_slot`]'s contract says.
+    unsafe fn mint<T: ?Sized>(&self, stack: usize, local: u32) -> BufSlot<'a, T> {
+        let size = self.stacks[stack].buf_size;
+        // SAFETY: local < the stack's count keeps the buffer inside the stack's array validated
+        // at init/attach.
+        let buf = unsafe { self.bases[stack].add(local as usize * size as usize) };
+        BufSlot {
+            head: &self.header.heads[stack],
+            buf,
+            buf_size: size,
+            idx: local,
+            _slot: PhantomData,
+        }
     }
 }
 
@@ -551,6 +578,31 @@ impl DerefMut for BufSlot<'_, [u8]> {
     fn deref_mut(&mut self) -> &mut [u8] {
         // SAFETY: as in deref, and &mut self gives exclusivity of the minted slice.
         unsafe { core::slice::from_raw_parts_mut(self.buf, self.buf_size as usize) }
+    }
+}
+
+impl<'p> BufSlot<'p, [u8]> {
+    /// Turn a guard over the buffer's bytes into a guard over a `T`, after checking `T` fits the
+    /// buffer, or hand the byte guard back unchanged.
+    ///
+    /// - For a receiver that learns a message's type from its bytes, a tag read through the byte
+    ///   guard, and then wants it typed.
+    /// - A misfit is an `Err`, not a panic, since the type chosen follows from bytes that
+    ///   arrived.
+    pub fn into_typed<T>(self) -> Result<BufSlot<'p, T>, Self>
+    where
+        T: FromBytes + IntoBytes + KnownLayout,
+    {
+        if !type_fits::<T>(self.buf_size) {
+            return Err(self);
+        }
+        Ok(BufSlot {
+            head: self.head,
+            buf: self.buf,
+            buf_size: self.buf_size,
+            idx: self.idx,
+            _slot: PhantomData,
+        })
     }
 }
 
@@ -1300,6 +1352,137 @@ mod tests {
             buf.free();
         }
         assert_eq!(pool.misses, [0, 0, 0]);
+    }
+
+    /// A message's first word, which says which message it is.
+    const PING: u64 = 1;
+    /// The tag of a [`Text`].
+    const TEXT: u64 = 2;
+    /// The tag of a [`Blob`].
+    const BLOB: u64 = 3;
+
+    /// A small message, 16 bytes.
+    #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+    #[repr(C)]
+    struct Ping {
+        tag: u64,
+        seq: u64,
+    }
+
+    /// A mid-sized message, 112 bytes.
+    #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+    #[repr(C)]
+    struct Text {
+        tag: u64,
+        len: u64,
+        bytes: [u8; 96],
+    }
+
+    /// A big message, 400 bytes.
+    #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+    #[repr(C)]
+    struct Blob {
+        tag: u64,
+        words: [u64; 49],
+    }
+
+    /// Stacks sized for the three message types: 64, 128, and 512 bytes, two buffers each.
+    const MESSAGE_STACKS: [StackGeometry; 3] =
+        [geom(LINE, 2), geom(2 * LINE, 2), geom(8 * LINE, 2)];
+
+    #[test]
+    fn mixed_messages_dispatch_by_tag() {
+        use crate::PoolRegistry;
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, MESSAGE_STACKS).unwrap();
+        let mut reg = PoolRegistry::<1, _>::new();
+        let id = reg.register(pool.view()).unwrap();
+
+        // The sender: three message types, each from the stack that fits it, into descriptors.
+        let mut ping = pool.alloc::<Ping>().unwrap();
+        *ping = Ping { tag: PING, seq: 7 };
+        let mut text = pool.alloc::<Text>().unwrap();
+        text.tag = TEXT;
+        text.len = 5;
+        text.bytes[..5].copy_from_slice(b"hello");
+        let mut blob = pool.alloc::<Blob>().unwrap();
+        blob.tag = BLOB;
+        blob.words[48] = 0xb10b;
+        let descs = [
+            reg.to_desc(id, text).map_err(|(_, e)| e).unwrap(),
+            reg.to_desc(id, blob).map_err(|(_, e)| e).unwrap(),
+            reg.to_desc(id, ping).map_err(|(_, e)| e).unwrap(),
+        ];
+
+        // The receiver knows none of the types up front: it takes each descriptor back as
+        // bytes, reads the tag, and turns the guard typed by it.
+        let mut seen = Vec::new();
+        for desc in descs {
+            // SAFETY: each desc came from to_desc on this thread and is taken back once.
+            let bytes = unsafe { reg.to_slot_bytes(desc) }.unwrap();
+            let tag = u64::read_from_prefix(&bytes[..]).unwrap().0;
+            match tag {
+                PING => {
+                    let ping = bytes.into_typed::<Ping>().map_err(|_| "ping").unwrap();
+                    seen.push(format!("ping {}", ping.seq));
+                    ping.free();
+                }
+                TEXT => {
+                    let text = bytes.into_typed::<Text>().map_err(|_| "text").unwrap();
+                    let len = text.len as usize;
+                    seen.push(format!(
+                        "text {}",
+                        core::str::from_utf8(&text.bytes[..len]).unwrap()
+                    ));
+                    text.free();
+                }
+                BLOB => {
+                    let blob = bytes.into_typed::<Blob>().map_err(|_| "blob").unwrap();
+                    seen.push(format!("blob {:#x}", blob.words[48]));
+                    blob.free();
+                }
+                _ => panic!("unknown tag {tag}"),
+            }
+        }
+        assert_eq!(seen, ["text hello", "blob 0xb10b", "ping 7"]);
+        // Each went back to its own stack, and nothing fell back.
+        assert_eq!(pool.misses, [0, 0, 0]);
+        let all: Vec<_> = (0..6).map(|_| pool.alloc_bytes(1).unwrap()).collect();
+        all.into_iter().for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn into_typed_hands_back_a_misfit() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, MESSAGE_STACKS).unwrap();
+        // A 64-byte buffer cannot be a 400-byte Blob: the byte guard comes back, still usable.
+        let bytes = pool.alloc_bytes(1).unwrap();
+        let mut bytes = bytes.into_typed::<Blob>().err().unwrap();
+        bytes.fill(0xab);
+        let ping = bytes.into_typed::<Ping>().map_err(|_| "ping").unwrap();
+        assert_eq!(ping.seq, u64::from_ne_bytes([0xab; 8]));
+        ping.free();
+    }
+
+    #[test]
+    fn to_slot_bytes_rejects_hostile_descs() {
+        use crate::{Desc, PoolRegistry, RegistryError};
+        let mut r = Region::new();
+        let pool = Pool::init(&mut r.0, MESSAGE_STACKS).unwrap();
+        let mut reg = PoolRegistry::<1, _>::new();
+        reg.register(pool.view()).unwrap();
+        let desc = |pool_id, buf_idx| Desc { pool_id, buf_idx };
+        // SAFETY: every call here must fail validation and mint nothing.
+        unsafe {
+            assert_eq!(
+                reg.to_slot_bytes(desc(0, 6)).err(),
+                Some(RegistryError::BadIndex)
+            );
+            assert_eq!(
+                reg.to_slot_bytes(desc(1, 0)).err(),
+                Some(RegistryError::UnknownPoolId)
+            );
+        }
     }
 
     /// One cache line of backing store, so a `Vec` of them is a line-aligned region of any

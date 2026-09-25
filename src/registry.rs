@@ -58,6 +58,14 @@ pub trait DescMap<'a>: sealed::Sealed + Copy {
     unsafe fn to_slot<T>(&self, idx: u32) -> Result<Self::Slot<T>, RegistryError>
     where
         T: FromBytes + IntoBytes + KnownLayout + 'a;
+
+    /// Validate descriptor index `idx` and mint the owned guard
+    /// over the buffer's bytes, all of them.
+    ///
+    /// # Safety
+    ///
+    /// As [`to_slot`](DescMap::to_slot).
+    unsafe fn to_slot_bytes(&self, idx: u32) -> Result<Self::Slot<[u8]>, RegistryError>;
 }
 
 // Empty on purpose: `Sealed` has no methods, and this impl is
@@ -88,6 +96,17 @@ impl<'a> DescMap<'a> for PoolView<'a> {
         // SAFETY: index and T geometry validated above.
         // Ownership uniqueness and ordering are the caller's
         // contract.
+        Ok(unsafe { self.slot_from_idx(idx) })
+    }
+
+    /// Bounds-check the index, then mint the byte guard.
+    unsafe fn to_slot_bytes(&self, idx: u32) -> Result<BufSlot<'a, [u8]>, RegistryError> {
+        if idx >= self.buf_count() {
+            return Err(RegistryError::BadIndex);
+        }
+        // SAFETY: index validated above, and every buffer is
+        // valid as bytes. Ownership uniqueness and ordering are
+        // the caller's contract.
         Ok(unsafe { self.slot_from_idx(idx) })
     }
 }
@@ -243,6 +262,30 @@ impl<'a, const N: usize, R: DescMap<'a>> PoolRegistry<'a, N, R> {
         unsafe { view.to_slot(desc.buf_idx) }
     }
 
+    /// Validate a received descriptor and mint its owned guard
+    /// over the buffer's bytes, all of them, for a receiver that
+    /// learns the message's type from the bytes.
+    ///
+    /// - The byte guard's `into_typed` then gives the typed
+    ///   guard, so a receiver reads a tag and matches on it.
+    /// - Every validation failure is an `Err`, as for
+    ///   [`to_slot`](Self::to_slot).
+    ///
+    /// # Safety
+    ///
+    /// As [`to_slot`](Self::to_slot): the desc came from
+    /// [`to_desc`](Self::to_desc), arrived with happens-before
+    /// ordering, and is taken back exactly once, by this call or
+    /// `to_slot`, never both.
+    pub unsafe fn to_slot_bytes(&self, desc: Desc) -> Result<R::Slot<[u8]>, RegistryError> {
+        let Some(view) = self.get(desc.pool_id) else {
+            return Err(RegistryError::UnknownPoolId);
+        };
+        // SAFETY: the view validates the index. Ownership
+        // uniqueness and ordering are the caller's contract.
+        unsafe { view.to_slot_bytes(desc.buf_idx) }
+    }
+
     /// Number of registered pools.
     pub fn len(&self) -> usize {
         self.len
@@ -324,6 +367,40 @@ mod tests {
         let slots: [_; 4] = core::array::from_fn(|_| pool.alloc::<Msg>().unwrap());
         assert_eq!(pool.alloc::<Msg>().err().unwrap(), Exhausted);
         slots.into_iter().for_each(BufSlot::free);
+    }
+
+    #[test]
+    fn to_slot_bytes_then_into_typed() {
+        let mut pr = Region::<POOL_BYTES>([0; POOL_BYTES]);
+        let mut pool = Pool::init(&mut pr.0, LINE, 4).unwrap();
+        let mut reg = PoolRegistry::<1>::new();
+        let id = reg.register(pool.view()).unwrap();
+
+        let mut slot = pool.alloc::<Msg>().unwrap();
+        slot.seq = 42;
+        let desc = reg.to_desc(id, slot).map_err(|(_, e)| e).unwrap();
+        // SAFETY: desc came from to_desc on this thread and is taken back once.
+        let bytes = unsafe { reg.to_slot_bytes(desc) }.unwrap();
+        // The whole buffer, and the message in its first bytes.
+        assert_eq!(bytes.len(), CACHE_LINE_SIZE);
+        assert_eq!(u64::read_from_prefix(&bytes[..]).unwrap().0, 42);
+        // Too big for the buffer: handed back. A fit: typed.
+        let bytes = bytes
+            .into_typed::<[u8; 2 * CACHE_LINE_SIZE]>()
+            .err()
+            .unwrap();
+        let msg = bytes.into_typed::<Msg>().map_err(|_| "msg").unwrap();
+        assert_eq!(msg.seq, 42);
+        msg.free();
+        // SAFETY: an out-of-range index must fail validation and mint nothing.
+        let bad = Desc {
+            pool_id: 0,
+            buf_idx: 4,
+        };
+        assert_eq!(
+            unsafe { reg.to_slot_bytes(bad) }.err(),
+            Some(RegistryError::BadIndex)
+        );
     }
 
     #[test]
