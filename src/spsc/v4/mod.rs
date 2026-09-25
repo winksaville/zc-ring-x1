@@ -86,16 +86,61 @@ pub(crate) fn seq_of(idx: u32) -> u32 {
     idx & SEQ_MASK
 }
 
-/// The line at the front of every segment.
+/// Layout marker written by [`Ring::init`] into every segment's
+/// header, distinct from the other rings' and the pools'.
+const MAGIC: u32 = 0x5A43_5234; // "ZCR4"
+
+/// Bumped on any change to the segment layout.
+const LAYOUT_VERSION: u32 = 1;
+
+/// A table entry naming no segment.
+const NO_SEGMENT: u32 = u32::MAX;
+
+/// The first line of every segment: which ring it belongs to,
+/// written by [`Ring::init`] and read back by `attach`.
 ///
-/// - Segment 0's holds the consumer's give-back word, the one
-///   word both sides share besides the slots. The others are
-///   reserved, so every segment has the same layout.
-type SegmentHeader = CacheAligned<AtomicU32>;
+/// - Every field is a `u32` atomic, so a process reads the line
+///   with the ordering the magic's Acquire gives it.
+/// - `given` is the consumer's give-back word, meaningful in
+///   segment 0 only, the one word both sides share besides the
+///   slots. It shares the line with the geometry because the
+///   geometry is read at attach and never after.
+#[repr(C)]
+struct Info {
+    magic: AtomicU32,
+    layout_version: AtomicU32,
+    slot_size: AtomicU32,
+    seg_capacity: AtomicU32,
+    seg_count: AtomicU32,
+    /// This segment's number in the ring.
+    seg_num: AtomicU32,
+    given: AtomicU32,
+}
 
-const _: () = assert!(size_of::<SegmentHeader>() == CACHE_LINE_SIZE);
+/// The four lines at the front of every segment: the ring's
+/// control block in segment 0, and the same layout in the others
+/// so every segment's slots start at one offset.
+///
+/// - The pool buffer index of each segment is in the table, so a
+///   process holding the pool and segment 0's index finds every
+///   segment: the offsets-only rule, applied to the ring's table.
+/// - The claims word is its own line, so the CAS that takes a
+///   role never shares a line with `given`.
+#[repr(C)]
+struct SegmentHeader {
+    /// Line 0: the ring's identity and geometry, and `given`.
+    info: CacheAligned<Info>,
+    /// Line 1: the role claims word, segment 0's only.
+    claims: CacheAligned<AtomicU32>,
+    /// Lines 2 and 3: the pool buffer index of segment `i` at
+    /// `table[i]`, [`NO_SEGMENT`] past `seg_count`, segment 0's
+    /// only.
+    table: CacheAligned<[AtomicU32; MAX_SEGMENTS as usize]>,
+}
 
-/// Bytes a segment needs: its header line, then the slots.
+const _: () = assert!(size_of::<SegmentHeader>() == 4 * CACHE_LINE_SIZE);
+
+/// Bytes a segment needs: its header lines, then the slots.
 ///
 /// - The pool handed to [`Ring::init`] needs buffers at least
 ///   this large.
@@ -105,14 +150,23 @@ pub fn segment_size(slot_size: u32, seg_capacity: u32) -> u64 {
     size_of::<SegmentHeader>() as u64 + slot_size as u64 * seg_capacity as u64
 }
 
-/// A ring's geometry and its segments' addresses, the state both
+/// A ring's geometry and where its segments are, the state both
 /// endpoints start from.
+///
+/// - The segments are byte offsets from the pool's buffer array,
+///   the same numbers in every process, and `base` is that array
+///   in this one, so the table could be shared as it is and a
+///   slot access is one add over v3's.
 #[derive(Clone, Copy)]
 struct Segments {
-    /// The slot array of each segment, `seg_count` of them.
-    slots: [*mut u8; MAX_SEGMENTS as usize],
-    /// The consumer's give-back word, in segment 0's header.
-    given: *const AtomicU32,
+    /// The pool's buffer array in this process.
+    base: *mut u8,
+    /// The slot array of each segment, `seg_count` of them, as an
+    /// offset from `base`.
+    slots: [usize; MAX_SEGMENTS as usize],
+    /// Segment 0's header as an offset from `base`: `given` and
+    /// the claims word live there.
+    header0: usize,
     /// Slot size N in bytes.
     slot_size: u32,
     /// Segment depth M, a power of two.
@@ -127,7 +181,7 @@ impl Segments {
     /// The seq word of the slot at free-running `idx` in segment
     /// `seg`.
     fn seq(&self, seg: u32, idx: u32) -> &AtomicU32 {
-        let slot = crate::slot_ptr(self.slots[seg as usize], idx, self.mask, self.slot_size);
+        let slot = crate::slot_ptr(self.slot_base(seg), idx, self.mask, self.slot_size);
         // SAFETY: seg < seg_count and the slot is in bounds of
         // that segment's buffer, line-aligned, so its first word
         // is an aligned AtomicU32, shared atomic state by design.
@@ -137,17 +191,32 @@ impl Segments {
     /// The body of the slot at free-running `idx` in segment
     /// `seg`, behind its [`SLOT_HEADER_BYTES`].
     fn body(&self, seg: u32, idx: u32) -> *mut u8 {
-        let slot = crate::slot_ptr(self.slots[seg as usize], idx, self.mask, self.slot_size);
+        let slot = crate::slot_ptr(self.slot_base(seg), idx, self.mask, self.slot_size);
         // SAFETY: SLOT_HEADER_BYTES < CACHE_LINE_SIZE <= slot_size,
         // so the body starts inside the slot.
         unsafe { slot.add(SLOT_HEADER_BYTES) }
     }
 
+    /// Segment `seg`'s slot array in this process.
+    #[inline]
+    fn slot_base(&self, seg: u32) -> *mut u8 {
+        // SAFETY: seg < seg_count, and the offset was computed by
+        // init or attach from a buffer index the pool validated,
+        // so it stays inside the buffer array.
+        unsafe { self.base.add(self.slots[seg as usize]) }
+    }
+
+    /// Segment 0's header, the ring's control block.
+    fn header0(&self) -> &SegmentHeader {
+        // SAFETY: header0 is the front of segment 0's buffer,
+        // line-aligned, which lives as long as the pool region the
+        // ring borrows from, and every field is atomic.
+        unsafe { &*(self.base.add(self.header0) as *const SegmentHeader) }
+    }
+
     /// The consumer's give-back word.
     fn given(&self) -> &AtomicU32 {
-        // SAFETY: points at segment 0's header word, which lives
-        // as long as the pool region the ring borrows from.
-        unsafe { &*self.given }
+        &self.header0().info.given
     }
 
     /// Every segment's bit.
@@ -163,8 +232,11 @@ impl Segments {
 /// A ring of segments over the application's pool, split into
 /// the two endpoint handles with [`Ring::split`].
 pub struct Ring<'a> {
-    /// Geometry and segment addresses.
+    /// Geometry and segment offsets.
     segs: Segments,
+    /// The pool buffer index of segment 0, where the control
+    /// block is.
+    first_segment: u32,
     _region: core::marker::PhantomData<&'a [u8]>,
 }
 
@@ -185,6 +257,10 @@ impl<'a> Ring<'a> {
     /// - The pool is borrowed only here. The segments stay
     ///   allocated for the life of the pool region, as a
     ///   [`BufSlot`](crate::BufSlot) dropped without `free` does.
+    /// - Every segment's header names the ring, and segment 0's
+    ///   holds the table of segments, so a process holding the
+    ///   pool and [`first_segment`](Ring::first_segment) can find
+    ///   the ring.
     pub fn init(
         pool: &mut Pool<'a>,
         slot_size: u32,
@@ -197,11 +273,11 @@ impl<'a> Ring<'a> {
         }
         let mut taken: [Option<crate::BufSlot<'a, [u8]>>; MAX_SEGMENTS as usize] =
             core::array::from_fn(|_| None);
-        let mut bases = [core::ptr::null_mut::<u8>(); MAX_SEGMENTS as usize];
+        let mut indices = [NO_SEGMENT; MAX_SEGMENTS as usize];
         for seg in 0..seg_count as usize {
             match pool.alloc_bytes() {
                 Ok(buf) => {
-                    bases[seg] = buf.as_mut_ptr();
+                    indices[seg] = buf.idx();
                     taken[seg] = Some(buf);
                 }
                 Err(_) => {
@@ -212,38 +288,69 @@ impl<'a> Ring<'a> {
         }
         // The segments stay allocated: their guards go out of
         // scope with `taken`, never freed.
-        let mut slots = [core::ptr::null_mut(); MAX_SEGMENTS as usize];
-        for (seg, &base) in bases.iter().take(seg_count as usize).enumerate() {
-            // SAFETY: base is a buffer of at least segment_size
-            // bytes the pool just handed out, line-aligned, and
-            // nothing else can reach it until the ring is split:
-            // the header line and each slot's header are ours to
-            // write.
+        let base = pool.bufs_ptr();
+        let buf_size = pool.buf_size() as usize;
+        let mut slots = [0usize; MAX_SEGMENTS as usize];
+        for seg in 0..seg_count as usize {
+            let offset = indices[seg] as usize * buf_size;
+            // SAFETY: the offset names a buffer of at least
+            // segment_size bytes the pool just handed out,
+            // line-aligned, and nothing else can reach it until a
+            // role is taken: the header lines and each slot's
+            // header are ours to write.
             unsafe {
-                core::ptr::write_bytes(base, 0, CACHE_LINE_SIZE);
-                let seg_slots = base.add(size_of::<SegmentHeader>());
+                let seg_base = base.add(offset);
+                core::ptr::write_bytes(seg_base, 0, size_of::<SegmentHeader>());
+                let header = &*(seg_base as *const SegmentHeader);
+                header
+                    .info
+                    .layout_version
+                    .store(LAYOUT_VERSION, Ordering::Relaxed);
+                header.info.slot_size.store(slot_size, Ordering::Relaxed);
+                header
+                    .info
+                    .seg_capacity
+                    .store(seg_capacity, Ordering::Relaxed);
+                header.info.seg_count.store(seg_count, Ordering::Relaxed);
+                header.info.seg_num.store(seg as u32, Ordering::Relaxed);
+                if seg == 0 {
+                    for (entry, &idx) in header.table.iter().zip(indices.iter()) {
+                        entry.store(idx, Ordering::Relaxed);
+                    }
+                }
+                let seg_slots = seg_base.add(size_of::<SegmentHeader>());
                 for i in 0..seg_capacity {
                     let slot = seg_slots.add(i as usize * slot_size as usize);
                     core::ptr::write_bytes(slot, 0, SLOT_HEADER_BYTES);
                     // `seq[i] = i`: every slot claimable for lap 0.
                     (*(slot as *const AtomicU32)).store(seq_of(i), Ordering::Relaxed);
                 }
-                slots[seg] = seg_slots;
+                // The magic last (Release): a reader that sees it
+                // sees the rest of the block.
+                header.info.magic.store(MAGIC, Ordering::Release);
             }
+            slots[seg] = offset + size_of::<SegmentHeader>();
         }
-        // Segment 0's header word, the first word of its buffer.
-        let given = bases[0] as *const AtomicU32;
         Ok(Ring {
             segs: Segments {
+                base,
                 slots,
-                given,
+                header0: indices[0] as usize * buf_size,
                 slot_size,
                 capacity: seg_capacity,
                 mask: seg_capacity - 1,
                 seg_count,
             },
+            first_segment: indices[0],
             _region: core::marker::PhantomData,
         })
+    }
+
+    /// The pool buffer index of segment 0, where the ring's
+    /// control block is: what a process hands to another so it
+    /// can find the ring in the same pool.
+    pub fn first_segment(&self) -> u32 {
+        self.first_segment
     }
 
     /// Split into the producer and consumer endpoint handles.
@@ -301,8 +408,9 @@ mod tests {
         val: u64,
     }
 
-    /// Test pool buffer: a segment of up to 16 one-line slots.
-    const BUF: usize = CACHE_LINE_SIZE + 16 * CACHE_LINE_SIZE;
+    /// Test pool buffer: a segment of up to 16 one-line slots
+    /// behind its four header lines.
+    const BUF: usize = 4 * CACHE_LINE_SIZE + 16 * CACHE_LINE_SIZE;
 
     /// Buffers in the test pool.
     const BUFS: usize = 8;
@@ -366,7 +474,7 @@ mod tests {
             err(64, 4, MAX_SEGMENTS + 1, &mut pool),
             Some(Error::BadSegmentCount)
         );
-        // 32 one-line slots do not fit a 17-line buffer.
+        // 32 one-line slots do not fit a 20-line buffer.
         assert_eq!(err(64, 32, 2, &mut pool), Some(Error::TooSmall));
         // More segments than the pool has: nothing is kept.
         assert_eq!(
@@ -383,8 +491,52 @@ mod tests {
         for cap in [1u32, 4, 16] {
             assert_eq!(
                 segment_size(64, cap),
-                CACHE_LINE_SIZE as u64 + 64 * cap as u64
+                4 * CACHE_LINE_SIZE as u64 + 64 * cap as u64
             );
+        }
+    }
+
+    #[test]
+    fn control_block_names_the_ring() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = Ring::init(&mut pool, 64, 4, 3).unwrap();
+        let segs = ring.segs;
+        let header0 = segs.header0();
+        assert_eq!(
+            ring.first_segment(),
+            header0.table[0].load(Ordering::Relaxed)
+        );
+        assert_eq!(header0.claims.load(Ordering::Relaxed), 0);
+        for (i, entry) in header0.table.iter().enumerate() {
+            let idx = entry.load(Ordering::Relaxed);
+            assert_eq!(idx == NO_SEGMENT, i >= 3, "table entry {i}");
+            if i < 3 {
+                assert!(idx < BUFS as u32, "entry {i} names buffer {idx}");
+                // The table entry and the private offset agree.
+                assert_eq!(
+                    segs.slots[i],
+                    idx as usize * BUF + size_of::<SegmentHeader>()
+                );
+            }
+        }
+        // Every segment's first line names the ring and itself.
+        for seg in 0..3u32 {
+            // SAFETY: the header is the front of a live segment.
+            let info = unsafe {
+                &(*(segs
+                    .base
+                    .add(segs.slots[seg as usize] - size_of::<SegmentHeader>())
+                    as *const SegmentHeader))
+                    .info
+            };
+            assert_eq!(info.magic.load(Ordering::Acquire), MAGIC);
+            assert_eq!(info.layout_version.load(Ordering::Relaxed), LAYOUT_VERSION);
+            assert_eq!(info.slot_size.load(Ordering::Relaxed), 64);
+            assert_eq!(info.seg_capacity.load(Ordering::Relaxed), 4);
+            assert_eq!(info.seg_count.load(Ordering::Relaxed), 3);
+            assert_eq!(info.seg_num.load(Ordering::Relaxed), seg);
+            assert_eq!(info.given.load(Ordering::Relaxed), 0);
         }
     }
 

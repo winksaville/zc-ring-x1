@@ -30,7 +30,7 @@ one that keeps the table in shared memory without changing v3 itself.
 `spsc::v4`, v3's protocol verbatim over a ring that describes itself in the region, so a second
 process attaches through the pool, and v3 stays as built, the baseline to measure against.
 
-- Offsets, not pointers: `Segments` holds each segment's byte offset from the pool region's base
+- Offsets, not pointers: `Segments` holds each segment's byte offset from the pool's buffer array
   and one base pointer, so the table is the same in every process and a slot access is one add
   over v3's.
 - The control block: segment 0's header grows from one line to four: magic, layout version, the
@@ -66,7 +66,7 @@ process attaches through the pool, and v3 stays as built, the baseline to measur
 
 - [feat: attachable SPSC v4 opening][1] (done)
 - [feat: spsc v4 as a copy of v3][2] (done)
-- [feat: spsc v4 control block and offsets][3]
+- [feat: spsc v4 control block and offsets][3] (done)
 - [feat: spsc v4 attach and role claims][4]
 - [perf: spsc v4 in the measurement tools][5]
 - [docs: spsc v4 in the design note and guide][6]
@@ -149,9 +149,35 @@ change alone. No example is copied.
 
 ##### feat: spsc v4 control block and offsets
 
-`Segments` as offsets from the pool base, and segment 0's four-line control block written by
-`init`: the geometry line (magic, layout version, geometry, `seg_count`, `given`), the claims line,
-and the two lines of the segment table.
+`Segments` as offsets from the pool's buffer array, and segment 0's four-line control block
+written by `init`: the geometry line (magic, layout version, geometry, `seg_count`, `given`), the
+claims line, and the two lines of the segment table.
+
+- `SegmentHeader` is a `repr(C)` struct of three cache-aligned parts: `info`, a line of seven
+  `AtomicU32`s (magic `"ZCR4"`, layout version, `slot_size`, `seg_capacity`, `seg_count`, the
+  segment's own number, and `given`), `claims`, one word on its own line, and `table`, 32 words
+  over two lines. Every segment carries the four lines, so `segment_size` grew by 192 bytes and
+  the slots of every segment start at one offset.
+  - `info` is written in every segment, so each names the ring it belongs to and its number.
+    `claims` and `table` are meaningful in segment 0 only, `NO_SEGMENT` (`u32::MAX`) filling the
+    table past `seg_count`.
+  - `init` stores the magic last, with Release, so a reader that sees it sees the block. The
+    claims word is zero until the next rung uses it.
+- `Segments` is `base`, the pool's buffer array in this process, `slots`, each segment's slot
+  array as a byte offset from `base`, and `header0`, segment 0's header as an offset. `seq` and
+  `body` add the offset to the base, and `given` is `header0`'s field rather than a stored
+  pointer. The table is `[usize; 32]`, the same 256 bytes v3's pointers were, so the per-message
+  copy the fast-path Todo names is unchanged between the two.
+- The offsets are from the buffer array, not the region base as the plan said: the pool's
+  `bufs` raw pointer carries the region's provenance, so adding an offset to it reaches any
+  buffer, where a pointer derived from the `&PoolHeader` reference could reach the header alone
+  under Stacked Borrows. `Pool::bufs_ptr()` is the `pub(crate)` accessor, and `BufSlot::idx()`
+  already existed for the table's entries.
+- `Ring::first_segment()` is the buffer index of segment 0, held in the `Ring` so the attach rung
+  can hand it out and take it in.
+- Tests: `control_block_names_the_ring` reads every field of every segment's `info`, the table
+  against the private offsets, and the claims word, and the layout test and the pool buffer size
+  follow the four lines. All 15 pass, under Miri too.
 
 ##### feat: spsc v4 attach and role claims
 
