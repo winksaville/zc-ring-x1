@@ -153,7 +153,7 @@ fn main() {
     let placements = discover_placements(cli.base.base_cpu);
     let unit = if cfg.ticks { "tk" } else { "ns" };
     println!(
-        "{} cells, {:.1}s each, spsc-v3 and mpsc-v2 with {} segments{}",
+        "{} cells, {:.1}s each, spsc-v3, spsc-v4, and mpsc-v2 with {} segments{}",
         placements.len() * FLAVORS.len() * cfg.depths.len(),
         cfg.duration.as_secs_f64(),
         cfg.segments,
@@ -260,7 +260,7 @@ fn main() {
             ),
             (
                 "depth",
-                "slots per ring, per segment for spsc-v3 and mpsc-v2. One message is ever in flight, so depth changes which seq words share a cache line and, at 1, whether the ring has any slack, and at 1 spsc-v3 switches segments on every message",
+                "slots per ring, per segment for spsc-v3, spsc-v4, and mpsc-v2. One message is ever in flight, so depth changes which seq words share a cache line and, at 1, whether the ring has any slack, and at 1 spsc-v3 and v4 switch segments on every message",
             ),
             ("m.send", &send("main")),
             ("w.recv", &recv("the worker")),
@@ -277,7 +277,7 @@ fn main() {
             ("xfills/RT", &format!("{XFILLS_MEANING}, per round trip")),
             (
                 "switches/RT",
-                "segment switches across both rings per round trip, spsc-v3 and mpsc-v2 only: 0 while every message fits its segment, 2 when each ring switches on every message",
+                "segment switches across both rings per round trip, spsc-v3, spsc-v4, and mpsc-v2 only: 0 while every message fits its segment, 2 when each ring switches on every message",
             ),
         ],
     );

@@ -1132,7 +1132,8 @@ measured, and one that falls short leads to a v4.
   reused segment's seqs are already claimable.
 - **Limits**: no `attach`, the ring's state spanning a pool and
   its segments. Code that needs a single region names
-  `spsc::v2::Ring`.
+  `spsc::v2::Ring`, and a ring of segments to share between
+  processes is [SPSC v4](#spsc-v4-attachable-segments).
 - **Counters**: `Producer::switches` and `Consumer::switches`
   count switches on the switch path only, and `segment` names
   the current one. `examples/spsc_v3_segments.rs` runs every
@@ -1232,6 +1233,160 @@ measured, and one that falls short leads to a v4.
   consumer keeps up, so the default ring costs more than v2 on
   every path that never needs a second segment. The fast-path
   Todo entry is the next step, measured against these tables.
+
+## SPSC v4: attachable segments
+
+The fifth SPSC protocol, `spsc::v4`, a sibling of v3 built in
+the cycle `feat: attachable SPSC v4`: v3's ring of segments,
+unchanged as a protocol, over a ring that describes itself in
+the region. A v3 ring's table of segments, the pointers every
+message goes through, exists only in the process that ran
+`init`, so no second process could join the ring, and no design
+that keeps the table in shared memory could be measured without
+changing v3. v4 is that design, and v3 stays as built to measure
+against. The user-facing half is the guide's [Joining from
+another process](user-guide.md#joining-from-another-process).
+
+- **Offsets, not pointers**: the endpoints' `Segments` table
+  holds each segment's byte offset from the pool's buffer array
+  and one base pointer, that array in this process, so the table
+  is the same numbers in every process and a slot access is one
+  add over v3's. The offsets-only rule ([Offsets only,
+  everywhere](#offsets-only-everywhere)) applied to the ring's
+  own table. The offsets are from the buffer array rather than
+  the region's base because the pool's `bufs` raw pointer
+  carries the region's provenance, where a pointer derived from
+  its header reference would reach the header alone under
+  Stacked Borrows.
+- **The control block**: every segment's header grows from v3's
+  one line to four, so `segment_size` is v3's plus 192 bytes and
+  every segment's slots start at one offset. Line 0 names the
+  ring, seven `AtomicU32`s: magic (`"ZCR4"`), layout version,
+  `slot_size`, `seg_capacity`, `seg_count`, the segment's own
+  number, and `given`, the consumer's give-back word. Line 1 is
+  the role claims word, alone so the CAS that takes a role never
+  shares a line with `given`. Lines 2 and 3 are the table, the
+  pool buffer index of segment `i` at entry `i`, `u32::MAX` past
+  `seg_count`. Every segment writes line 0, and lines 1 to 3 are
+  meaningful in segment 0. `init` stores the magic last, with
+  Release.
+  - The table holds buffer indices, not byte offsets: a byte
+    offset needs a `u64` and four lines, and the pool already
+    validates an index and turns it into a pointer. The private
+    table holds the byte offsets, computed once at load, so the
+    hot path stays at one add.
+  - The shape is meant for MPSC v2's successor as well, whose
+    header is already a three-line struct with a seal, a claim
+    word, and an in-use word, so an attachable MPSC puts the
+    same block ahead of them.
+- **Attach**: `Ring::attach(&pool, first_segment)`, `unsafe`,
+  reads the control block through an attached `Pool` from the
+  buffer index of segment 0, `Ring::first_segment()` on the
+  initializing side. It checks the magic, the layout version,
+  the geometry, that segment 0 says it is segment 0, every table
+  entry against the pool's count and the entries before it, and
+  every segment's own header against the block, and builds the
+  table through the loader `init` uses. Every failure is an
+  `Err` (`BadMagic`, `BadLayoutVersion`, the geometry errors,
+  `TooSmall`, and `BadSegment` for a table or a header that
+  disagrees), never an access outside the pool. It is `unsafe`
+  for what validation cannot check, as the pools' `to_slot` is:
+  a ring's segment and a buffer freed and reused since look the
+  same, and the ring writes seq words into every segment it is
+  told it has.
+- **Roles by name, no `split`**: `ring.producer()` and
+  `ring.consumer()` each take their role by one `fetch_or` on
+  the claims word, from a `Ring` that `init` or `attach`
+  returned, `Err(RoleTaken)` when the bit was set anywhere, in
+  this process or another, and a set bit needs no undo since the
+  or changed nothing. `Drop` on the endpoint clears its bit.
+  Nothing on the message path reads the word. `split` handed
+  every attacher both endpoints and left the SPSC contract to
+  the caller's discipline, and the `### Endpoint claims word`
+  Todo asked for this in the single-region rings at the cost of
+  a layout bump, which v4's new block does not pay.
+  - A crashed process leaves its role claimed. Recovery, a forced
+    claim or a reset, is not built: a fresh region per run is the
+    inter-application test's case.
+- **Join, not resume**: an endpoint taken after `attach` starts
+  in segment 0 at position 0, as one taken after `init` does, so
+  attach is for a process joining before its role has run. v2's
+  `attach` has the same limit. Recovering a mid-run position
+  from the slots' seq words is a design of its own, not started.
+- **Stacked Borrows shaped the tests**: the handle `init`
+  returns holds pointers under the `&mut` it took, and the first
+  write through an attached handle, which holds the region's
+  raw pointer, invalidates them, the hazard the pools' `attach`
+  notes. So the attach test drops the initializing handle once
+  it has the first segment's index and attaches twice, one
+  handle per role, as two processes would. Real processes share
+  no borrow stack.
+- **Prediction, on record before measuring**: v4 within
+  run-to-run noise of v3 where no switch happens, the code delta
+  being 16 bytes in the copied table, one add per slot access,
+  and three more header lines ahead of the slots.
+- **Measured (2026-09-25, 3900X, the rung `perf: spsc v4 in the
+  measurement tools`, `tp-stream` and `tp-matrix` at `-d 1
+  --depth 1,8,64,1024`, two segments, each run twice, the demo
+  once)**. Stream ns per message, v3 / v4, run 1 then run 2:
+
+  | placement | d=1 | d=8 | d=64 | d=1024 |
+  |---|---|---|---|---|
+  | 11,10 CCX | 74.0 / 75.5, 67.5 / 68.3 | 15.9 / 18.1, 14.3 / 16.4 | 14.3 / 15.1, 13.0 / 13.6 | 13.7 / 15.4, 12.3 / 13.9 |
+  | 11,8 x-CCX | 228.7 / 231.5, 227.2 / 231.1 | 49.0 / 48.8, 48.8 / 48.2 | 23.7 / 22.1, 24.2 / 23.2 | 16.1 / 19.3, 16.1 / 16.8 |
+  | 11,23 SMT | 31.3 / 33.4, 31.3 / 33.2 | 17.2 / 20.0, 17.1 / 19.9 | 17.2 / 20.0, 17.1 / 19.9 | 17.2 / 20.0, 17.1 / 19.9 |
+  | unpinned | 62.0 / 64.4, 60.9 / 64.0 | 15.0 / 16.0, 14.8 / 15.4 | 12.7 / 12.9, 12.3 / 13.5 | 11.7 / 12.9, 11.9 / 13.0 |
+
+  The round trip, main's send and the worker's receive in ns,
+  v3 / v4, run 1 then run 2, and the cross-core fills per round
+  trip from run 1:
+
+  | placement | depth | m.send | w.recv | xfills/RT |
+  |---|---|---|---|---|
+  | 11,10 CCX | 1 | 16.7 / 15.9, 17.0 / 15.7 | 132.0 / 101.3, 132.0 / 101.2 | 9.001 / 8.004 |
+  | 11,10 CCX | 8 | 12.9 / 13.1, 12.5 / 13.3 | 110.7 / 107.6, 109.3 / 105.1 | 3.191 / 3.214 |
+  | 11,10 CCX | 64 | 13.1 / 13.1, 12.7 / 13.3 | 90.1 / 99.2, 89.0 / 98.9 | 2.168 / 2.150 |
+  | 11,10 CCX | 1024 | 13.1 / 13.1, 12.7 / 13.3 | 96.8 / 98.0, 96.9 / 98.2 | 2.006 / 2.005 |
+  | 11,8 x-CCX | 1 | 21.9 / 29.5, 65.2 / 31.9 | 481.7 / 351.3, 472.8 / 355.0 | 8.969 / 8.035 |
+  | 11,8 x-CCX | 64 | 13.1 / 13.4, 12.3 / 13.3 | 276.0 / 266.0, 282.2 / 264.7 | 2.134 / 2.217 |
+  | 11,8 x-CCX | 1024 | 13.2 / 13.8, 12.4 / 13.4 | 273.6 / 264.0, 276.2 / 260.8 | 2.021 / 2.022 |
+  | 11,23 SMT | 1 | 24.8 / 25.5, 24.8 / 25.1 | 114.3 / 116.7, 114.1 / 114.0 | 0.0004 / 0.0004 |
+  | 11,23 SMT | 64 | 17.6 / 18.4, 17.6 / 18.5 | 113.0 / 116.8, 112.6 / 116.5 | 0.0004 / 0.0004 |
+  | 11,23 SMT | 1024 | 18.0 / 18.5, 18.0 / 18.5 | 111.6 / 115.3, 111.6 / 115.4 | 0.0005 / 0.0006 |
+
+  The demo, one segment at depth 64, ns per message: the
+  single-thread loop v3 20.5 and v4 19.5, and the two-thread loop
+  v3 / v4 at 21.6 / 23.5 on the CCX, 28.7 / 32.3 across it, 20.0
+  / 21.4 on the SMT pair, and 23.8 / 26.6 unpinned. The depth
+  sweep's single-thread rows read v4 under v3 at every depth.
+- **Readings**: the prediction failed, and the failure is not
+  the add.
+  - Streaming with no switch, v4 runs 0.6 to 2.8 ns per message
+    slower than v3 on every pinned placement in both runs, 5 to
+    16 percent, the most on the SMT pair (17.1 against 19.9 at
+    every depth, the runs agreeing to 0.1) and at depth 1024
+    across the CCX. The round trip's sends read 0.2 to 0.9 ns
+    slower and its receives 4 ns slower on the SMT pair.
+  - The single-thread loop, the instruction path alone, reads v4
+    a nanosecond under v3, so the added offset add is not the
+    cost, and the fills per message read the same or fewer for
+    v4. What two threads pay that one does not is not found.
+  - v4 wins where the ring switches on every message: the round
+    trip at depth 1 moves 8 lines against v3's 9, and its receive
+    runs a fifth to a quarter faster, 101 against 132 ns on the
+    CCX and 351 against 477 across it. We think the claims line
+    is a spacer: v3's `given` word shares its 128-byte pair with
+    slot 0, which the adjacent-line prefetcher drags along on
+    every give-back, and v4's shares it with the untouched claims
+    line.
+- **Verdict (2026-09-25)**: v4 does what it is for, a ring a
+  second process joins, at a cost of 5 to 16 percent on the
+  no-switch stream that the code delta does not explain. Both
+  rings still copy their table per message, the copy that is
+  more than half of v3's gap to v2, so the `### SPSC v3 fast
+  path` Todo measures v4 beside v3 when it runs and looks for
+  the two-thread gap there, with these rows as the mark. The
+  default `Ring` stays v3.
 
 ## MPSC v1: equality-seq ring
 

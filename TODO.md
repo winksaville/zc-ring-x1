@@ -9,7 +9,14 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-_None._
+- The cycle `feat: attachable SPSC v4` is closed on its bookmark `feat-attachable-spsc-v4`, every
+  rung pushed, and not landed: the user's waiver of 2026-09-25 covered the pushes and excluded
+  Land. Land is the user's go: restore the plain names (`zc-ring-x1`, `zc-ring-x1-demo`, and
+  `tp_matrix`'s dependency), `vc-x1 validate --fast`, `jj squash` into the closing, the trapezoid
+  reshape (the recorded choice, the user's to change), fast-forward `main`, install, delete the
+  bookmark.
+- Next cycle after Land: `### Test an inter-application message`, whose decisions are in its
+  entry, over `spsc::v4`.
 
 ## In Progress
 
@@ -43,6 +50,61 @@ The consumer will be started first and then the producer sends a
 message that is a random number and a checksum of that number to
 prove the message arrived intact.
 
+- Decided on 2026-09-25, at the opening of `feat: attachable SPSC v4`, which this waits on:
+  - The ring is `spsc::v4`, the attachable ring of segments, once that cycle lands.
+  - The apps are one new bin, `src/bin/zc-ring-x1-ipc.rs`, with `consumer` and `producer`
+    subcommands, runnable by hand in two terminals, and an integration test in `tests/` that
+    spawns it through `CARGO_BIN_EXE`, consumer first, and checks the two outputs agree. A test
+    re-executing itself was rejected as the harder pattern to follow.
+  - The region is a file under the target directory, mapped `MAP_SHARED` through `libc`, which
+    becomes a Linux dev-dependency. The consumer creates and sizes it, the producer attaches.
+
+### Improve stream tests
+
+The stream tests are all x-CCX on 3900x:
+| line              | placement        |  shape |  ns/msg |  segs | switches | sw/msg | switch ns |
+|-------------------|------------------|-------:|--------:|------:|---------:|-------:|----------:|
+| spsc3 burst 1t    | core 11          |   4x64 |    22.5 |   4/4 |   11,719 |  0.012 |         - |
+| mpsc2 burst 1t    | core 11          |   4x64 |    15.2 |   4/4 |   11,718 |  0.012 |         - |
+| spsc3 lagging 2t  | 11,10 CCX        |   4x64 |       - |   4/4 |   11,719 |  0.012 |         - |
+| mpsc2 lagging 2t  | 11,10 CCX        |   4x64 |       - |   4/4 |   15,622 |  0.016 |         - |
+| spsc3 lagging 2t  | 11,8 x-CCX       |   4x64 |       - |   4/4 |   11,719 |  0.012 |         - |
+| mpsc2 lagging 2t  | 11,8 x-CCX       |   4x64 |       - |   4/4 |   15,622 |  0.016 |         - |
+| spsc3 lagging 2t  | 11,23 SMT        |   4x64 |       - |   4/4 |   11,719 |  0.012 |         - |
+| mpsc2 lagging 2t  | 11,23 SMT        |   4x64 |       - |   4/4 |   15,624 |  0.016 |         - |
+| spsc3 lagging 2t  | unpinned         |   4x64 |       - |   4/4 |   11,718 |  0.012 |         - |
+| mpsc2 lagging 2t  | unpinned         |   4x64 |       - |   4/4 |   15,624 |  0.016 |         - |
+| spsc3 burst 1t    | core 11          |   1x32 |    22.4 |   1/1 |        0 |  0.000 |         - |
+| spsc3 burst 1t    | core 11          |   32x1 |    29.5 | 32/32 |  968,750 |  0.969 |       7.3 |
+| mpsc2 burst 1t    | core 11          |   1x32 |    15.2 |   1/1 |        0 |  0.000 |         - |
+| mpsc2 burst 1t    | core 11          |   32x1 |    30.6 | 32/32 |  968,750 |  0.969 |      15.8 |
+| spsc3 stream 2t   | 11,8 x-CCX       |   1x32 |    29.9 |   1/1 |        0 |  0.000 |         - |
+| spsc3 stream 2t   | 11,8 x-CCX       |   32x1 |   170.9 | 32/32 |  999,978 |  1.000 |     141.0 |
+| mpsc2 stream 2t   | 11,8 x-CCX       |   1x32 |    19.4 |   1/1 |        0 |  0.000 |         - |
+| mpsc2 stream 2t   | 11,8 x-CCX       |   32x1 |   293.4 | 32/32 |  998,537 |  0.999 |     274.4 |
+
+But CCX on 7600:
+| line              | placement        |  shape |  ns/msg |  segs | switches | sw/msg | switch ns |
+|-------------------|------------------|-------:|--------:|------:|---------:|-------:|----------:|
+| spsc3 burst 1t    | core 5           |   4x64 |    14.3 |   4/4 |   11,719 |  0.012 |         - |
+| mpsc2 burst 1t    | core 5           |   4x64 |     9.3 |   4/4 |   11,718 |  0.012 |         - |
+| spsc3 lagging 2t  | 5,4 CCX          |   4x64 |       - |   4/4 |   11,719 |  0.012 |         - |
+| mpsc2 lagging 2t  | 5,4 CCX          |   4x64 |       - |   4/4 |   15,624 |  0.016 |         - |
+| spsc3 lagging 2t  | 5,11 SMT         |   4x64 |       - |   4/4 |   11,719 |  0.012 |         - |
+| mpsc2 lagging 2t  | 5,11 SMT         |   4x64 |       - |   4/4 |   15,622 |  0.016 |         - |
+| spsc3 lagging 2t  | unpinned         |   4x64 |       - |   4/4 |   11,719 |  0.012 |         - |
+| mpsc2 lagging 2t  | unpinned         |   4x64 |       - |   4/4 |   15,622 |  0.016 |         - |
+| spsc3 burst 1t    | core 5           |   1x32 |    13.6 |   1/1 |        0 |  0.000 |         - |
+| spsc3 burst 1t    | core 5           |   32x1 |    16.9 | 32/32 |  968,750 |  0.969 |       3.4 |
+| mpsc2 burst 1t    | core 5           |   1x32 |     8.7 |   1/1 |        0 |  0.000 |         - |
+| mpsc2 burst 1t    | core 5           |   32x1 |    17.0 | 32/32 |  968,750 |  0.969 |       8.6 |
+| spsc3 stream 2t   | 5,4 CCX          |   1x32 |    17.7 |   1/1 |        0 |  0.000 |         - |
+| spsc3 stream 2t   | 5,4 CCX          |   32x1 |    32.2 | 32/32 |  999,978 |  1.000 |      14.5 |
+| mpsc2 stream 2t   | 5,4 CCX          |   1x32 |     7.6 |   1/1 |        0 |  0.000 |         - |
+| mpsc2 stream 2t   | 5,4 CCX          |   32x1 |    64.3 | 32/32 |  976,943 |  0.977 |      58.0 |
+
+Thus aren't comparable, we should probably stream all the placement variants?
+
 ### Unwrap lints for the library
 
 The library has no `unwrap` or `expect` outside tests, but only by discipline. The user
@@ -56,7 +118,7 @@ prohibits them in real code, so a lint should enforce it
 - The `unwrap_or*` family has no lint and stays under the `// OK:` comment convention.
 - Raised by the user on 2026-09-24, at `refactor: segmented pool stack geometry`.
 
-### spsc4 and mpsc3 over either pool
+### Next SPSC and MPSC versions over either pool
 
 `spsc::v3` and `mpsc::v2` take their segments from a `pool::v0::Pool` only, so a multi-stack
 pool cannot supply them. New versions take either pool, and v3 and v2 stay as they are, the
@@ -64,10 +126,10 @@ baselines to measure against.
 
 - A sealed segment-source trait, "a buffer of at least N bytes, or none", implemented by both
   pools. v1's must not panic on a size larger than its largest stack.
-- spsc4 and mpsc3: copies of v3 and v2 whose `init` takes any segment source. The pool is used
-  only in `init`, so the endpoints and every hot path are v3's and v2's code.
-- Expectation: spsc4 over a single-stack v1 pool times as spsc3 over a v0 pool, and mpsc3 as
-  mpsc2, within noise. Rows for each pair: the old ring over v0, the new ring over v0 (the copy
+- The new versions: copies of the current rings whose `init` takes any segment source. The pool
+  is used only in `init`, so the endpoints and every hot path are the copied code.
+- Expectation: the new SPSC over a single-stack v1 pool times as its baseline over a v0 pool, and
+  the new MPSC likewise, within noise. Rows for each pair: the old ring over v0, the new ring over v0 (the copy
   alone), over a single-stack v1, and over a multi-stack v1 with one stack for segments beside
   the message stacks. The demo first, iiac-perf for the fine comparison.
 - Examples: one SPSC and one MPSC program with one v1 pool supplying both the ring's segments
@@ -75,6 +137,8 @@ baselines to measure against.
   pool, since a pool has one allocator.
 - The user's direction on 2026-09-24, during `feat: segmented pool v1`: new versions rather than
   a generic `init` on v3 and v2, so the original code stays to measure against.
+- Retitled on 2026-09-25 from "spsc4 and mpsc3": SPSC v4 became the attachable ring
+  (`feat: attachable SPSC v4`), so the numbers here are whatever comes next.
 
 ### Paired columns in the tp_matrix tables
 
@@ -111,13 +175,10 @@ message against v2's 7.5.
 - Apply that, then find what keeps v3 behind v2 on the fast path, measured against v2 at each step.
 - The user's call on 2026-09-15, deferred from the segmented queue cycle so that cycle makes
   multiple segments work first.
-
-### SPSC v3 attach
-
-`spsc::v3::Ring` has no `attach`, so a v3 ring cannot be joined from another process or resumed.
-v0 through v2 can, since a ring's whole state is in its region. v3's state spans a pool and a chain
-of segments, so attach needs a control block in the region recording both sides' current segment.
-Wait for a user that needs it, and until then name `spsc::v2::Ring`.
+- Since `feat: attachable SPSC v4` (2026-09-25): v4 rows run beside v3's in the tools, and v4
+  streams 0.6 to 2.8 ns per message slower than v3 where no switch happens while its
+  single-thread loop is faster, a two-thread cost the code delta does not explain. This entry
+  measures both rings and looks for that gap, the v4 rows in the design note as the mark.
 
 ### MPSC v2 as the default
 
@@ -200,6 +261,10 @@ outgrows malloc's thread-cache fast path, and the demo should show it.
 CAS-claimed producer/consumer roles in the ring header so a second attach/split claimant gets an
 error instead of silently violating SPSC, at the cost of a layout_version bump (or spends `_pad0`)
 [details](notes/ring-buffer-design.md#resolved-questions).
+
+- `spsc::v4` has it since `feat: attachable SPSC v4` (2026-09-25): `producer()` and `consumer()`
+  claim through a line of its control block, released on drop. This entry is what remains for the
+  single-region rings, and v4's shape is the model.
 
 ### Typed endpoints
 
@@ -311,383 +376,358 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### feat: segmented pool v1
+### feat: attachable SPSC v4
 
 #### Problem
 
-A pool has one buffer size, so an application wanting messages of several sizes builds and registers
-several pools by hand.
+A v3 ring's table of segments, the pointers every message goes through, exists only in the process
+that ran `init`, so no second process can join the ring, and the design cannot be measured against
+one that keeps the table in shared memory without changing v3 itself.
 
 #### Solution
 
-`pool::v1::Pool<'a, const N: usize>`, the multi-stack pool, keeps v0's API over one region
-holding N stacks, one per buffer size, which `init` takes as `[StackGeometry; N]` in any order
-and sorts smallest first. Recorded in the design note's [Multi-stack
-pool](notes/ring-buffer-design.md#multi-stack-pool-0180).
+`spsc::v4`, v3's protocol verbatim over a ring that describes itself in the region, so a second
+process attaches through the pool, and v3 stays as built, the baseline to measure against.
 
-- `alloc::<T>()`, `alloc_with`, and `alloc_bytes(size)` take the smallest stack that fits, fall
-  back to the next larger one when it is empty, and count the miss against the stack that was
-  wanted, reported per stack by `stats()`, so a user can tell which size wants more buffers.
-- At N=1 the pick is the one size check v0 already makes and the fallback loop is empty, so the
-  single-stack pool does v0's work, and the demo times it 0.6 ns faster, an inlining artifact.
-- `free` returns a buffer to its own stack, and a `Desc` names a buffer by `pool_id` and a
-  `buf_idx` numbered across the stacks, through a registry generic over a sealed `DescMap`.
-- A receiver of mixed message types takes a descriptor back as bytes with `to_slot_bytes`, reads
-  the type-tag, and turns the bytes typed with `into_typed`, and every ring carries such messages.
-- Buffers start on a cache line, as v0's, so any `T` aligned to at most a line fits any size.
-- The default re-export stays on v0, and the rings keep taking a v0 pool.
+- Offsets, not pointers: `Segments` holds each segment's byte offset from the pool's buffer array
+  and one base pointer, so the table is the same in every process and a slot access is one add
+  over v3's.
+- The control block: segment 0's header grows from one line to four: magic, layout version, the
+  geometry, `seg_count`, and `given` on the first, the role claims word on the second, then the
+  segment table, 32 pool buffer indices, on the last two. Every segment reserves the four lines,
+  so the layout stays uniform and `segment_size` is v3's plus 192 bytes.
+- `Ring::attach(&pool, first_segment)` reads the control block through an attached `Pool`,
+  validates every field and index against the pool's geometry, and builds `Segments` through the
+  loader `init` uses. `Ring::first_segment()` gives the index the initializing process hands to
+  the other. Every hostile control block is an `Err`, never a panic.
+- Roles by name, no `split`: `ring.producer()` and `ring.consumer()` each claim their role by a
+  CAS on a claims word in the control block, from a `Ring` that `init` or `attach` returned, and
+  a role already held anywhere, in this process or another, is `Err(RoleTaken)`. Dropping an
+  endpoint releases its role.
+- Join, not resume: a claimed endpoint starts in segment 0 at position 0, as v3's do after
+  `split`, so attach is for a process joining before its role has run.
+- The default `Ring` stays v3 until v4 measures, and the pool gains `pub(crate)` accessors for
+  its base and a buffer's offset by index.
 
 #### Acceptance check
 
-- The v1 tests pass: size choice, fallback, miss counts, exhaustion, attach validation, and a
-  descriptor round trip.
-- The demo's alloc/free bench shows v1 at N=1 within run-to-run noise of v0, and reports the N=4
-  rows for the smallest and the largest size.
+- The attach test: a ring initialized through one `Pool` handle, a second `Ring` attached through
+  `Pool::attach` over the same region, the producer from one and the consumer from the other,
+  messages across several segment switches received in order, then the reverse pairing, and each
+  hostile control block an `Err`. Under Miri too.
+- The claims: a second `producer()` while the first is held, from the same `Ring` or a second
+  attached one, is `Err(RoleTaken)`, and succeeds once the first is dropped, the consumer alike.
+- The comparison: `tp-matrix` and `tp-stream` rows for v3 and v4 at depths 1, 8, 64, and 1024,
+  across the CCX and on the SMT pair, recorded in the design note. Prediction on record: v4
+  within run-to-run noise of v3 where no switch happens.
 
-Result, 2026-09-25: the tests pass, 29 in `pool::v1` under `cargo test`. The demo reports every
-row, and the N=1 clause is a finding rather than a pass: one run on the base cpu read v0 at 10.0
-ns and v1 at 9.1, and the bench rung's 20-run means 9.74 and 9.12, a gap outside the 0.1 ns
-run-to-run noise. The cause is the baseline, not the pool: v0's `next_buf_idx` and `buf_ptr` are
-not `#[inline]` and do not inline across the crate boundary into the demo, while the generic v1
-compiles whole there. The `### Pool inlining and an iiac-perf comparison` Todo is the fix and the
-comparison to trust.
+Result, 2026-09-25: the first two clauses pass, 18 tests in `spsc::v4` under `cargo test` and
+under Miri, with one shape change: the attach test holds two attached handles rather than the
+initializing one and an attached one, since Stacked Borrows forbids writing through both, so the
+initializing handle is dropped once it has the first segment's index. The third clause is a
+finding, not a pass: the rows are recorded, both tools twice, and the prediction failed. v4
+streams 0.6 to 2.8 ns per message slower than v3 where no switch happens, 5 to 16 percent, on
+every pinned placement in both runs, while the single-thread loop reads v4 faster and the depth-1
+round trip moves one line fewer. The cause is not the added add, and it is not found. The
+`### SPSC v3 fast path` Todo measures v4 beside v3 and looks for it there.
 
 #### Ladder
 
-- [feat: segmented pool v1 opening][1] (done)
-- [feat: segmented pool region and alloc][2] (done)
-- [feat: segmented pool in the registry][3] (done)
-- [perf: segmented pool in the alloc/free bench][4] (done)
-- [test: segmented pool allocation order][8] (done)
-- [refactor: segmented pool stack geometry][7] (done)
-- [feat: segmented pool byte slots from descriptors][9] (done)
-- [test: segmented pool messages over every ring][10] (done)
-- [docs: segmented pool in the design note][5] (done)
-- [feat: segmented pool v1 closing][6] (done)
+- [feat: attachable SPSC v4 opening][1] (done)
+- [feat: spsc v4 as a copy of v3][2] (done)
+- [feat: spsc v4 control block and offsets][3] (done)
+- [feat: spsc v4 attach and role claims][4] (done)
+- [perf: spsc v4 in the measurement tools][5] (done)
+- [docs: spsc v4 in the design note and guide][6] (done)
+- [perf: spsc v4 in the segment stress table][8] (done)
+- [feat: attachable SPSC v4 closing][7] (done)
 
 #### Deliberation
 
-- Multi-step: a new pool version, its registry path, a bench, and a design section are not one
-  reviewable step.
-- A v1 beside v0: the user's direction on 2026-09-24, so the cost of several stacks is measured
-  against the pool as it is.
-- One API, N stacks: the user's direction on 2026-09-24. The same alloc family selects a stack by
-  size, and the degenerate single-stack case, the rings' and most queues', should cost nothing.
-  - `const N: usize` with runtime sizes: v0 already asserts `T`'s size on every alloc, and at N=1
-    that one comparison becomes the selection, so N=1 adds no work.
-  - Sizes fixed at compile time through a trait, with an inline `const` block picking the stack for
-    `alloc::<T>()`, would make N>1 free as well, at the cost of a clumsier API. Held until the
-    measurement says the scan matters.
-- Fallback and miss counts: the user's direction on 2026-09-24. An empty stack falls back to the
-  next larger one rather than failing, and every miss is counted against the wanted size, whether
-  the fallback then succeeds or ends in `Exhausted`.
-  - The counters live in the allocating handle, a plain count, since allocation has one owner.
-- One pool id for all the stacks, with `buf_idx` numbering buffers across the sizes: the Todo
-  entry's first thought was a registered pool per sub-pool, and one id keeps the registry and the
-  descriptor as they are, at the cost of a size-range search in `to_slot` (one comparison at N=1).
-- Vocabulary: "segment" is the rings' word and "stack" the pools', so v0 is the single-stack pool
-  and v1 the multi-stack pool. The user's call on 2026-09-24, at the review of the region rung.
-  - "Segmented pool" gave "segment" a second meaning beside the rings of segments, whose
-    segments are pool buffers.
-  - The cycle keeps "segmented pool" as its name and title stem, since the opening pushed with
-    it, and the code and docs say "multi-stack".
-- Out of scope: a v1 flavor in `tp-pool`'s sweep, the rings taking a v1 pool for their segments
-  (the `### spsc4 and mpsc3 over either pool` Todo, new versions so v3 and v2 stay the
-  baselines), and compile-time sizes, each a later cycle if wanted.
+- A v4, not a change to v3: the user's call on 2026-09-25, so the two measure side by side, as
+  each ring version has against the one before it.
+  - v3's fast-path Todo stays a Todo for both, so the v3/v4 difference is the offsets and the
+    control block alone. Fixing the per-message table copy in v4 only would confound the
+    comparison.
+- Offsets in `Segments`: the user's idea on 2026-09-25. Pointers in the table are already
+  `base + offset` computed at `init`, so storing the offset and one base changes nothing about
+  correctness, and the table becomes plain data that is the same in every process.
+  - It is the design note's own rule, Offsets only, everywhere, applied to the ring's table.
+  - The cost is one add per slot access, measured by the tools rung rather than assumed, and two
+    more lines at the front of each segment.
+  - The shared table holds the pool's buffer indices, `u32` each, since a byte offset needs `u64`
+    and the pool already validates an index and turns it into a pointer. The private `Segments`
+    holds byte offsets, computed once at load, so the hot path stays at one add.
+- A control block in segment 0, four lines: one line cannot hold the table (32 indices are
+  128 bytes), the claims word wants a line of its own, and a separate pool buffer would waste
+  most of one. Every segment reserving the
+  same lines keeps the layout uniform, memory being the only cost.
+  - The shape is meant for MPSC v2's successor as well, whose `SegmentHeader` is already a
+    three-line struct with a seal, a claim word, and an in-use word, so a later attachable MPSC
+    puts the same block ahead of them.
+- Roles by name instead of `split`: the user's call on 2026-09-25. `split` hands every attacher
+  both endpoints and leaves the SPSC contract to the caller's discipline, where a claimed role is
+  an `Err` a second producer sees, and a process holds only the endpoint it uses.
+  - The `### Endpoint claims word` Todo asked for this in the single-region rings at the cost of a
+    layout bump. v4's control block is new, so it takes the claims word for free, and that Todo
+    keeps its entry for v0 through v2.
+  - The claims line is its own cache line, so the CAS at attach and the store at drop never share
+    a line with `given`. One CAS at claim and one store at drop, nothing on the message path.
+  - A crashed process leaves its role claimed. Recovery, a forced claim or a reset, is named as
+    deferred, since a fresh region per run is the inter-application test's case.
+- Join, not resume: v2's `attach` has the same limit, its endpoints starting at position 0, and
+  recovering a mid-run position from the seq words is a design of its own. Named in the design
+  note, not built here.
+- Attach first, as its own cycle: the `### Test an inter-application message` Todo needs it, and
+  the user chose this ordering over folding attach into the test's cycle or testing over v2
+  first, so each record has one subject.
+- The copy is its own rung, so the offsets rung's diff shows the design change and nothing else.
+  - No `examples/spsc_v4_segments.rs`: the examples share no code, each a standalone program, so a
+    copy would be a third near-duplicate showing nothing the tools' rows do not. The first program
+    that needs v4 is the inter-application bin of the next cycle.
+- The tools rung is what makes "side by side" true: `tp-matrix`, `tp-stream`, and the demo gain
+  v4 beside v3, and the comparison is the acceptance check's second clause.
+- The either-pool Todo had reserved the name spsc4. It is retitled to "next versions" at this
+  opening.
 
 #### Ladder details
 
-##### feat: segmented pool v1 opening
+##### feat: attachable SPSC v4 opening
 
 The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
-`### Segmented pools` Todo entry into this block, and bump the version-of-record. `## Waiting` held
-nothing to promote.
+`### SPSC v3 attach` Todo entry into this block in its v4 form, bump the version-of-record, and
+rename the artifact to `-dev`, `tp_matrix`'s dependency following the package name. `## Waiting`
+held nothing to promote. The inter-application test's
+decisions went into its Todo entry, and the either-pool Todo was retitled.
 
-##### feat: segmented pool region and alloc
+- Waiver, the user's on 2026-09-25 at this opening: "proceed completing this cycle except for
+  landing on main". It covers every rung's work review, description review, and push, the closing
+  included, and it does not cover Land, so `main` waits for the user.
 
-`pool::v1`: the region header with N stack heads, each on its own cache line, `init` and `attach`,
-the alloc family with fallback and miss counts, and `BufSlot` freeing to its own stack, with tests.
+##### feat: spsc v4 as a copy of v3
 
-- Terms: a stack is one buffer size with its own buffers, linked as v0's free-stack is. The
-  stacks follow the header in order, smallest first, and a buffer's index is local to its stack.
-- The header is `PoolHeader<N>`: the geometry words and the per-stack sizes and counts, then one
-  cache line per head. At N=1 it is two lines, as v0's.
-- `init` takes `[(buf_size, buf_count); N]`. Sizes must be strictly ascending, so the first stack
-  that fits is the smallest, and the total count stays below the sentinel, leaving room for a
-  buffer index across the stacks when the registry rung wants one.
-- The pick is a scan for the first stack that fits, and the fallback a loop over the larger
-  stacks. At N=1 the fallback range is empty.
-- The size check that v0's `check_type` makes becomes the pick. A size larger than the largest
-  stack panics, for `alloc_bytes(size)` as for `alloc::<T>()`, since both are a request the pool
-  was not built for.
-- A miss is counted once per call whose wanted stack was empty, whatever the fallback then does,
-  so `alloc_with` counts one per failed attempt. The counters are a plain `[u64; N]` in the
-  allocating handle, fresh per handle.
-- `BufSlot` holds its stack's head and its stack-local index, so a free touches its own stack
-  alone. It has no header pointer, which the registry rung found it does not need.
-- `Exhausted` is v0's own type, re-exported, and `Error` gains `BadStackCount` for an attach whose
-  `N` differs from the region's.
-- The crate docs in `src/lib.rs` name the pool family: v0 single-stack and the default, v1
-  multi-stack by path.
-- The magic differs from v0's, so neither pool attaches the other's region.
-- The v1 tests pass under Miri as well. Its first run caught a test taking the region pointer a
-  second time under a live handle, a test bug, and not the pool's.
+`src/spsc/v4` as a verbatim copy of v3 with its tests, so the next rung's diff is the design
+change alone. No example is copied.
 
-##### feat: segmented pool in the registry
+- The copy differs from v3 in its module docs alone: the intro names what the copy is for and
+  that v4 behaves as v3 until the rungs after it land, and the guide reference says the guide
+  is v3's. `spsc/mod.rs` lists the module, and the default `Ring` stays v3.
+- v3 has no magic to make distinct: nothing in its region names the ring, which is the control
+  block rung's problem. `mpsc::v2` keeps importing v3's `check_body_type`, `seq_of`, and
+  `validate_geometry`, and the copy has its own.
+- The 14 copied tests pass.
 
-Take a `Desc` back to a guard against a v1 pool, `buf_idx` numbering buffers across the stacks.
-How the registry holds v0 and v1 pool views alike, a trait or an enum, is decided here.
+##### feat: spsc v4 control block and offsets
 
-- A trait, not an enum: `PoolRegistry<'a, N, R = v0::PoolView>` is generic over a sealed
-  `DescMap`, which v0's and v1's `PoolView`s implement.
-  - Dispatch is static, so v0's `to_desc` and `to_slot` make the same checks as before, moved
-    into v0's impl, and the existing call sites keep their shape, `R` inferred from `register`.
-  - The trait's `Slot<T>` is the pool's own guard, so a registry takes and returns the guard
-    type its pool mints. An enum would have needed an enum guard.
-  - The cost: one registry holds one kind of pool, v0 or v1. A process mixing them keeps two
-    registries, and their ids are separate spaces.
-  - Sealed because `to_slot` mints owned guards on the implementor's word. `Sealed`, `Send`, and
-    `Sync` have no methods, so their impls are empty, and a comment at each says so.
-- v1's descriptor index numbers the buffers across the stacks, smallest stack first, so it is
-  the stack's first index plus the stack-local one.
-  - `to_desc` finds the stack by comparing the guard's head with each stack's head, one
-    comparison per stack, so `BufSlot` needed no header pointer after all.
-  - `to_slot` finds the stack whose index range holds the index, then checks `T` against that
-    stack's size, so a `T` too big for its buffer is `BadType` even when a larger stack exists.
-- Names, the user's call on 2026-09-24 at this rung's review: "resolve" said too little.
-  - `into_desc` and `resolve` became `to_desc` and `to_slot`, a pair named by what each returns.
-    `from_desc` was the first choice, and clippy's `wrong_self_convention` reserves `from_*` for
-    constructors, which take no `self`.
-  - `PoolResolver` became `PoolView` and `resolver()` became `view()`, a view that cannot pop,
-    replacing "non-allocating", since no pool allocates memory, and the trait is `DescMap`.
-  - The rename reaches v0, the demo, `tp_matrix`, the README, and the design note, since these
-    names predate the cycle. The `alloc` family's name is a Todo of its own.
-- The v1 and registry tests pass under Miri.
+`Segments` as offsets from the pool's buffer array, and segment 0's four-line control block
+written by `init`: the geometry line (magic, layout version, geometry, `seg_count`, `given`), the
+claims line, and the two lines of the segment table.
 
-##### perf: segmented pool in the alloc/free bench
+- `SegmentHeader` is a `repr(C)` struct of three cache-aligned parts: `info`, a line of seven
+  `AtomicU32`s (magic `"ZCR4"`, layout version, `slot_size`, `seg_capacity`, `seg_count`, the
+  segment's own number, and `given`), `claims`, one word on its own line, and `table`, 32 words
+  over two lines. Every segment carries the four lines, so `segment_size` grew by 192 bytes and
+  the slots of every segment start at one offset.
+  - `info` is written in every segment, so each names the ring it belongs to and its number.
+    `claims` and `table` are meaningful in segment 0 only, `NO_SEGMENT` (`u32::MAX`) filling the
+    table past `seg_count`.
+  - `init` stores the magic last, with Release, so a reader that sees it sees the block. The
+    claims word is zero until the next rung uses it.
+- `Segments` is `base`, the pool's buffer array in this process, `slots`, each segment's slot
+  array as a byte offset from `base`, and `header0`, segment 0's header as an offset. `seq` and
+  `body` add the offset to the base, and `given` is `header0`'s field rather than a stored
+  pointer. The table is `[usize; 32]`, the same 256 bytes v3's pointers were, so the per-message
+  copy the fast-path Todo names is unchanged between the two.
+- The offsets are from the buffer array, not the region base as the plan said: the pool's
+  `bufs` raw pointer carries the region's provenance, so adding an offset to it reaches any
+  buffer, where a pointer derived from the `&PoolHeader` reference could reach the header alone
+  under Stacked Borrows. `Pool::bufs_ptr()` is the `pub(crate)` accessor, and `BufSlot::idx()`
+  already existed for the table's entries.
+- `Ring::first_segment()` is the buffer index of segment 0, held in the `Ring` so the attach rung
+  can hand it out and take it in.
+- Tests: `control_block_names_the_ring` reads every field of every segment's `info`, the table
+  against the private offsets, and the claims word, and the layout test and the pool buffer size
+  follow the four lines. All 15 pass, under Miri too.
 
-The demo's `pool_alloc_free_1t` gains v1 rows: N=1 beside v0, and N=4 at its smallest and largest
-size, the cheapest and the costliest stack choice.
+##### feat: spsc v4 attach and role claims
 
-- The rows: `pool1_alloc_free_1t` at one stack, and at four stacks (one, two, four, and eight
-  lines) allocating a `T` for the 1st and for the 4th stack, the same alloc -> write -> free loop
-  as v0's, pinned to the base cpu.
-- Measured 2026-09-24 with the demo, 20 runs of each row on the base cpu, ns/msg means, the
-  stdevs 0.1 or less. The scratch builds were measured and reverted, and none is in the tree:
+`Ring::attach(&pool, first_segment)` and `Ring::first_segment()`, the pool's `pub(crate)` base and
+offset accessors, the shared loader, `producer()` and `consumer()` claiming through the claims
+word with release on drop, `split` removed, and the tests of the acceptance check's first two
+clauses.
 
-  | build | v0 | v1, 1 stack | v1, 4 stacks, 1st | v1, 4 stacks, 4th |
+- `attach` is `unsafe`, as the pools' is and for the same reason `to_slot` is: validation checks
+  every field of the control block, every table entry against the pool's count and against the
+  entries before it, and every segment's own header against the block, but it cannot tell a
+  ring's segment from a buffer freed and reused since, and the ring writes seq words into every
+  segment it is told it has. The contract is that `first_segment` came from a ring over this
+  pool whose segments are still its own.
+  - The failures are all `Err`: `BadSegment` (new) for an index outside the pool, one named
+    twice, a segment 0 that says it is another segment, or a segment whose header disagrees with
+    the block, and the existing `BadMagic`, `BadLayoutVersion`, the geometry errors, and
+    `TooSmall`.
+  - `Segments::load` builds the table for `init` and `attach` alike, from the buffer indices.
+- Roles: `producer()` and `consumer()` take `&self`, so a `Ring` outlives the roles it hands out
+  and either process may take one role and leave the other. The claim is one `fetch_or` with
+  AcqRel on the claims line, `RoleTaken` (new) when the bit was set, and a set bit needs no undo
+  since the or changed nothing. `Drop` on each endpoint clears its bit with Release.
+  - `split` is gone from v4, and the tests take the pair through an `endpoints` helper.
+- Stacked Borrows shaped the tests: the handle `init` returns holds pointers under the `&mut` it
+  took, and the first write through an attached handle, which holds the region's own raw
+  pointer, invalidates them, the hazard the pools' `attach` notes. So `attach_joins_the_ring`
+  drops the initializing handle once it has the first segment's index and attaches twice, one
+  handle per role, as two processes would, and the hostile-block test edits the block through
+  the attached handle. Real processes share no borrow stack, and the inter-application test
+  will hold one handle each.
+- `attach_joins_the_ring` runs the producer from one attached handle and the consumer from the
+  other over several segment switches, checks the claims are one word across handles, and
+  reverses the pairing on a second ring, since a joined endpoint starts at position 0 and a ring
+  already run is not rejoined. `roles_are_claimed_once` covers the claim, the refusal, and the
+  release. All 18 pass, under Miri too.
+
+##### perf: spsc v4 in the measurement tools
+
+v4 rows beside v3's in `tp-matrix`, `tp-stream`, and the demo, and the measurement of the
+acceptance check's second clause.
+
+- The tools: `Flavor::SpscV4` (`spsc-v4`) in `tp_matrix`, `run_cell` and `run_stream` dispatching
+  to it, and `spsc_pair!`'s segmented arm now takes the ring and its `segment_size` instead of
+  naming v3, with a `segmented_roles` arm for a ring whose endpoints are taken by name. The demo
+  gains the same arm, the `spsc4_ring_one_msg_1t` / `_2t` loops, and the depth-sweep flavor. The
+  banners and legends name `spsc-v4`, and the tp_matrix README counts 32 cells.
+  - The segment-stress table stays v3 and mpsc-v2: its subject is the switch cost, which v4 does
+    not change, and its macros bind the v3 pair by name.
+- Measured 2026-09-25 on the 3900X, `tp-stream` and `tp-matrix` at `-d 1 --depth 1,8,64,1024`,
+  two segments, each run twice, and the demo once. Prediction on record: v4 within run-to-run
+  noise of v3 where no switch happens. Stream ns per message, v3 / v4, run 1 then run 2:
+
+  | placement | d=1 | d=8 | d=64 | d=1024 |
   |---|---|---|---|---|
-  | v1 as committed | 9.74 | 9.12 | 11.00 | 11.03 |
-  | scratch: unchecked indexing | 9.79 | 9.12 | 11.00 | 11.06 |
-  | scratch: cold fallback | 9.85 | 10.01 | 9.96 | 10.08 |
+  | 11,10 CCX | 74.0 / 75.5, 67.5 / 68.3 | 15.9 / 18.1, 14.3 / 16.4 | 14.3 / 15.1, 13.0 / 13.6 | 13.7 / 15.4, 12.3 / 13.9 |
+  | 11,8 x-CCX | 228.7 / 231.5, 227.2 / 231.1 | 49.0 / 48.8, 48.8 / 48.2 | 23.7 / 22.1, 24.2 / 23.2 | 16.1 / 19.3, 16.1 / 16.8 |
+  | 11,23 SMT | 31.3 / 33.4, 31.3 / 33.2 | 17.2 / 20.0, 17.1 / 19.9 | 17.2 / 20.0, 17.1 / 19.9 | 17.2 / 20.0, 17.1 / 19.9 |
+  | unpinned | 62.0 / 64.4, 60.9 / 64.0 | 15.0 / 16.0, 14.8 / 15.4 | 12.7 / 12.9, 12.3 / 13.5 | 11.7 / 12.9, 11.9 / 13.0 |
 
-- What the builds and their disassembly showed:
-  - The 1st and 4th stacks time alike, and with `alloc` inlined four stacks cost what one does,
-    in a loop that picks the same stack every time, so the scan's branches always predict. A
-    workload mixing sizes may pay for mispredictions, and which stack each row hits is claimed
-    by its label, not checked, until the stack geometry rung asserts it.
-  - Bounds checks cost nothing: removing them in the pop changed no row.
-  - Inlining moves the numbers. At four stacks `alloc`, fallback loop included, is too big to
-    inline and stays a call, with the guard returned through memory, the 1.9 ns. A `#[cold]`
-    out-of-line fallback lets it inline.
-  - v0 is a handicapped baseline: `next_buf_idx` and `buf_ptr` are calls in the demo's loop,
-    since v0 is not generic and they are not `#[inline]`, so they cannot inline across the
-    crate boundary, while the generic v1 is compiled in the demo and inlines whole. That is
-    the 0.6 ns by which v1 at one stack beats v0.
-  - Compile-time stack sizes, a possible v2, would only speed a choice that timed as free
-    here, so the idea is dropped until a measurement says otherwise.
-- The demo's numbers are indicative only: one timed loop per row, no warmup or calibration, and
-  differences near a nanosecond that code layout alone moves, as the cold-fallback build's one
-  stack did. The comparison worth trusting is iiac-perf's, a Todo with the inlining fix.
+  The round trip, main's send and the worker's receive in ns, v3 / v4, run 1 then run 2, and
+  the cross-core fills per round trip from run 1:
 
-##### test: segmented pool allocation order
+  | placement | depth | m.send | w.recv | xfills/RT |
+  |---|---|---|---|---|
+  | 11,10 CCX | 1 | 16.7 / 15.9, 17.0 / 15.7 | 132.0 / 101.3, 132.0 / 101.2 | 9.001 / 8.004 |
+  | 11,10 CCX | 8 | 12.9 / 13.1, 12.5 / 13.3 | 110.7 / 107.6, 109.3 / 105.1 | 3.191 / 3.214 |
+  | 11,10 CCX | 64 | 13.1 / 13.1, 12.7 / 13.3 | 90.1 / 99.2, 89.0 / 98.9 | 2.168 / 2.150 |
+  | 11,10 CCX | 1024 | 13.1 / 13.1, 12.7 / 13.3 | 96.8 / 98.0, 96.9 / 98.2 | 2.006 / 2.005 |
+  | 11,8 x-CCX | 1 | 21.9 / 29.5, 65.2 / 31.9 | 481.7 / 351.3, 472.8 / 355.0 | 8.969 / 8.035 |
+  | 11,8 x-CCX | 64 | 13.1 / 13.4, 12.3 / 13.3 | 276.0 / 266.0, 282.2 / 264.7 | 2.134 / 2.217 |
+  | 11,8 x-CCX | 1024 | 13.2 / 13.8, 12.4 / 13.4 | 273.6 / 264.0, 276.2 / 260.8 | 2.021 / 2.022 |
+  | 11,23 SMT | 1 | 24.8 / 25.5, 24.8 / 25.1 | 114.3 / 116.7, 114.1 / 114.0 | 0.0004 / 0.0004 |
+  | 11,23 SMT | 64 | 17.6 / 18.4, 17.6 / 18.5 | 113.0 / 116.8, 112.6 / 116.5 | 0.0004 / 0.0004 |
+  | 11,23 SMT | 1024 | 18.0 / 18.5, 18.0 / 18.5 | 111.6 / 115.3, 111.6 / 115.4 | 0.0005 / 0.0006 |
 
-The tests cover the simple fallback paths, but not a small buffer free while a big one is asked
-for, or a middle and a big both free under a small request. Scenario tests pin those down, with
-the size boundaries, and a model-based test drives thousands of random allocs by size and frees
-in random order against a plain model of the rule, checking after every step which stack served
-each request, where `Exhausted` falls, and the miss counts. Inserted at the user's call on
-2026-09-24, at the bench rung, ahead of the stack geometry rung so the tests pin today's
-behavior before the API changes.
+  The demo, one segment at depth 64, ns per message: the single-thread loop v3 20.5 and v4
+  19.5, and the two-thread loop v3 / v4 at 21.6 / 23.5 on the CCX, 28.7 / 32.3 across it, 20.0 /
+  21.4 on the SMT pair, and 23.8 / 26.6 unpinned. The depth sweep's single-thread rows read v4
+  under v3 at every depth, 19.5 to 23.7 against 20.3 to 24.7.
+- Readings, the prediction failed and the failure is not the add:
+  - Streaming with no switch, v4 runs 0.6 to 2.8 ns per message slower than v3 on every pinned
+    placement in both runs, 5 to 16 percent, the most on the SMT pair (17.1 against 19.9 at every
+    depth, the two runs agreeing to 0.1), and at depth 1024 across the CCX. The sends of the
+    round trip read 0.2 to 0.9 ns slower, and its receives 4 ns slower on the SMT pair.
+  - The single-thread loop, the instruction path alone, reads v4 a nanosecond under v3, so the
+    added offset add is not the cost. The fills per message read the same or fewer for v4. What
+    two threads pay that one does not is not found here, and the code delta is 16 bytes in the
+    copied table, one add per slot access, and three more header lines ahead of the slots.
+  - v4 wins where the ring switches on every message: the round trip at depth 1 moves 8 lines
+    against v3's 9 and its receive runs a fifth to a quarter faster (101 against 132 ns on the
+    CCX, 351 against 477 across it). We think the claims line is a spacer: v3's `given` word
+    shares its 128-byte pair with slot 0, which the adjacent-line prefetcher drags along on every
+    give-back, and v4's shares it with the untouched claims line.
+  - The comparison to trust is the one the fast-path Todo makes, since both rings copy the table
+    per message and that copy is more than half of v3's gap to v2. The `### SPSC v3 fast path`
+    Todo measures v4 beside v3 when it runs, and the cause of the two-thread gap is looked for
+    there, with v4's stream rows as the mark.
 
-- Scenarios, over one pool of 64-, 128-, and 256-byte stacks, each starting from every stack
-  exhausted by one-byte requests, and written in bytes, what a user asks for:
-  - a 64-byte buffer free under a 256-byte and a 128-byte request: `Exhausted` for both, a miss
-    on each wanted stack, and the 64-byte buffer still serves a one-byte request
-  - only a 256-byte buffer free: a one-byte request falls back to it
-  - a 128-byte and a 256-byte buffer free, the 256-byte one freed last so a single LIFO list
-    would hand it out first: one-byte requests get the 128-byte, then the 256-byte, then
-    `Exhausted`, so the order can only be the stacks'
-  - every buffer handed out is checked for what a user may rely on: at least the size asked
-    for, and starting on a cache line
-- Size boundaries: zero and every exact fit land in their own stack, and one byte more moves to
-  the next.
-- Seeds: each randomized test runs three fixed seeds and one fresh random seed per run, and
-  `ZC_POOL_SEED=<seed>` runs that one seed alone. The seed picks everything random, the stack
-  count and geometry included.
-  - A guard in each thread prints, on a failure, the test, the seed, the thread's role, and the
-    step it reached, with the command that replays it.
-- The model test, `allocation_matches_the_model`: 20,000 steps per seed, over a fixed four-stack
-  geometry and over one the seed picks (1, 2, 3, 4, or 8 stacks, sizes one to four lines apart,
-  one to four buffers each).
-  - Allocs by size, each stack's size range about equally likely, and frees of a random held
-    buffer.
-  - After every step the serving stack, `Exhausted`, and `misses()` must match a plain model of
-    the rule, and each held buffer's step tag, in its first and last word, must survive to its
-    free.
-  - It asserts its own coverage: fallbacks and `Exhausted` each above 2% of the steps, summed
-    over the seeds.
-  - A seed replays exactly: a failure recurs at the same step.
-- The threaded test, `threaded_random_alloc_and_free`: per seed, 20,000 messages over two
-  threads (an allocator and a freer) and three (an allocator and two freers), each over a
-  geometry the seed picks.
-  - The allocator takes random sizes and hands each buffer to a random freer, and each freer
-    frees what it holds in random order, so the frees race the pops on every stack's head.
-  - The allocator checks each buffer against its request (at least the size, on a cache line,
-    never from a smaller stack) and keeps its own miss count, which `misses()` must match
-    exactly, since only the allocator counts misses.
-  - The freers check each buffer's tags. At the end every buffer is back, and each stack serves
-    exactly its count.
-  - A seed replays the plan, the sizes and the routing, but not the thread interleaving, so a
-    replayed failure recurs, though not always at the same step: a deliberate break failed at
-    steps 18, 20, 24, and 2390 under one seed. Replaying an interleaving would take a tool like
-    `loom`.
-- The tests were checked against two deliberate breaks of the rule, made and reverted before
-  the random-geometry and threaded tests joined: a fallback to any stack, smaller included,
-  failed 2 tests, and the largest stack tried first failed 6. The first break, repeated after,
-  also failed the threaded test.
-- The v1 tests pass under Miri, the model test at 300 steps and the threaded test at 100
-  messages per run.
+##### docs: spsc v4 in the design note and guide
 
-##### refactor: segmented pool stack geometry
+A "SPSC v4: attachable segments" section in the design note with the comparison, v3's Limits
+bullet pointing at it, the user guide's attach section, and the README's ring list.
 
-`init` and `region_size` take each stack as a bare `(buf_size, buf_count)` tuple, which says
-nothing at the call site. A `StackGeometry { buf_size, buf_count }` with a `const fn new` names
-the fields, the handle's parallel snapshot arrays become one `[StackGeometry; N]`, and `init`'s
-docs give each field's meaning and units. Inserted at the user's call on 2026-09-24, at the bench
-rung, so v1 lands with the named type and the design note describes it.
+- The design note section: what v4 is for, the offsets and why they are from the buffer array,
+  the four-line control block and why the table holds indices, attach and what it validates and
+  what it cannot, roles by name and the claims word, join not resume, the Stacked Borrows finding
+  from the tests, the prediction, both runs' tables, the readings, and a verdict that keeps v3 as
+  the default and sends the two-thread gap to the fast-path Todo.
+- The user guide: SPSC v4 named in "What the rings are", the `attach` limit narrowed to v3 and
+  MPSC v2, a "Joining from another process" section with the two processes' code and the rules
+  (no `split`, `first_segment` handed over by the caller, `attach` unsafe for what it cannot
+  check, join before the role has run), and the errors table's `attach` and role rows.
+- The v4 module docs say what v4 adds to v3 instead of that it is a copy, the crate docs and the
+  README name `spsc::v4` by path, and `notes/README.md`'s design-doc entry lists it.
 
-- `StackGeometry { buf_size, buf_count }`, public fields and a `const fn new`, is how a caller
-  describes a stack. `init` and `region_size` take `[StackGeometry; N]`.
-- The pool orders its stacks, the user's call at this rung's planning: `init` takes them in any
-  order and sorts them by size, so the layout and the search are the pool's to change, a sorted
-  table or something else later.
-  - Two stacks of one size are refused as `BadBufSize`, a duplicate being likelier a mistake
-    than a request. `attach` still requires the region's stacks in the pool's order, since
-    `init` wrote them so.
-- No public stack index: a caller's position means nothing once the pool orders the stacks.
-  - `buf_size(stack)`, `buf_count(stack)`, and `misses()` gave way to `stacks()`, the geometry
-    in the pool's order, and `stats()`, a `StackStats { geometry, misses }` per stack, each
-    count labelled by the stack it belongs to.
-  - The handle's and the view's parallel size and count arrays are one `[StackGeometry; N]`.
-- `BufSlot::buf_size()` reports the size given, at least the size asked for, for a typed guard
-  as for a byte guard, whose `len()` already said so.
-- The demo's v1 rows check before the clock starts that a `T` is served by the stack the label
-  claims, which the bench rung could only assume.
-- Tests: new ones for `init` ordering the stacks itself, `stats()` found by size, and
-  `buf_size()` on a typed guard. The model and threaded tests hand `init` a shuffled geometry, so
-  every seed exercises the sort, and white-box tests read the handle's `misses` in the pool's
-  order. All pass, under Miri too.
+##### perf: spsc v4 in the segment stress table
 
-##### feat: segmented pool byte slots from descriptors
+The demo's segment stress table, the switch cost's home, runs spsc-v3 and mpsc-v2 alone, so v4's
+switch cost is unmeasured. v4 rows beside v3's in every line of it. Inserted at the user's call
+on 2026-09-25, after the closing had pushed and before Land, as a rung ahead of the closing.
 
-A receiver of mixed message types learns a buffer's type from a tag inside it, but `to_slot::<T>`
-needs `T` up front, and a descriptor may be taken back only once. `to_slot_bytes` takes it back
-as bytes, the counterpart of `alloc_bytes`, and `BufSlot<[u8]>::into_typed::<T>` checks the fit
-and turns the guard typed, handing it back on a misfit, so a receiver reads the tag and matches.
-Inserted at the user's call on 2026-09-24, at the stack geometry rung.
+- The stress macros spell their pair `segmented segments` by name, so `spsc4_pair!` is a one-arm
+  macro that forwards that spelling to `spsc_pair!`'s `segmented_roles` arm, and the three
+  macros bind `spsc4_burst_1t`, `spsc4_lagging_2t`, and `spsc4_stream_2t` through it. The table
+  gains a v4 row after each v3 row: the burst, the lagging consumer at every placement, and the
+  switch-cost pairs single-threaded and streaming across the CCX. The banner and the module docs
+  name it.
+- Measured 2026-09-25 on the 3900X, one demo run, so indicative as the demo's numbers are:
 
-- `DescMap` gains `to_slot_bytes`, and `PoolRegistry::to_slot_bytes(desc)` calls it: the index
-  validated, no type to check, since every buffer is valid as bytes. A descriptor is taken back
-  once, by `to_slot` or `to_slot_bytes`, never both.
-- `into_typed` lives on both pools' byte guards and checks size and alignment with the same
-  `type_fits` as `to_slot`, a misfit an `Err` that hands the byte guard back, since the type
-  follows from bytes that arrived.
-- v1's view shares one index lookup, `locate`, and one guard minting, `mint`, between the typed
-  and the byte path. v0's `slot_from_idx` lost a trait bound it never used, so it mints a byte
-  guard too, and v0's alloc and free paths are untouched.
-- Tests: three message types (16, 112, and 400 bytes) from one three-stack pool taken back as
-  bytes and dispatched by tag, a misfit handed back and reused, hostile descriptors refused,
-  and v0's byte round trip. All pass, under Miri too.
+  | line | placement | shape | ns/msg | switches | sw/msg | switch ns |
+  |---|---|---|---|---|---|---|
+  | spsc3 burst 1t | core 11 | 4x64 | 22.2 | 11,719 | 0.012 | - |
+  | spsc4 burst 1t | core 11 | 4x64 | 22.4 | 11,719 | 0.012 | - |
+  | spsc3 burst 1t | core 11 | 1x32 | 22.3 | 0 | 0.000 | - |
+  | spsc3 burst 1t | core 11 | 32x1 | 29.2 | 968,750 | 0.969 | 7.1 |
+  | spsc4 burst 1t | core 11 | 1x32 | 22.8 | 0 | 0.000 | - |
+  | spsc4 burst 1t | core 11 | 32x1 | 34.1 | 968,750 | 0.969 | 11.7 |
+  | spsc3 stream 2t | 11,8 x-CCX | 1x32 | 33.5 | 0 | 0.000 | - |
+  | spsc3 stream 2t | 11,8 x-CCX | 32x1 | 157.1 | 999,989 | 1.000 | 123.6 |
+  | spsc4 stream 2t | 11,8 x-CCX | 1x32 | 57.9 | 0 | 0.000 | - |
+  | spsc4 stream 2t | 11,8 x-CCX | 32x1 | 177.8 | 999,983 | 1.000 | 119.9 |
 
-##### test: segmented pool messages over every ring
+  The lagging rows use every segment on both rings at every placement with the same switch
+  counts, 11,718 to 11,732, so v4 switches as v3 does.
+- Readings: the switch itself costs v4 more single-threaded, 11.7 against 7.1 ns per switch, a
+  4.6 ns gap where the two-thread stream at depth 1 had none in the tools rung's tables (the
+  round trip there favored v4). Streaming across the CCX the switch costs the same, 120 against
+  124, and the one-segment stream read 57.9 against 33.5 in this run, a gap the tools' two runs
+  at depth 64 (22.1 and 23.2 against 23.7 and 24.2) do not show, so it is one run's number until
+  the fast-path Todo repeats it. Nothing here changes the cycle's verdict.
 
-Every ring carries descriptors, plain data, so each should carry messages of mixed types from a
-multi-stack pool unchanged. One test sends them through all seven rings, spsc v0 to v3 and mpsc
-v0 to v2, and dispatches them by type-tag on receipt. Inserted with the byte slots rung.
+##### feat: attachable SPSC v4 closing
 
-- `tests/pool_v1_over_rings.rs`, an integration test, so it uses the public API alone, as a
-  user would: one test per ring, each ring as it ships.
-- Three message types (24, 112, and 400 bytes) from pools of 64-, 128-, and 512-byte stacks,
-  two buffers each, so producers wait on empty stacks and every buffer recycles many times.
-- Every message starts with a type-tag, a number naming its kind, decoded into an `enum Kind` by
-  `TryFrom<u64>`, so the receive `match` is exhaustive and an unknown type-tag fails at the
-  decode. The consumer takes each descriptor back with `to_slot_bytes`, decodes the type-tag,
-  and turns the bytes into the message's type with `into_typed`, checking each message's
-  payload and each producer's order.
-- Vocabulary, the user's call at this rung's review: "type-tag" in prose and `type_tag` in
-  code, one term in both. It keeps clear of Rust's `TypeId`, a per-build value no other process
-  can share, and `Kind` names the decoded enum, as `std::io::ErrorKind` does. The design note
-  defines it, and the byte slots rung's unit test follows there.
-- MPSC rings run two producers, each with its own pool, a pool having one allocator, and both
-  pools in one registry, so one consumer takes back descriptors from two pools.
-- A small trait pair, `DescTx` and `DescRx`, implemented per ring version by a macro, lets one
-  producer and one consumer function drive all seven rings.
-- The segmented rings, spsc v3 and mpsc v2, still take their segments from a v0 pool beside the
-  v1 message pools, the spsc4 and mpsc3 Todo's to change.
-- All seven pass, under Miri too.
+Closing out the cycle: the acceptance check run and its result recorded above, the block moved to
+`## Closed`, and the continuation notes written for the user's return, since Land is outside the
+waiver.
 
-##### docs: segmented pool in the design note
-
-The design note had no record of the multi-stack pool, and "type-tag" was a term the ring test
-used without a definition. A `### Multi-stack pool (0.18.0)` section records the pool as built,
-and a `#### Type-tag` entry beside `#### Descriptors` defines the term.
-
-- The section: the layout, the geometry and its ordering by `init`, the alloc family's pick and
-  fallback, the miss counts and `stats()`, the free to its own stack, the registry's `DescMap`
-  and the cross-stack `buf_idx`, the byte-first receive path (`to_slot_bytes`, `into_typed`),
-  the bench table with its readings, the tests, and what is out of scope. The messaging layer's
-  intro names it beside v0.
-- Type-tag: a message's first word naming its type, "type-tag" in prose and `type_tag` in code,
-  decoded to a `Kind` by `TryFrom<u64>`. The entry records the 2026-09-25 survey's finding: Rust
-  code pairs "tag" for the number with `Kind` for the enum (rustc, serde, h2, `enum-kinds`), and
-  never compounds them, so "kind-tag" was not taken. The 0.7.0 design bullet and the open
-  question link to the entry, and the `## Ideas` `Message` trait's `MSG_ID` became `TYPE_TAG`.
-- The unit test `mixed_messages_dispatch_by_tag` became `mixed_messages_dispatch_by_type_tag`,
-  its three consts a `Kind` enum decoded by `TryFrom<u64>` and its `tag` fields `type_tag`, the
-  same shape as the ring test, so the two specimens the entry names agree.
-- The user guide is unchanged: it covers the rings of segments, which take a v0 pool, and the
-  crate docs in `src/lib.rs` already name the pool family.
-
-##### feat: segmented pool v1 closing
-
-Closing out the cycle: the acceptance check run and its result recorded above, the solution
-statement replaced with what was done, the block moved to `## Closed`, and the continuation
-notes reset.
-
-- Close-out shape: trapezoid, the default, since `main` should read the multi-stack pool as one
-  change while every rung stays reachable, and the user's choice on 2026-09-25 when asked to do
-  the closing.
-- Nothing in the block needs a `notes/` home beyond what the docs rung wrote: the design note's
-  `### Multi-stack pool (0.18.0)` and `#### Type-tag` hold the design findings, and the bench
-  readings are in both.
+- Close-out shape: trapezoid, the default, recorded here for Land. The user was away for the
+  cycle's rungs and may choose otherwise at Land, which reshapes nothing until then.
+- What outlives the cycle is in the design note's SPSC v4 section, written by the docs rung: the
+  design, the Stacked Borrows finding, the measurement, and the verdict. Two Todo entries gained
+  a line: `### Endpoint claims word`, which v4 has and the single-region rings still want, and
+  `### SPSC v3 fast path`, which now measures v4 beside v3 and owns the two-thread gap.
+- The artifact is `zc-ring-x1-dev` with `zc-ring-x1-demo-dev` until Land restores the names,
+  `tp_matrix`'s dependency with them.
 - No agent-file changed in this cycle, so `notes/agent-files-size.md` gains no row.
-- The `notes/README.md` design-doc entry names the multi-stack pool and the type-tag.
-- The existing "guard" wording stays until `### Pool vocabulary: alloc and guard` runs, the
-  user's call on 2026-09-25 after a survey of the uses: about 70 name the pool's `BufSlot`, about
-  100 the rings' `WriteSlot` / `ReadSlot`, and the rest are unwind guards and prior art. No new
-  text uses the word meanwhile.
+- Amended after its push, at the user's call on 2026-09-25: the rung `perf: spsc v4 in the
+  segment stress table` was inserted ahead of this closing while the bookmark was a draft, so
+  this commit was rebased onto it and its record updated, a content amend that keeps the
+  description and the trailer.
 
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[1]: #feat-segmented-pool-v1-opening
-[2]: #feat-segmented-pool-region-and-alloc
-[3]: #feat-segmented-pool-in-the-registry
-[4]: #perf-segmented-pool-in-the-allocfree-bench
-[5]: #docs-segmented-pool-in-the-design-note
-[6]: #feat-segmented-pool-v1-closing
-[7]: #refactor-segmented-pool-stack-geometry
-[8]: #test-segmented-pool-allocation-order
-[9]: #feat-segmented-pool-byte-slots-from-descriptors
-[10]: #test-segmented-pool-messages-over-every-ring
+[1]: #feat-attachable-spsc-v4-opening
+[2]: #feat-spsc-v4-as-a-copy-of-v3
+[3]: #feat-spsc-v4-control-block-and-offsets
+[4]: #feat-spsc-v4-attach-and-role-claims
+[5]: #perf-spsc-v4-in-the-measurement-tools
+[6]: #docs-spsc-v4-in-the-design-note-and-guide
+[7]: #feat-attachable-spsc-v4-closing
+[8]: #perf-spsc-v4-in-the-segment-stress-table

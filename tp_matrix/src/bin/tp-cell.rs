@@ -157,7 +157,7 @@ fn main() {
             ("RTs", "round trips completed in the duration"),
             (
                 "segment switches",
-                "spsc-v3 and mpsc-v2 only: switches across both rings, and per round trip",
+                "spsc-v3, spsc-v4, and mpsc-v2 only: switches across both rings, and per round trip",
             ),
         ],
     );

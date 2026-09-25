@@ -344,6 +344,16 @@ impl<'a> Pool<'a> {
         }
     }
 
+    /// The buffer array's base in this process, for a ring of
+    /// segments that keeps its segments as offsets from it.
+    ///
+    /// - A raw pointer with the region's provenance, so an offset
+    ///   added to it reaches any buffer, which a reference to the
+    ///   header could not.
+    pub(crate) fn bufs_ptr(&self) -> *mut u8 {
+        self.bufs
+    }
+
     /// The next-free-buffer index cell of buffer `idx`, its
     /// first word, the intrusive free-stack link, meaningful
     /// only while the buffer is free.

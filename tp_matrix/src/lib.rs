@@ -112,6 +112,10 @@ pub enum Flavor {
     /// The SPSC v3 ring of segments over a pool (same surface,
     /// the depth each segment's, the segment count a knob).
     SpscV3,
+    /// The SPSC v4 ring, v3's segments with a control block in
+    /// the region and offsets for its table, so it can be
+    /// attached (same surface, roles taken by name).
+    SpscV4,
     /// The MPSC v0 ring at 1p/1c (`send_with` producers).
     MpscV0,
     /// The MPSC v1 equality-seq ring at 1p/1c (same surface,
@@ -124,11 +128,12 @@ pub enum Flavor {
 }
 
 /// Every flavor, in report order.
-pub const FLAVORS: [Flavor; 7] = [
+pub const FLAVORS: [Flavor; 8] = [
     Flavor::SpscV0,
     Flavor::SpscV1,
     Flavor::SpscV2,
     Flavor::SpscV3,
+    Flavor::SpscV4,
     Flavor::MpscV0,
     Flavor::MpscV1,
     Flavor::MpscV2,
@@ -142,6 +147,7 @@ impl Flavor {
             Flavor::SpscV1 => "spsc-v1",
             Flavor::SpscV2 => "spsc-v2",
             Flavor::SpscV3 => "spsc-v3",
+            Flavor::SpscV4 => "spsc-v4",
             Flavor::MpscV0 => "mpsc-v0",
             Flavor::MpscV1 => "mpsc-v1",
             Flavor::MpscV2 => "mpsc-v2",
@@ -329,6 +335,7 @@ pub fn run_cell(
         Flavor::SpscV1 => run_spsc_v1(dur, worker, depth, segments),
         Flavor::SpscV2 => run_spsc_v2(dur, worker, depth, segments),
         Flavor::SpscV3 => run_spsc_v3(dur, worker, depth, segments),
+        Flavor::SpscV4 => run_spsc_v4(dur, worker, depth, segments),
         Flavor::MpscV0 => run_mpsc_v0(dur, worker, depth, segments),
         Flavor::MpscV1 => run_mpsc_v1(dur, worker, depth, segments),
         Flavor::MpscV2 => run_mpsc_v2(dur, worker, depth, segments),
@@ -377,6 +384,12 @@ impl SegmentSwitches for zc_ring_x1::spsc::v3::Producer<'_> {
     }
 }
 
+impl SegmentSwitches for zc_ring_x1::spsc::v4::Producer<'_> {
+    fn segment_switches(&self) -> Option<u64> {
+        Some(self.switches())
+    }
+}
+
 impl SegmentSwitches for zc_ring_x1::mpsc::v0::MpscProducer<'_> {
     fn segment_switches(&self) -> Option<u64> {
         None
@@ -401,8 +414,12 @@ impl SegmentSwitches for zc_ring_x1::mpsc::v2::MpscProducer<'_> {
 ///
 /// - `single $ring, $size`: a ring over one region sized by
 ///   `$size(slot_size, depth)`, `$segments` unused.
-/// - `segmented`: a v3 ring of `$segments` segments, each
-///   `$depth` slots, over a pool holding exactly those segments.
+/// - `segmented $ring, $size`: a ring of `$segments` segments,
+///   each `$depth` slots, over a pool holding exactly those
+///   segments, `$size` its `segment_size`, the endpoints by
+///   `split` (v3).
+/// - `segmented_roles $ring, $size`: the same over a ring whose
+///   endpoints are taken by name, `producer` and `consumer` (v4).
 macro_rules! spsc_pair {
     ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr,
      single $ring:path, $size:path) => {
@@ -413,17 +430,32 @@ macro_rules! spsc_pair {
             .unwrap() // OK: the region is sized by the ring's own size function and line-aligned
             .split();
     };
-    ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr, segmented) => {
+    ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr,
+     segmented $ring:path, $size:path) => {
         let slot = CACHE_LINE_SIZE as u32;
-        let buf = zc_ring_x1::spsc::v3::segment_size(slot, $depth);
+        let buf = $size(slot, $depth);
         let mut $store = LineBuf::new(
             size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * $segments as u64,
         );
         let mut $pool = zc_ring_x1::Pool::init($store.as_mut_bytes(), buf as u32, $segments)
             .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
-        let (mut $tx, mut $rx) = zc_ring_x1::spsc::v3::Ring::init(&mut $pool, slot, $depth, $segments)
+        let (mut $tx, mut $rx) = <$ring>::init(&mut $pool, slot, $depth, $segments)
             .unwrap() // OK: the pool holds exactly the segments, sized by segment_size
             .split();
+    };
+    ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr,
+     segmented_roles $ring:path, $size:path) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let buf = $size(slot, $depth);
+        let mut $store = LineBuf::new(
+            size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * $segments as u64,
+        );
+        let mut $pool = zc_ring_x1::Pool::init($store.as_mut_bytes(), buf as u32, $segments)
+            .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
+        let ring = <$ring>::init(&mut $pool, slot, $depth, $segments)
+            .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
+        let mut $tx = ring.producer().unwrap(); // OK: a fresh ring, no role held
+        let mut $rx = ring.consumer().unwrap(); // OK: a fresh ring, no role held
     };
 }
 
@@ -562,7 +594,18 @@ spsc_cell!(
     single zc_ring_x1::spsc::v2::Ring,
     zc_ring_x1::spsc::v2::region_size
 );
-spsc_cell!(run_spsc_v3, Flavor::SpscV3, segmented);
+spsc_cell!(
+    run_spsc_v3,
+    Flavor::SpscV3,
+    segmented zc_ring_x1::spsc::v3::Ring,
+    zc_ring_x1::spsc::v3::segment_size
+);
+spsc_cell!(
+    run_spsc_v4,
+    Flavor::SpscV4,
+    segmented_roles zc_ring_x1::spsc::v4::Ring,
+    zc_ring_x1::spsc::v4::segment_size
+);
 
 /// Bind one MPSC ring's `$tx` and `$rx` endpoints, one-line
 /// slots at `$depth`, the storage held in `$store` (and, for a
@@ -771,6 +814,7 @@ pub fn run_stream(
         Flavor::SpscV1 => stream_spsc_v1(dur, pin, depth, segments),
         Flavor::SpscV2 => stream_spsc_v2(dur, pin, depth, segments),
         Flavor::SpscV3 => stream_spsc_v3(dur, pin, depth, segments),
+        Flavor::SpscV4 => stream_spsc_v4(dur, pin, depth, segments),
         Flavor::MpscV0 => stream_mpsc_v0(dur, pin, depth, segments),
         Flavor::MpscV1 => stream_mpsc_v1(dur, pin, depth, segments),
         Flavor::MpscV2 => stream_mpsc_v2(dur, pin, depth, segments),
@@ -874,7 +918,16 @@ spsc_stream!(
     single zc_ring_x1::spsc::v2::Ring,
     zc_ring_x1::spsc::v2::region_size
 );
-spsc_stream!(stream_spsc_v3, segmented);
+spsc_stream!(
+    stream_spsc_v3,
+    segmented zc_ring_x1::spsc::v3::Ring,
+    zc_ring_x1::spsc::v3::segment_size
+);
+spsc_stream!(
+    stream_spsc_v4,
+    segmented_roles zc_ring_x1::spsc::v4::Ring,
+    zc_ring_x1::spsc::v4::segment_size
+);
 
 /// Define an MPSC streaming cell body over the ring `$pair`
 /// builds (see `mpsc_pair`): one ring at 1p/1c, the producer
