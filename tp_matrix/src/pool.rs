@@ -248,7 +248,7 @@ fn cell_mpsc_v1(
 /// The ring rows' loop over a pool of `pool_size` buffers: the
 /// producer allocs, fills, converts the guard to a descriptor,
 /// and hands it to `send`, and the consumer takes one from
-/// `recv`, resolves it, asserts the sequence, and frees, until
+/// `recv`, takes it back, asserts the sequence, and frees, until
 /// the `STOP` message. Returns the messages moved and the
 /// seconds.
 fn run_ring_cell(
@@ -267,7 +267,7 @@ fn run_ring_cell(
     .expect("region sized for the pool and line-aligned"); // OK: the region is the pool's own size and LineBuf is line-aligned
     let mut registry = PoolRegistry::<1>::new();
     let pool_id = registry
-        .register(pool.resolver())
+        .register(pool.view())
         .expect("an empty registry has room"); // OK: capacity 1, nothing registered yet
     let registry = &registry;
 
@@ -283,7 +283,7 @@ fn run_ring_cell(
                     .expect("spin never gives up"); // OK: policy::spin never gives up
                 buf.seq = seq;
                 let desc = registry
-                    .into_desc(pool_id, buf)
+                    .to_desc(pool_id, buf)
                     .map_err(|(_, e)| e)
                     .expect("the guard is from the registered pool"); // OK: pool_id came from this registry's register
                 send(desc);
@@ -308,11 +308,11 @@ fn run_ring_cell(
             loop {
                 let desc = recv();
                 // SAFETY: the descriptor was minted by the
-                // producer's into_desc and read after the ring's
-                // commit -> reserve handoff, and each is resolved
+                // producer's to_desc and read after the ring's
+                // commit -> reserve handoff, and each is taken back
                 // exactly once.
-                let msg = unsafe { registry.resolve::<Msg>(desc) }
-                    .expect("descriptors come from the producer's into_desc"); // OK: only the producer mints them, on this pool
+                let msg = unsafe { registry.to_slot::<Msg>(desc) }
+                    .expect("descriptors come from the producer's to_desc"); // OK: only the producer mints them, on this pool
                 let seq = msg.seq;
                 msg.free();
                 if seq == STOP {
@@ -343,7 +343,7 @@ fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, dur: Duration) ->
     .expect("region sized for the pool and line-aligned"); // OK: the region is the pool's own size and LineBuf is line-aligned
     let mut registry = PoolRegistry::<1>::new();
     let pool_id = registry
-        .register(pool.resolver())
+        .register(pool.view())
         .expect("an empty registry has room"); // OK: capacity 1, nothing registered yet
     let registry = &registry;
 
@@ -356,12 +356,12 @@ fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, dur: Duration) ->
             .expect("a fresh pool has a free buffer"); // OK: nothing allocated yet and pool_size is at least 1
         let addr = ptr::from_ref::<RawBuf>(&probe) as usize;
         let desc = registry
-            .into_desc(pool_id, probe)
+            .to_desc(pool_id, probe)
             .map_err(|(_, e)| e)
             .expect("the guard is from the registered pool"); // OK: pool_id came from this registry's register
         // SAFETY: the descriptor was minted just above and is
-        // resolved once, on this thread.
-        unsafe { registry.resolve::<RawBuf>(desc) }
+        // taken back once, on this thread.
+        unsafe { registry.to_slot::<RawBuf>(desc) }
             .expect("the descriptor was minted just above") // OK: same pool, index in range
             .free();
         addr - desc.buf_idx as usize * CACHE_LINE_SIZE
@@ -395,7 +395,7 @@ fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, dur: Duration) ->
                 // Keep the buffer allocated without a guard: the
                 // consumer frees it by index.
                 registry
-                    .into_desc(pool_id, buf)
+                    .to_desc(pool_id, buf)
                     .map_err(|(_, e)| e)
                     .expect("the guard is from the registered pool"); // OK: pool_id came from this registry's register
                 // SAFETY: the buffer is line-aligned and at least
@@ -453,9 +453,9 @@ fn cell_cordyceps(pin: Option<(usize, usize)>, pool_size: u32, dur: Duration) ->
                     buf_idx: idx,
                 };
                 // SAFETY: the index is the buffer the producer
-                // allocated for this node, resolved once, after
+                // allocated for this node, taken back once, after
                 // the dequeue's acquire.
-                unsafe { registry.resolve::<RawBuf>(desc) }
+                unsafe { registry.to_slot::<RawBuf>(desc) }
                     .expect("the index is a buffer of this pool") // OK: computed from a pool buffer's address
                     .free();
                 if seq == STOP {

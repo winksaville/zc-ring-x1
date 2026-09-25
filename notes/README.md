@@ -15,9 +15,9 @@ Project design docs:
   SPSC v1, the in-slot seq SPSC v2, the ring of segments
   SPSC v3, the equality-seq MPSC v1, and the ring of
   segments MPSC v2 with their measurements at four depths,
-  and the
-  pool-message sweep against cordyceps's intrusive MPSC
-  (terminology, requirements, layout, API, validation), kept
+  the pool-message sweep against cordyceps's intrusive MPSC, and
+  the multi-stack pool with the type-tag a receiver dispatches
+  on (terminology, requirements, layout, API, validation), kept
   in sync with `src/`.
 - [user-guide.md](user-guide.md): how to use SPSC v3 and MPSC
   v2 from a pool to two threads, sizing, init and split,

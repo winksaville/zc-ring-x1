@@ -861,7 +861,7 @@ its own index.
     read, so the consumer moves and frees the old segment.
   - The endpoints hold the pool halves their roles need: the
     producer the `Pool`, its one allocator, and the consumer a
-    `PoolResolver` to free. The pool's existing contract.
+    `PoolView` to free. The pool's existing contract.
   - One link per segment, amortised over `M` messages, and
     `M = 1` is the per-message linked list, measured by the
     size sweep rather than imagined.
@@ -1763,11 +1763,15 @@ both, recorded 2026-09-17 and not yet a Todo.
 
 ## Messaging layer: pools and descriptor queues
 
-Design for the layer above the ring. The pool half is
-as-built as of the 0.6.0 cycle (`src/pool/v0/mod.rs`: layout,
-init/attach, alloc/free). Descriptor queues and provenance
-remain design. The sections above are the as-built record of
-the ring itself.
+The messaging layer is the layer above the ring: pools that
+own message memory, and queues that carry descriptors. This
+section is its design. The sections above it are the as-built
+record of the ring itself, and the pools are built as well:
+the single-stack pool since the 0.6.0 cycle
+(`src/pool/v0/mod.rs`: layout, init/attach, alloc/free), and
+the multi-stack pool since 0.18.0 (`src/pool/v1/mod.rs`,
+[Multi-stack pool](#multi-stack-pool-0180)). Descriptor queues
+and provenance are designed here and not yet built.
 
 The ring's reserve (`reserve_slot_with`) fuses three acts that
 a messaging system needs separated: it allocates message
@@ -1909,6 +1913,28 @@ id and learns geometry from the pool's own header (index
 over byte offset settled in
 [Descriptor and registry design](#descriptor-and-registry-design-070)).
 
+#### Type-tag
+
+A message's first word, a number saying which type of message the buffer holds, written by the
+sender and read by the receiver before it knows the type. Payload-level, so the descriptor stays
+type-agnostic, and the pool never reads it. Fixed on 2026-09-25, at the review of `test:
+segmented pool messages over every ring`.
+
+- One term: "type-tag" in prose and `type_tag` in code, the field a message starts with. It keeps
+  clear of Rust's `TypeId`, a per-build value no other process can share.
+- `Kind`: the decoded type-tag, an enum with `TryFrom<u64>`, so a receive `match` is exhaustive
+  and an unknown type-tag fails at the decode and nowhere later. The name follows
+  `std::io::ErrorKind`, and the pair follows the wider Rust habit, surveyed the same day: the
+  number on the wire is a tag (rustc's encoded discriminant, serde's `tag`) and the enum it
+  decodes to is a `Kind` (rustc's `*Kind` types, h2's frame `Head { kind: Kind }`, the
+  `enum-kinds` crate), never a compound of the two.
+- The receive path: take the buffer back as bytes (`to_slot_bytes`), read the type-tag, decode it
+  to a `Kind`, and turn the bytes into the type it names (`into_typed::<T>`), which checks the fit
+  and hands the bytes back on a misfit. `tests/pool_v1_over_rings.rs` and
+  `mixed_messages_dispatch_by_type_tag` in `src/pool/v1/mod.rs` are the two specimens.
+- Not a header: the type-tag is the message's own first field, by the sender's convention, and
+  whether a pool-level header ever joins it is [Message header shape](#message-header-shape).
+
 #### Pool self-description
 
 Each pool region starts with a header (magic, layout
@@ -1945,29 +1971,29 @@ coordination) remains in [Open questions](#open-questions).
   also need a buffer-boundary divisibility check.
 - `PoolRegistry`: per-process, fixed capacity
   (const-generic array, no_std, zero allocation).
-  `register(resolver) -> PoolId` assigns the next slot
+  `register(view) -> PoolId` assigns the next slot
   index. Phase 1 has no unregister, so ids never dangle.
   Sequential assignment produces cross-process id agreement
   only when one process assigns all ids, the in-process
   slice's case. Cross-process will need registration under
   an externally agreed id (e.g. `register_at(id, ...)`),
   pending [Pool-id allocation](#pool-id-allocation).
-- `Pool::resolver() -> PoolResolver`: a non-allocating
-  view (header ref, buffer base, geometry) derived from the
+- `Pool::view() -> PoolView`: a view that cannot pop
+  (header ref, buffer base, geometry) derived from the
   existing handle, so no second region borrow and no
   Stacked Borrows retag hazard (`init` takes the region
-  pointer exactly once). Send + Sync: resolving mints
+  pointer exactly once). Send + Sync: `to_slot` mints
   guards from validated indices, and the only
   shared-memory mutation is the guards' free CAS, already
   any-thread. Cross-process later, the same view derives
   from an `attach`ed handle.
-- `into_desc(slot, pool_id)`: safe and O(1). It checks the
+- `to_desc(slot, pool_id)`: safe and O(1). It checks the
   guard's header address against the id's registry entry
   (catches id/pool mispairing), consumes the guard, and
   ownership travels on in the descriptor (the usage
   model's "in-flight" state). The error side hands the
   guard back, so a miss cannot leak the buffer.
-- `unsafe resolve::<T>(desc) -> Result<BufSlot<T>, _>`:
+- `unsafe to_slot::<T>(desc) -> Result<BufSlot<T>, _>`:
   every failure is an `Err`, never a panic: unknown pool
   id, index out of range, `T` geometry mismatch. The
   geometry case differs from `alloc` (which panics)
@@ -1975,20 +2001,25 @@ coordination) remains in [Open questions](#open-questions).
   so untrusted input must not select a panic. `unsafe`
   covers the one thing validation cannot check,
   ownership: the caller promises the desc came from
-  `into_desc`, arrived over a channel establishing
+  `to_desc`, arrived over a channel establishing
   happens-before (ring commit -> reserve qualifies), and is
-  resolved exactly once.
+  taken back exactly once.
 - `Desc` is plain data on purpose: `FromBytes` means a
   receiver mints one from shared bytes anyway, so a
   move-only ownership token would be theater, and the
-  discipline lives in resolve's contract.
+  discipline lives in `to_slot`'s contract.
+- Names: `into_desc`, `resolve`, `PoolResolver`, and
+  `resolver()` were renamed `to_desc`, `to_slot`, `PoolView`,
+  and `view()` on 2026-09-24, when the multi-stack pool made
+  the registry generic over a sealed `DescMap` trait.
 - In-buffer provenance deferred: the descriptor is the
   message's travel form (forwarding re-sends it), so no
   flow carries a buffer without its provenance, and adding an
   in-buffer header later is a pool `layout_version` bump.
 - Type dispatch is payload-level: the descriptor stays
   type-agnostic. Multiple message types over one queue
-  need a receiver-readable tag: a first-word id driving a
+  need a receiver-readable [type-tag](#type-tag): a first-word
+  id driving a
   match (demo-minimal), `TryFromBytes` tagged enums, or a
   future `Message` trait hiding the cast boilerplate (see
   todo Ideas).
@@ -2056,6 +2087,83 @@ marking: push the buffer onto the pool's free-stack.
   bit, so N producer claims fit later without a layout
   rethink. Full design:
   [MPSC ring (sibling primitive)](#mpsc-ring-sibling-primitive).
+
+### Multi-stack pool (0.18.0)
+
+`pool::v1`, as built in the `feat: segmented pool v1` cycle. A pool had one buffer size, so an
+application wanting messages of several sizes built and registered several pools by hand. The
+multi-stack pool keeps v0's API over one region holding `N` stacks, one per buffer size, and the
+alloc family picks the stack by size. v0 stays the single-stack pool and the default `Pool`, and
+the rings of segments still take their segments from a v0 pool (the `spsc4 and mpsc3 over either
+pool` Todo). "Stack" is the pools' word and "segment" the rings', a ring segment being a pool
+buffer.
+
+- Layout: one region, one `PoolHeader<N>` (the geometry words, each stack's size and count, then
+  one cache line per stack head), and the stacks after it, smallest first, each a run of buffers
+  starting on a cache line. A buffer's index is local to its stack, and `N = 1` is v0's two-line
+  header over one stack. The magic differs from v0's, so neither pool attaches the other's region.
+- Geometry: `init` takes `[StackGeometry { buf_size, buf_count }; N]` in any order and sorts the
+  stacks by size, so the layout and the search are the pool's to change. Two stacks of one size
+  are `BadBufSize`, a duplicate being likelier a mistake than a request, and the total count stays
+  below the NIL sentinel so every buffer has an index across the stacks. `attach` requires the
+  region's stacks in the pool's order, and `BadStackCount` when its `N` differs. There is no
+  public stack index: `stacks()` reports the geometry in the pool's order, and `stats()` a
+  `StackStats { geometry, misses }` per stack.
+- Alloc: `alloc::<T>()`, `alloc_with`, and `alloc_bytes(size)` take the smallest stack that fits,
+  by a scan, and fall back to the next larger stack when it is empty, `Exhausted` when none is
+  left. A size larger than the largest stack panics, as v0's size check does, a request the pool
+  was not built for. At `N = 1` the pick is v0's one size comparison and the fallback loop is
+  empty.
+- Misses: a miss is counted once per call whose wanted stack was empty, whatever the fallback
+  then does, so a user can tell which size wants more buffers. The counters live in the
+  allocating handle, plain counts, since allocation has one owner, fresh per handle.
+- Free: a `BufSlot` holds its stack's head and its stack-local index, so a free touches its own
+  stack alone and never searches, with no header pointer. `buf_size()` reports the size given, at
+  least the size asked for, on a typed slot as on a byte slot.
+- Registry: `PoolRegistry<'a, N, R = v0::PoolView>` is generic over a sealed `DescMap`, which
+  both pools' views implement, so dispatch is static and one registry holds one kind of pool. A
+  descriptor's `buf_idx` numbers the buffers across the stacks, smallest first, the stack's first
+  index plus the local one. `to_desc` finds the stack by comparing the slot's head with each
+  stack's, one comparison per stack, and `to_slot::<T>` finds the stack whose index range holds
+  the index and checks `T` against that stack's size, so a `T` too big for its buffer is `BadType`
+  even when a larger stack exists.
+- Bytes first: `to_slot_bytes` takes a descriptor back as bytes, the counterpart of `alloc_bytes`,
+  and `into_typed::<T>` on a byte `BufSlot` checks the fit and turns it typed, handing it back on
+  a misfit. A descriptor is taken back once, by `to_slot` or `to_slot_bytes`, never both. This is
+  the receive path for messages of several types over one queue, dispatched by
+  [type-tag](#type-tag), and every ring carries them unchanged, since a descriptor is plain data
+  (`tests/pool_v1_over_rings.rs`).
+- Measured (2026-09-24, the demo's `pool_alloc_free_1t` and `pool1_alloc_free_1t` rows, an alloc,
+  write, free loop pinned to the base cpu, 20 runs of each, ns per message means, stdevs 0.1 or
+  less). The scratch builds were measured and reverted:
+
+  | build | v0 | v1, 1 stack | v1, 4 stacks, 1st | v1, 4 stacks, 4th |
+  |---|---|---|---|---|
+  | v1 as committed | 9.74 | 9.12 | 11.00 | 11.03 |
+  | scratch: unchecked indexing | 9.79 | 9.12 | 11.00 | 11.06 |
+  | scratch: cold fallback | 9.85 | 10.01 | 9.96 | 10.08 |
+
+  - The stack choice is free: the 1st and 4th stacks time alike, and with `alloc` inlined four
+    stacks cost what one does, in a loop that picks the same stack every time, so the scan's
+    branches always predict. A workload mixing sizes may pay for mispredictions, unmeasured.
+  - Bounds checks cost nothing: removing them in the pop changed no row.
+  - Inlining is what moves the numbers. At four stacks `alloc`, fallback loop included, is too big
+    to inline and stays a call, the 1.9 ns, and a `#[cold]` out-of-line fallback lets it inline
+    again.
+  - v0 is a handicapped baseline: `next_buf_idx` and `buf_ptr` are calls in the demo's loop, not
+    `#[inline]` and not generic, so they cannot inline across the crate boundary, while v1 is
+    generic and compiles whole in the demo. That is the 0.6 ns by which v1 at one stack beats
+    v0, and the `Pool inlining and an iiac-perf comparison` Todo is the fix and the comparison
+    worth trusting.
+  - Compile-time stack sizes, a possible v2, would only speed a choice that timed as free, so the
+    idea is dropped until a measurement says otherwise.
+- Tests: scenario tests over a three-stack pool pin the fallback order and the size boundaries, a
+  model test drives 20,000 random allocs and frees per seed against a plain model of the rule,
+  and a threaded test races frees against pops on every stack's head, each over a geometry the
+  seed picks and handed to `init` shuffled. The tests were checked against two deliberate breaks
+  of the rule. Everything passes under Miri.
+- Out of scope, each a later cycle if wanted: a v1 flavor in `tp-pool`'s sweep, the rings taking a
+  v1 pool, and compile-time sizes.
 
 ### Usage model: roles and buffer lifecycle
 
@@ -2292,7 +2400,7 @@ after startup) versus fd-passing over a Unix socket
 #### Message header shape
 
 0.7.0 settled the near half: provenance travels in the
-descriptor, a type tag is payload-level, and the in-buffer
+descriptor, a [type-tag](#type-tag) is payload-level, and the in-buffer
 header is deferred (see
 [Descriptor and registry design](#descriptor-and-registry-design-070)).
 Still open: whether a length (or anything else) joins a

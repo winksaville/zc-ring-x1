@@ -38,12 +38,13 @@
 //!   when it is sent or freed.
 //! - The composed form (descriptors through the ring,
 //!   payloads at rest in pool buffers) runs between them:
-//!   alloc -> into_desc -> ring -> resolve -> free, with the
+//!   alloc -> to_desc -> ring -> to_slot -> free, with the
 //!   same placement ladder as the raw ring.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use zc_ring_x1::pool::v1::StackGeometry;
 use zc_ring_x1::{
     BufSlot, CACHE_LINE_SIZE, Desc, Empty, Exhausted, Full, MpscRing, Pool, PoolRegistry,
     mpsc_region_size, policy,
@@ -687,10 +688,10 @@ fn mpsc1_ring_one_msg_3t() -> f64 {
 /// The composed flow on one thread pinned to the base cpu: one pool
 /// message allocated outside the timed loop. Each iteration
 /// populates it, converts guard -> descriptor, rings the
-/// descriptor across, and resolves the guard back. Return
+/// descriptor across, and takes the guard back. Return
 /// elapsed seconds.
 ///
-/// - Isolates messaging cost (into_desc + ring + resolve)
+/// - Isolates messaging cost (to_desc + ring + to_slot)
 ///   from the pool cycle: pool_alloc_free_1t reports that
 ///   separately.
 /// - The guard and the descriptor are the two exclusive
@@ -703,7 +704,7 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
     let mut pool_region = Region([0; size_of::<Region>()]);
     let mut pool = Pool::init(&mut pool_region.0, CACHE_LINE_SIZE as u32, DEPTH).unwrap(); // OK: Region is sized/aligned for the pool header + DEPTH buffers
     let mut registry = PoolRegistry::<1>::new();
-    let pool_id = registry.register(pool.resolver()).unwrap(); // OK: empty capacity-1 registry always has room
+    let pool_id = registry.register(pool.view()).unwrap(); // OK: empty capacity-1 registry always has room
     let (mut producer, mut consumer) =
         zc_ring_x1::spsc::v2::Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
             .unwrap() // OK: Region is sized/aligned for the ring header + DEPTH slots
@@ -717,7 +718,7 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
             for i in 0..COUNT {
                 buf_slot.seq = i;
                 let desc = registry
-                    .into_desc(pool_id, buf_slot)
+                    .to_desc(pool_id, buf_slot)
                     .map_err(|(_, e)| e)
                     .unwrap(); // OK: pool_id came from this registry's register
                 match producer.reserve_slot_with::<Desc>(|_| false) {
@@ -734,9 +735,9 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
                         let desc = *slot;
                         slot.release();
                         // SAFETY: the desc was consumed into
-                        // the ring by into_desc above and is
-                        // resolved exactly once, same thread.
-                        let msg = unsafe { registry.resolve::<Msg>(desc) }.unwrap(); // OK: desc came from into_desc on this pool
+                        // the ring by to_desc above and is
+                        // taken back exactly once, same thread.
+                        let msg = unsafe { registry.to_slot::<Msg>(desc) }.unwrap(); // OK: desc came from to_desc on this pool
                         assert_eq!(msg.seq, i);
                         msg
                     }
@@ -753,7 +754,7 @@ fn spsc_ring_one_pool_msg_1t() -> f64 {
 
 /// The composed flow producer-thread -> consumer-thread:
 /// alloc + fill pool messages on the producer, descriptors
-/// cross the SPSC ring, the consumer resolves and frees.
+/// cross the SPSC ring, the consumer takes them back and frees.
 /// Return elapsed seconds.
 ///
 /// - `pin`: `Some((p, c))` pins the producer to cpu `p` and
@@ -764,7 +765,7 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
     let mut pool_region = Region([0; size_of::<Region>()]);
     let mut pool = Pool::init(&mut pool_region.0, CACHE_LINE_SIZE as u32, DEPTH).unwrap(); // OK: Region is sized/aligned for the pool header + DEPTH buffers
     let mut registry = PoolRegistry::<1>::new();
-    let pool_id = registry.register(pool.resolver()).unwrap(); // OK: empty capacity-1 registry always has room
+    let pool_id = registry.register(pool.view()).unwrap(); // OK: empty capacity-1 registry always has room
     let registry = &registry;
     let (mut producer, mut consumer) =
         zc_ring_x1::spsc::v2::Ring::init(&mut ring_region.0, CACHE_LINE_SIZE as u32, DEPTH)
@@ -786,7 +787,7 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
                 };
                 buf_slot.seq = i;
                 let desc = registry
-                    .into_desc(pool_id, buf_slot)
+                    .to_desc(pool_id, buf_slot)
                     .map_err(|(_, e)| e)
                     .unwrap(); // OK: pool_id came from this registry's register
                 let mut slot = producer.reserve_slot_with::<Desc>(policy::spin).unwrap(); // OK: policy::spin never gives up
@@ -808,8 +809,8 @@ fn spsc_ring_one_pool_msg_2t(pin: PinPair) -> f64 {
                 // SAFETY: the desc was consumed into the ring
                 // by the producer and read after the commit ->
                 // reserve handoff (happens-before). Each is
-                // resolved exactly once.
-                let msg = unsafe { registry.resolve::<Msg>(desc) }.unwrap(); // OK: descs here only come from the producer's into_desc
+                // taken back exactly once.
+                let msg = unsafe { registry.to_slot::<Msg>(desc) }.unwrap(); // OK: descs here only come from the producer's to_desc
                 assert_eq!(msg.seq, i);
                 msg.free();
             }
@@ -907,6 +908,92 @@ fn pool_alloc_free_1t() -> f64 {
                 let mut buf_slot = pool.alloc::<Msg>().unwrap(); // OK: alloc+free per iteration, DEPTH never exceeded
                 buf_slot.seq = i;
                 std::hint::black_box(buf_slot.seq);
+                buf_slot.free();
+            }
+        });
+    });
+    start.elapsed().as_secs_f64()
+}
+
+/// A message eight cache lines long, for the largest stack of the four-stack pool: `seq` leads,
+/// as in [`Msg`], so the loop writes the same word.
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+struct Msg8 {
+    seq: u64,
+    rest: [u64; 8 * CACHE_LINE_SIZE / 8 - 1],
+}
+
+/// A message whose sequence word the alloc/free loops write, so one loop runs over [`Msg`] and
+/// [`Msg8`] alike.
+trait Seq {
+    /// Store the sequence word.
+    fn set_seq(&mut self, seq: u64);
+    /// Load the sequence word.
+    fn seq(&self) -> u64;
+}
+
+impl Seq for Msg {
+    /// Store `seq`.
+    fn set_seq(&mut self, seq: u64) {
+        self.seq = seq;
+    }
+    /// Load `seq`.
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+}
+
+impl Seq for Msg8 {
+    /// Store `seq`.
+    fn set_seq(&mut self, seq: u64) {
+        self.seq = seq;
+    }
+    /// Load `seq`.
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+}
+
+/// The one-stack pool v1: DEPTH one-line buffers, the geometry of [`pool_alloc_free_1t`]'s v0
+/// pool.
+const POOL1_ONE_STACK: [StackGeometry; 1] = [StackGeometry::new(CACHE_LINE_SIZE as u32, DEPTH)];
+
+/// The four-stack pool v1: DEPTH buffers each of one, two, four, and eight lines.
+const POOL1_FOUR_STACKS: [StackGeometry; 4] = [
+    StackGeometry::new(CACHE_LINE_SIZE as u32, DEPTH),
+    StackGeometry::new(2 * CACHE_LINE_SIZE as u32, DEPTH),
+    StackGeometry::new(4 * CACHE_LINE_SIZE as u32, DEPTH),
+    StackGeometry::new(8 * CACHE_LINE_SIZE as u32, DEPTH),
+];
+
+/// [`pool_alloc_free_1t`]'s loop over a pool v1 of `stacks`, allocating a `T`: alloc -> write ->
+/// free COUNT messages on one thread pinned to the base cpu. Return elapsed seconds.
+///
+/// - `serves`: the buffer size the row claims serves a `T`, checked once before the clock
+///   starts, so the label cannot claim a stack the row does not hit.
+/// - One stack against v0 is the cost of the stack choice where it should cost nothing.
+/// - Four stacks with a `T` for the smallest is the cheapest choice, one comparison, and with a
+///   `T` for the largest the costliest, a scan of all four.
+/// - The wanted stack never empties, one buffer being out at a time, so no fallback runs.
+fn pool1_alloc_free_1t<const N: usize, T>(stacks: [StackGeometry; N], serves: u32) -> f64
+where
+    T: FromBytes + IntoBytes + KnownLayout + Seq,
+{
+    let mut region = region(zc_ring_x1::pool::v1::region_size(stacks));
+    let mut pool = zc_ring_x1::pool::v1::Pool::init(region.as_mut_bytes(), stacks).unwrap(); // OK: region sized by region_size, line-aligned
+    let probe = pool.alloc::<T>().unwrap(); // OK: a fresh pool, every stack full
+    assert_eq!(probe.buf_size(), serves as usize, "the row's stack");
+    probe.free();
+
+    let start = Instant::now();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            pin_to_cpu(base_cpu());
+            for i in 0..COUNT {
+                let mut buf_slot = pool.alloc::<T>().unwrap(); // OK: alloc+free per iteration, DEPTH never exceeded
+                buf_slot.set_seq(i);
+                std::hint::black_box(buf_slot.seq());
                 buf_slot.free();
             }
         });
@@ -1507,6 +1594,18 @@ fn main() {
     report(
         &format!("pool_alloc_free_1t (core {base}):"),
         pool_alloc_free_1t(),
+    );
+    report(
+        &format!("pool1_alloc_free_1t 1 stack (core {base}):"),
+        pool1_alloc_free_1t::<1, Msg>(POOL1_ONE_STACK, CACHE_LINE_SIZE as u32),
+    );
+    report(
+        &format!("pool1_alloc_free_1t 4 stacks, 1st (core {base}):"),
+        pool1_alloc_free_1t::<4, Msg>(POOL1_FOUR_STACKS, CACHE_LINE_SIZE as u32),
+    );
+    report(
+        &format!("pool1_alloc_free_1t 4 stacks, 4th (core {base}):"),
+        pool1_alloc_free_1t::<4, Msg8>(POOL1_FOUR_STACKS, 8 * CACHE_LINE_SIZE as u32),
     );
     report(
         &format!("global_alloc_free_1t (core {base}):"),

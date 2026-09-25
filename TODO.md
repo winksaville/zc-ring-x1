@@ -34,6 +34,48 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
 
+### Test an inter-application message
+
+This is one of the primary initial goals of this project and we've
+never tested if it works. The minimal test I can think of is an SPSC
+between two apps with the producer sending one message to a consumer.
+The consumer will be started first and then the producer sends a
+message that is a random number and a checksum of that number to
+prove the message arrived intact.
+
+### Unwrap lints for the library
+
+The library has no `unwrap` or `expect` outside tests, but only by discipline. The user
+prohibits them in real code, so a lint should enforce it
+([`// OK` comments](agent-data/code.md#-ok--comments-on-unwrap-calls-rust)).
+
+- `[lints.clippy]` in `Cargo.toml`: `unwrap_used = "warn"` and `expect_used = "warn"`, so
+  validation's `-D warnings` fails any new site in library code.
+- Tests are exempt, and the demo and the examples opt out with a crate-level `#![allow(...)]`,
+  their setup panics being the right response there.
+- The `unwrap_or*` family has no lint and stays under the `// OK:` comment convention.
+- Raised by the user on 2026-09-24, at `refactor: segmented pool stack geometry`.
+
+### spsc4 and mpsc3 over either pool
+
+`spsc::v3` and `mpsc::v2` take their segments from a `pool::v0::Pool` only, so a multi-stack
+pool cannot supply them. New versions take either pool, and v3 and v2 stay as they are, the
+baselines to measure against.
+
+- A sealed segment-source trait, "a buffer of at least N bytes, or none", implemented by both
+  pools. v1's must not panic on a size larger than its largest stack.
+- spsc4 and mpsc3: copies of v3 and v2 whose `init` takes any segment source. The pool is used
+  only in `init`, so the endpoints and every hot path are v3's and v2's code.
+- Expectation: spsc4 over a single-stack v1 pool times as spsc3 over a v0 pool, and mpsc3 as
+  mpsc2, within noise. Rows for each pair: the old ring over v0, the new ring over v0 (the copy
+  alone), over a single-stack v1, and over a multi-stack v1 with one stack for segments beside
+  the message stacks. The demo first, iiac-perf for the fine comparison.
+- Examples: one SPSC and one MPSC program with one v1 pool supplying both the ring's segments
+  and messages of several types, dispatched by type-tag on receipt, each MPSC producer with its own
+  pool, since a pool has one allocator.
+- The user's direction on 2026-09-24, during `feat: segmented pool v1`: new versions rather than
+  a generic `init` on v3 and v2, so the original code stays to measure against.
+
 ### Paired columns in the tp_matrix tables
 
 `tp-matrix` prints each phase cell as `mean/stdev` in one column, and `tp-pool` prints two tables per
@@ -47,19 +89,6 @@ on 2026-09-13 each fell short:
   renderer shows as a data row.
 - Plain aligned text with a spanning heading: reads best in a terminal, but a paste is no longer a
   markdown table.
-
-### Segmented pools
-
-A pool has one buffer size, so an application wanting messages of several sizes builds and registers
-several pools by hand. A segmented pool holds sub-pools of different buffer sizes, and its
-`alloc(size)` takes a buffer from the smallest sub-pool that fits, returning the buffer's location
-and actual size. Typed access becomes a zero-copy cast on those bytes: the whole buffer as a `T`,
-or `T`s at offsets inside it. `alloc::<T>()` stays as `alloc(size_of::<T>())` plus the cast.
-
-- A sub-pool can be a registered pool of its own, so `Desc { pool_id, buf_idx }` already names the
-  sub-pool a buffer came from, and `free` already returns it there.
-- Buffers start on a cache line, so any `T` aligned to at most a line fits any sub-pool.
-- The user's direction on 2026-09-14, raised while settling how v3's segments come from the pool.
 
 ### SPSC v3 fast path
 
@@ -154,7 +183,7 @@ decision and a harness shape:
 Paired DescSender (loan + send) / DescReceiver (recv) [[11]]:
 - own ring endpoint + registry access
 - the demo's ~20-line send path becomes ~3 lines
-- `resolve`'s unsafe is audited once inside the crate (recv safe by construction)
+- `to_slot`'s unsafe is audited once inside the crate (recv safe by construction)
 - guard handed back on Full
 - design against both ring flavors (SPSC + MPSC)
 - the sender is also where each sender's private overflow pending list will live.
@@ -176,6 +205,33 @@ error instead of silently violating SPSC, at the cost of a layout_version bump (
 
 `Producer<T>` / `Consumer<T>` validating `T`'s geometry once at split instead of asserting on every
 reserve_slot_with [details](notes/ring-buffer-design.md#api).
+
+### Pool inlining and an iiac-perf comparison
+
+The demo's alloc/free rows measure the compiler's inlining more than the pools, as the cycle
+`feat: segmented pool v1` found at its bench rung: v0's hot helpers cannot inline across the
+crate boundary, and v1's `alloc` stops inlining at four stacks. The demo's single timed loop per
+row is also too crude for differences near a nanosecond.
+
+- v0: `#[inline]` on `next_buf_idx`, `buf_ptr`, and the pop, so the baseline is not handicapped.
+- v1: the miss path in a `#[cold]` out-of-line fallback, so `alloc` inlines at any stack count.
+- Measure v0 and v1 at one and four stacks in [iiac-perf](https://github.com/winksaville/iiac-perf),
+  whose harness calibrates and reports distributions. Variants selected by a type parameter on
+  the pool, rather than copies of the module, would let one harness binary compare them.
+- Raised by the user on 2026-09-24, at the bench rung of `feat: segmented pool v1`.
+
+### Pool vocabulary: alloc and guard
+
+No pool allocates memory: the region is fixed at `init`, and `alloc` pops a free buffer off a
+stack. The `alloc` family's name suggests otherwise.
+
+- Candidates: `take` / `take_with` / `take_bytes`, paired with `free` or a `give_back`.
+- Reaches both pools, the registry docs, the demo, `tp_matrix`, the guide, and the README.
+- "Guard": the docs call a `BufSlot` and the ring slots guards about 266 times, never defined,
+  and to most readers a guard is a lock. Define it where readers start, or retire it for
+  "slot", which the type names already use. No new text uses "guard" meanwhile, the user's call
+  on 2026-09-25.
+- Raised by the user on 2026-09-24, at the review of `feat: segmented pool in the registry`.
 
 ## Ideas
 
@@ -213,9 +269,10 @@ Unranked, not yet solid enough for `## Todo`. Triaged at an opening: promoted to
   ns single-thread round trip (vs malloc tcache's zero atomics). Hold until iiac-perf shows per-op
   CAS matters in a composed workload. We think the pool's tail latency (p99, stddev) already beats
   malloc (no arena locks, no brk/mmap), and that matters more than the mean.
-- `Message` trait over the payload cast boilerplate: const `MSG_ID` + the zerocopy bounds,
-  receiver-side dispatch (read tag, match, cast) without per-call-site ceremony, and maybe a
-  transport seam so an embedded pointer-descriptor profile slots in behind the same API
+- `Message` trait over the payload cast boilerplate: const `TYPE_TAG` + the zerocopy bounds,
+  receiver-side dispatch (read the [type-tag](notes/ring-buffer-design.md#type-tag), decode to
+  a `Kind`, match, cast) without per-call-site ceremony, and maybe a transport seam so an
+  embedded pointer-descriptor profile slots in behind the same API
   [details](notes/ring-buffer-design.md#descriptor-and-registry-design-070).
 - BufSlot auto-free on Drop (RAII, iceoryx2-style): kills the silent leak-on-drop footgun at the
   cost of guard-type asymmetry (ring guards' drop = do-nothing) and a ManuallyDrop dance in
@@ -254,49 +311,383 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### docs: the generic Queue idea
+### feat: segmented pool v1
 
 #### Problem
 
-SPSC v3 and MPSC v2 share their setup and their consumer and differ only in the producer, yet a
-user picks one by module path and gets two unrelated type families, so going from one producer to
-several rewrites every signature that names an endpoint. The idea of one type over both, from
-2026-09-17, lives only in `## Continuation notes`, which is ephemeral.
+A pool has one buffer size, so an application wanting messages of several sizes builds and registers
+several pools by hand.
 
 #### Solution
 
-Recorded the idea where it lasts: a `## Generic Queue (idea)` section in
-`notes/ring-buffer-design.md`, between MPSC v2 and the messaging layer, describing `Queue<P>`, a
-thin facade whose sealed producer marker, `Single` or `Multi`, selects the v3 `Ring` or the v2
-`MpscRing`, with `T` per call. Its open questions carry a "We think" leaning each: `send_with` as
-the common send, a guard axis (CAS or critical section) under `Multi`, and room for a consumer
-marker. A `## Ideas` bullet points at it, and the Continuation notes that held it were reset.
+`pool::v1::Pool<'a, const N: usize>`, the multi-stack pool, keeps v0's API over one region
+holding N stacks, one per buffer size, which `init` takes as `[StackGeometry; N]` in any order
+and sorts smallest first. Recorded in the design note's [Multi-stack
+pool](notes/ring-buffer-design.md#multi-stack-pool-0180).
+
+- `alloc::<T>()`, `alloc_with`, and `alloc_bytes(size)` take the smallest stack that fits, fall
+  back to the next larger one when it is empty, and count the miss against the stack that was
+  wanted, reported per stack by `stats()`, so a user can tell which size wants more buffers.
+- At N=1 the pick is the one size check v0 already makes and the fallback loop is empty, so the
+  single-stack pool does v0's work, and the demo times it 0.6 ns faster, an inlining artifact.
+- `free` returns a buffer to its own stack, and a `Desc` names a buffer by `pool_id` and a
+  `buf_idx` numbered across the stacks, through a registry generic over a sealed `DescMap`.
+- A receiver of mixed message types takes a descriptor back as bytes with `to_slot_bytes`, reads
+  the type-tag, and turns the bytes typed with `into_typed`, and every ring carries such messages.
+- Buffers start on a cache line, as v0's, so any `T` aligned to at most a line fits any size.
+- The default re-export stays on v0, and the rings keep taking a v0 pool.
 
 #### Acceptance check
 
-`notes/ring-buffer-design.md` has the Generic Queue section with the three open questions,
-`## Ideas` has a bullet whose link resolves to it, `## Continuation notes` reads `_None._`, and
-`vc-x1 validate` passes, the prose check included.
+- The v1 tests pass: size choice, fallback, miss counts, exhaustion, attach validation, and a
+  descriptor round trip.
+- The demo's alloc/free bench shows v1 at N=1 within run-to-run noise of v0, and reports the N=4
+  rows for the smallest and the largest size.
 
-Passed on 2026-09-24: the section and its three open questions are in place, the Ideas link
-resolves to `#generic-queue-idea`, the Continuation notes read `_None._`, and `vc-x1 validate`
-passes.
+Result, 2026-09-25: the tests pass, 29 in `pool::v1` under `cargo test`. The demo reports every
+row, and the N=1 clause is a finding rather than a pass: one run on the base cpu read v0 at 10.0
+ns and v1 at 9.1, and the bench rung's 20-run means 9.74 and 9.12, a gap outside the 0.1 ns
+run-to-run noise. The cause is the baseline, not the pool: v0's `next_buf_idx` and `buf_ptr` are
+not `#[inline]` and do not inline across the crate boundary into the demo, while the generic v1
+compiles whole there. The `### Pool inlining and an iiac-perf comparison` Todo is the fix and the
+comparison to trust.
 
 #### Ladder
 
-- docs: the generic Queue idea (done)
+- [feat: segmented pool v1 opening][1] (done)
+- [feat: segmented pool region and alloc][2] (done)
+- [feat: segmented pool in the registry][3] (done)
+- [perf: segmented pool in the alloc/free bench][4] (done)
+- [test: segmented pool allocation order][8] (done)
+- [refactor: segmented pool stack geometry][7] (done)
+- [feat: segmented pool byte slots from descriptors][9] (done)
+- [test: segmented pool messages over every ring][10] (done)
+- [docs: segmented pool in the design note][5] (done)
+- [feat: segmented pool v1 closing][6] (done)
 
 #### Deliberation
 
-- Single-step: one note section and one bullet are one reviewable step.
-- An idea, not a Todo: its open questions decide the API, so it waits in `## Ideas` for an
-  opening's triage rather than taking a rank.
-- Placement: the section follows MPSC v2 in the design note, since it is a facade over the two
-  rings described just above it, and precedes the messaging layer, which it does not touch.
-- A stale Todo retired here: `### Sweep punctuation in the design note` was done by the cycle
-  "docs: pay the punctuation debt", and its retirement rides in this commit as bookkeeping, the
-  user's go on 2026-09-24.
+- Multi-step: a new pool version, its registry path, a bench, and a design section are not one
+  reviewable step.
+- A v1 beside v0: the user's direction on 2026-09-24, so the cost of several stacks is measured
+  against the pool as it is.
+- One API, N stacks: the user's direction on 2026-09-24. The same alloc family selects a stack by
+  size, and the degenerate single-stack case, the rings' and most queues', should cost nothing.
+  - `const N: usize` with runtime sizes: v0 already asserts `T`'s size on every alloc, and at N=1
+    that one comparison becomes the selection, so N=1 adds no work.
+  - Sizes fixed at compile time through a trait, with an inline `const` block picking the stack for
+    `alloc::<T>()`, would make N>1 free as well, at the cost of a clumsier API. Held until the
+    measurement says the scan matters.
+- Fallback and miss counts: the user's direction on 2026-09-24. An empty stack falls back to the
+  next larger one rather than failing, and every miss is counted against the wanted size, whether
+  the fallback then succeeds or ends in `Exhausted`.
+  - The counters live in the allocating handle, a plain count, since allocation has one owner.
+- One pool id for all the stacks, with `buf_idx` numbering buffers across the sizes: the Todo
+  entry's first thought was a registered pool per sub-pool, and one id keeps the registry and the
+  descriptor as they are, at the cost of a size-range search in `to_slot` (one comparison at N=1).
+- Vocabulary: "segment" is the rings' word and "stack" the pools', so v0 is the single-stack pool
+  and v1 the multi-stack pool. The user's call on 2026-09-24, at the review of the region rung.
+  - "Segmented pool" gave "segment" a second meaning beside the rings of segments, whose
+    segments are pool buffers.
+  - The cycle keeps "segmented pool" as its name and title stem, since the opening pushed with
+    it, and the code and docs say "multi-stack".
+- Out of scope: a v1 flavor in `tp-pool`'s sweep, the rings taking a v1 pool for their segments
+  (the `### spsc4 and mpsc3 over either pool` Todo, new versions so v3 and v2 stay the
+  baselines), and compile-time sizes, each a later cycle if wanted.
+
+#### Ladder details
+
+##### feat: segmented pool v1 opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
+`### Segmented pools` Todo entry into this block, and bump the version-of-record. `## Waiting` held
+nothing to promote.
+
+##### feat: segmented pool region and alloc
+
+`pool::v1`: the region header with N stack heads, each on its own cache line, `init` and `attach`,
+the alloc family with fallback and miss counts, and `BufSlot` freeing to its own stack, with tests.
+
+- Terms: a stack is one buffer size with its own buffers, linked as v0's free-stack is. The
+  stacks follow the header in order, smallest first, and a buffer's index is local to its stack.
+- The header is `PoolHeader<N>`: the geometry words and the per-stack sizes and counts, then one
+  cache line per head. At N=1 it is two lines, as v0's.
+- `init` takes `[(buf_size, buf_count); N]`. Sizes must be strictly ascending, so the first stack
+  that fits is the smallest, and the total count stays below the sentinel, leaving room for a
+  buffer index across the stacks when the registry rung wants one.
+- The pick is a scan for the first stack that fits, and the fallback a loop over the larger
+  stacks. At N=1 the fallback range is empty.
+- The size check that v0's `check_type` makes becomes the pick. A size larger than the largest
+  stack panics, for `alloc_bytes(size)` as for `alloc::<T>()`, since both are a request the pool
+  was not built for.
+- A miss is counted once per call whose wanted stack was empty, whatever the fallback then does,
+  so `alloc_with` counts one per failed attempt. The counters are a plain `[u64; N]` in the
+  allocating handle, fresh per handle.
+- `BufSlot` holds its stack's head and its stack-local index, so a free touches its own stack
+  alone. It has no header pointer, which the registry rung found it does not need.
+- `Exhausted` is v0's own type, re-exported, and `Error` gains `BadStackCount` for an attach whose
+  `N` differs from the region's.
+- The crate docs in `src/lib.rs` name the pool family: v0 single-stack and the default, v1
+  multi-stack by path.
+- The magic differs from v0's, so neither pool attaches the other's region.
+- The v1 tests pass under Miri as well. Its first run caught a test taking the region pointer a
+  second time under a live handle, a test bug, and not the pool's.
+
+##### feat: segmented pool in the registry
+
+Take a `Desc` back to a guard against a v1 pool, `buf_idx` numbering buffers across the stacks.
+How the registry holds v0 and v1 pool views alike, a trait or an enum, is decided here.
+
+- A trait, not an enum: `PoolRegistry<'a, N, R = v0::PoolView>` is generic over a sealed
+  `DescMap`, which v0's and v1's `PoolView`s implement.
+  - Dispatch is static, so v0's `to_desc` and `to_slot` make the same checks as before, moved
+    into v0's impl, and the existing call sites keep their shape, `R` inferred from `register`.
+  - The trait's `Slot<T>` is the pool's own guard, so a registry takes and returns the guard
+    type its pool mints. An enum would have needed an enum guard.
+  - The cost: one registry holds one kind of pool, v0 or v1. A process mixing them keeps two
+    registries, and their ids are separate spaces.
+  - Sealed because `to_slot` mints owned guards on the implementor's word. `Sealed`, `Send`, and
+    `Sync` have no methods, so their impls are empty, and a comment at each says so.
+- v1's descriptor index numbers the buffers across the stacks, smallest stack first, so it is
+  the stack's first index plus the stack-local one.
+  - `to_desc` finds the stack by comparing the guard's head with each stack's head, one
+    comparison per stack, so `BufSlot` needed no header pointer after all.
+  - `to_slot` finds the stack whose index range holds the index, then checks `T` against that
+    stack's size, so a `T` too big for its buffer is `BadType` even when a larger stack exists.
+- Names, the user's call on 2026-09-24 at this rung's review: "resolve" said too little.
+  - `into_desc` and `resolve` became `to_desc` and `to_slot`, a pair named by what each returns.
+    `from_desc` was the first choice, and clippy's `wrong_self_convention` reserves `from_*` for
+    constructors, which take no `self`.
+  - `PoolResolver` became `PoolView` and `resolver()` became `view()`, a view that cannot pop,
+    replacing "non-allocating", since no pool allocates memory, and the trait is `DescMap`.
+  - The rename reaches v0, the demo, `tp_matrix`, the README, and the design note, since these
+    names predate the cycle. The `alloc` family's name is a Todo of its own.
+- The v1 and registry tests pass under Miri.
+
+##### perf: segmented pool in the alloc/free bench
+
+The demo's `pool_alloc_free_1t` gains v1 rows: N=1 beside v0, and N=4 at its smallest and largest
+size, the cheapest and the costliest stack choice.
+
+- The rows: `pool1_alloc_free_1t` at one stack, and at four stacks (one, two, four, and eight
+  lines) allocating a `T` for the 1st and for the 4th stack, the same alloc -> write -> free loop
+  as v0's, pinned to the base cpu.
+- Measured 2026-09-24 with the demo, 20 runs of each row on the base cpu, ns/msg means, the
+  stdevs 0.1 or less. The scratch builds were measured and reverted, and none is in the tree:
+
+  | build | v0 | v1, 1 stack | v1, 4 stacks, 1st | v1, 4 stacks, 4th |
+  |---|---|---|---|---|
+  | v1 as committed | 9.74 | 9.12 | 11.00 | 11.03 |
+  | scratch: unchecked indexing | 9.79 | 9.12 | 11.00 | 11.06 |
+  | scratch: cold fallback | 9.85 | 10.01 | 9.96 | 10.08 |
+
+- What the builds and their disassembly showed:
+  - The 1st and 4th stacks time alike, and with `alloc` inlined four stacks cost what one does,
+    in a loop that picks the same stack every time, so the scan's branches always predict. A
+    workload mixing sizes may pay for mispredictions, and which stack each row hits is claimed
+    by its label, not checked, until the stack geometry rung asserts it.
+  - Bounds checks cost nothing: removing them in the pop changed no row.
+  - Inlining moves the numbers. At four stacks `alloc`, fallback loop included, is too big to
+    inline and stays a call, with the guard returned through memory, the 1.9 ns. A `#[cold]`
+    out-of-line fallback lets it inline.
+  - v0 is a handicapped baseline: `next_buf_idx` and `buf_ptr` are calls in the demo's loop,
+    since v0 is not generic and they are not `#[inline]`, so they cannot inline across the
+    crate boundary, while the generic v1 is compiled in the demo and inlines whole. That is
+    the 0.6 ns by which v1 at one stack beats v0.
+  - Compile-time stack sizes, a possible v2, would only speed a choice that timed as free
+    here, so the idea is dropped until a measurement says otherwise.
+- The demo's numbers are indicative only: one timed loop per row, no warmup or calibration, and
+  differences near a nanosecond that code layout alone moves, as the cold-fallback build's one
+  stack did. The comparison worth trusting is iiac-perf's, a Todo with the inlining fix.
+
+##### test: segmented pool allocation order
+
+The tests cover the simple fallback paths, but not a small buffer free while a big one is asked
+for, or a middle and a big both free under a small request. Scenario tests pin those down, with
+the size boundaries, and a model-based test drives thousands of random allocs by size and frees
+in random order against a plain model of the rule, checking after every step which stack served
+each request, where `Exhausted` falls, and the miss counts. Inserted at the user's call on
+2026-09-24, at the bench rung, ahead of the stack geometry rung so the tests pin today's
+behavior before the API changes.
+
+- Scenarios, over one pool of 64-, 128-, and 256-byte stacks, each starting from every stack
+  exhausted by one-byte requests, and written in bytes, what a user asks for:
+  - a 64-byte buffer free under a 256-byte and a 128-byte request: `Exhausted` for both, a miss
+    on each wanted stack, and the 64-byte buffer still serves a one-byte request
+  - only a 256-byte buffer free: a one-byte request falls back to it
+  - a 128-byte and a 256-byte buffer free, the 256-byte one freed last so a single LIFO list
+    would hand it out first: one-byte requests get the 128-byte, then the 256-byte, then
+    `Exhausted`, so the order can only be the stacks'
+  - every buffer handed out is checked for what a user may rely on: at least the size asked
+    for, and starting on a cache line
+- Size boundaries: zero and every exact fit land in their own stack, and one byte more moves to
+  the next.
+- Seeds: each randomized test runs three fixed seeds and one fresh random seed per run, and
+  `ZC_POOL_SEED=<seed>` runs that one seed alone. The seed picks everything random, the stack
+  count and geometry included.
+  - A guard in each thread prints, on a failure, the test, the seed, the thread's role, and the
+    step it reached, with the command that replays it.
+- The model test, `allocation_matches_the_model`: 20,000 steps per seed, over a fixed four-stack
+  geometry and over one the seed picks (1, 2, 3, 4, or 8 stacks, sizes one to four lines apart,
+  one to four buffers each).
+  - Allocs by size, each stack's size range about equally likely, and frees of a random held
+    buffer.
+  - After every step the serving stack, `Exhausted`, and `misses()` must match a plain model of
+    the rule, and each held buffer's step tag, in its first and last word, must survive to its
+    free.
+  - It asserts its own coverage: fallbacks and `Exhausted` each above 2% of the steps, summed
+    over the seeds.
+  - A seed replays exactly: a failure recurs at the same step.
+- The threaded test, `threaded_random_alloc_and_free`: per seed, 20,000 messages over two
+  threads (an allocator and a freer) and three (an allocator and two freers), each over a
+  geometry the seed picks.
+  - The allocator takes random sizes and hands each buffer to a random freer, and each freer
+    frees what it holds in random order, so the frees race the pops on every stack's head.
+  - The allocator checks each buffer against its request (at least the size, on a cache line,
+    never from a smaller stack) and keeps its own miss count, which `misses()` must match
+    exactly, since only the allocator counts misses.
+  - The freers check each buffer's tags. At the end every buffer is back, and each stack serves
+    exactly its count.
+  - A seed replays the plan, the sizes and the routing, but not the thread interleaving, so a
+    replayed failure recurs, though not always at the same step: a deliberate break failed at
+    steps 18, 20, 24, and 2390 under one seed. Replaying an interleaving would take a tool like
+    `loom`.
+- The tests were checked against two deliberate breaks of the rule, made and reverted before
+  the random-geometry and threaded tests joined: a fallback to any stack, smaller included,
+  failed 2 tests, and the largest stack tried first failed 6. The first break, repeated after,
+  also failed the threaded test.
+- The v1 tests pass under Miri, the model test at 300 steps and the threaded test at 100
+  messages per run.
+
+##### refactor: segmented pool stack geometry
+
+`init` and `region_size` take each stack as a bare `(buf_size, buf_count)` tuple, which says
+nothing at the call site. A `StackGeometry { buf_size, buf_count }` with a `const fn new` names
+the fields, the handle's parallel snapshot arrays become one `[StackGeometry; N]`, and `init`'s
+docs give each field's meaning and units. Inserted at the user's call on 2026-09-24, at the bench
+rung, so v1 lands with the named type and the design note describes it.
+
+- `StackGeometry { buf_size, buf_count }`, public fields and a `const fn new`, is how a caller
+  describes a stack. `init` and `region_size` take `[StackGeometry; N]`.
+- The pool orders its stacks, the user's call at this rung's planning: `init` takes them in any
+  order and sorts them by size, so the layout and the search are the pool's to change, a sorted
+  table or something else later.
+  - Two stacks of one size are refused as `BadBufSize`, a duplicate being likelier a mistake
+    than a request. `attach` still requires the region's stacks in the pool's order, since
+    `init` wrote them so.
+- No public stack index: a caller's position means nothing once the pool orders the stacks.
+  - `buf_size(stack)`, `buf_count(stack)`, and `misses()` gave way to `stacks()`, the geometry
+    in the pool's order, and `stats()`, a `StackStats { geometry, misses }` per stack, each
+    count labelled by the stack it belongs to.
+  - The handle's and the view's parallel size and count arrays are one `[StackGeometry; N]`.
+- `BufSlot::buf_size()` reports the size given, at least the size asked for, for a typed guard
+  as for a byte guard, whose `len()` already said so.
+- The demo's v1 rows check before the clock starts that a `T` is served by the stack the label
+  claims, which the bench rung could only assume.
+- Tests: new ones for `init` ordering the stacks itself, `stats()` found by size, and
+  `buf_size()` on a typed guard. The model and threaded tests hand `init` a shuffled geometry, so
+  every seed exercises the sort, and white-box tests read the handle's `misses` in the pool's
+  order. All pass, under Miri too.
+
+##### feat: segmented pool byte slots from descriptors
+
+A receiver of mixed message types learns a buffer's type from a tag inside it, but `to_slot::<T>`
+needs `T` up front, and a descriptor may be taken back only once. `to_slot_bytes` takes it back
+as bytes, the counterpart of `alloc_bytes`, and `BufSlot<[u8]>::into_typed::<T>` checks the fit
+and turns the guard typed, handing it back on a misfit, so a receiver reads the tag and matches.
+Inserted at the user's call on 2026-09-24, at the stack geometry rung.
+
+- `DescMap` gains `to_slot_bytes`, and `PoolRegistry::to_slot_bytes(desc)` calls it: the index
+  validated, no type to check, since every buffer is valid as bytes. A descriptor is taken back
+  once, by `to_slot` or `to_slot_bytes`, never both.
+- `into_typed` lives on both pools' byte guards and checks size and alignment with the same
+  `type_fits` as `to_slot`, a misfit an `Err` that hands the byte guard back, since the type
+  follows from bytes that arrived.
+- v1's view shares one index lookup, `locate`, and one guard minting, `mint`, between the typed
+  and the byte path. v0's `slot_from_idx` lost a trait bound it never used, so it mints a byte
+  guard too, and v0's alloc and free paths are untouched.
+- Tests: three message types (16, 112, and 400 bytes) from one three-stack pool taken back as
+  bytes and dispatched by tag, a misfit handed back and reused, hostile descriptors refused,
+  and v0's byte round trip. All pass, under Miri too.
+
+##### test: segmented pool messages over every ring
+
+Every ring carries descriptors, plain data, so each should carry messages of mixed types from a
+multi-stack pool unchanged. One test sends them through all seven rings, spsc v0 to v3 and mpsc
+v0 to v2, and dispatches them by type-tag on receipt. Inserted with the byte slots rung.
+
+- `tests/pool_v1_over_rings.rs`, an integration test, so it uses the public API alone, as a
+  user would: one test per ring, each ring as it ships.
+- Three message types (24, 112, and 400 bytes) from pools of 64-, 128-, and 512-byte stacks,
+  two buffers each, so producers wait on empty stacks and every buffer recycles many times.
+- Every message starts with a type-tag, a number naming its kind, decoded into an `enum Kind` by
+  `TryFrom<u64>`, so the receive `match` is exhaustive and an unknown type-tag fails at the
+  decode. The consumer takes each descriptor back with `to_slot_bytes`, decodes the type-tag,
+  and turns the bytes into the message's type with `into_typed`, checking each message's
+  payload and each producer's order.
+- Vocabulary, the user's call at this rung's review: "type-tag" in prose and `type_tag` in
+  code, one term in both. It keeps clear of Rust's `TypeId`, a per-build value no other process
+  can share, and `Kind` names the decoded enum, as `std::io::ErrorKind` does. The design note
+  defines it, and the byte slots rung's unit test follows there.
+- MPSC rings run two producers, each with its own pool, a pool having one allocator, and both
+  pools in one registry, so one consumer takes back descriptors from two pools.
+- A small trait pair, `DescTx` and `DescRx`, implemented per ring version by a macro, lets one
+  producer and one consumer function drive all seven rings.
+- The segmented rings, spsc v3 and mpsc v2, still take their segments from a v0 pool beside the
+  v1 message pools, the spsc4 and mpsc3 Todo's to change.
+- All seven pass, under Miri too.
+
+##### docs: segmented pool in the design note
+
+The design note had no record of the multi-stack pool, and "type-tag" was a term the ring test
+used without a definition. A `### Multi-stack pool (0.18.0)` section records the pool as built,
+and a `#### Type-tag` entry beside `#### Descriptors` defines the term.
+
+- The section: the layout, the geometry and its ordering by `init`, the alloc family's pick and
+  fallback, the miss counts and `stats()`, the free to its own stack, the registry's `DescMap`
+  and the cross-stack `buf_idx`, the byte-first receive path (`to_slot_bytes`, `into_typed`),
+  the bench table with its readings, the tests, and what is out of scope. The messaging layer's
+  intro names it beside v0.
+- Type-tag: a message's first word naming its type, "type-tag" in prose and `type_tag` in code,
+  decoded to a `Kind` by `TryFrom<u64>`. The entry records the 2026-09-25 survey's finding: Rust
+  code pairs "tag" for the number with `Kind` for the enum (rustc, serde, h2, `enum-kinds`), and
+  never compounds them, so "kind-tag" was not taken. The 0.7.0 design bullet and the open
+  question link to the entry, and the `## Ideas` `Message` trait's `MSG_ID` became `TYPE_TAG`.
+- The unit test `mixed_messages_dispatch_by_tag` became `mixed_messages_dispatch_by_type_tag`,
+  its three consts a `Kind` enum decoded by `TryFrom<u64>` and its `tag` fields `type_tag`, the
+  same shape as the ring test, so the two specimens the entry names agree.
+- The user guide is unchanged: it covers the rings of segments, which take a v0 pool, and the
+  crate docs in `src/lib.rs` already name the pool family.
+
+##### feat: segmented pool v1 closing
+
+Closing out the cycle: the acceptance check run and its result recorded above, the solution
+statement replaced with what was done, the block moved to `## Closed`, and the continuation
+notes reset.
+
+- Close-out shape: trapezoid, the default, since `main` should read the multi-stack pool as one
+  change while every rung stays reachable, and the user's choice on 2026-09-25 when asked to do
+  the closing.
+- Nothing in the block needs a `notes/` home beyond what the docs rung wrote: the design note's
+  `### Multi-stack pool (0.18.0)` and `#### Type-tag` hold the design findings, and the bench
+  readings are in both.
+- No agent-file changed in this cycle, so `notes/agent-files-size.md` gains no row.
+- The `notes/README.md` design-doc entry names the multi-stack pool and the type-tag.
+- The existing "guard" wording stays until `### Pool vocabulary: alloc and guard` runs, the
+  user's call on 2026-09-25 after a survey of the uses: about 70 name the pool's `BufSlot`, about
+  100 the rings' `WriteSlot` / `ReadSlot`, and the rest are unwind guards and prior art. No new
+  text uses the word meanwhile.
 
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
+[1]: #feat-segmented-pool-v1-opening
+[2]: #feat-segmented-pool-region-and-alloc
+[3]: #feat-segmented-pool-in-the-registry
+[4]: #perf-segmented-pool-in-the-allocfree-bench
+[5]: #docs-segmented-pool-in-the-design-note
+[6]: #feat-segmented-pool-v1-closing
+[7]: #refactor-segmented-pool-stack-geometry
+[8]: #test-segmented-pool-allocation-order
+[9]: #feat-segmented-pool-byte-slots-from-descriptors
+[10]: #test-segmented-pool-messages-over-every-ring
