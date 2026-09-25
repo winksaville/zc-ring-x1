@@ -267,7 +267,8 @@ impl<'a, const N: usize, R: DescMap<'a>> PoolRegistry<'a, N, R> {
     /// learns the message's type from the bytes.
     ///
     /// - The byte guard's `into_typed` then gives the typed
-    ///   guard, so a receiver reads a tag and matches on it.
+    ///   guard, so a receiver reads a type-tag and matches on
+    ///   it.
     /// - Every validation failure is an `Err`, as for
     ///   [`to_slot`](Self::to_slot).
     ///

@@ -531,8 +531,8 @@ impl<'p> BufSlot<'p, [u8]> {
     /// guard back unchanged.
     ///
     /// - For a receiver that learns a message's type from its
-    ///   bytes, a tag read through the byte guard, and then
-    ///   wants it typed.
+    ///   bytes, a type-tag read through the byte guard, and
+    ///   then wants it typed.
     /// - A misfit is an `Err`, not a panic, since the type
     ///   chosen follows from bytes that arrived.
     pub fn into_typed<T>(self) -> Result<BufSlot<'p, T>, Self>

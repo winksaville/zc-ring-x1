@@ -9,24 +9,11 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- The cycle `feat: segmented pool v1` is mid-ladder on bookmark `feat-segmented-pool-v1`, every
-  rung through `test: segmented pool messages over every ring` pushed, both repos clean. Next
-  is the rung `docs: segmented pool in the design note`, then the closing.
-- The docs rung carries decisions made on 2026-09-24 and 2026-09-25, beyond its intent line:
-  - Define "type-tag" in the design note's terminology (prose "type-tag", code `type_tag`, the
-    decoded enum `Kind` via `TryFrom<u64>`), next to descriptor. Move the unit test
-    `mixed_messages_dispatch_by_tag` in `src/pool/v1/mod.rs` to it, as the ring test already is.
-  - Rename the `## Ideas` `Message` trait's `MSG_ID` to `TYPE_TAG`.
-  - Write no new "guard": the user's rule until `### Pool vocabulary: alloc and guard` runs.
-  - The section covers the multi-stack pool as built: `StackGeometry` in any order, sorted by
-    `init`, the fallback and `stats()`, the registry's `DescMap`, `to_desc` / `to_slot` /
-    `to_slot_bytes` / `into_typed`, and the bench findings (inlining, not the stack choice).
-    Maybe the user guide too.
 - At the closing: the acceptance check's demo clause came out 0.6 ns in v1's favor, outside the
   noise, explained by v0's helpers not inlining across crates, so record it as a finding, not a
   plain pass. The close-out shape is the user's choice, trapezoid by default.
-- `## Todo` order after this cycle: `### Unwrap lints for the library` first, then
-  `### spsc4 and mpsc3 over either pool`.
+- Write no new "guard": the user's rule until `### Pool vocabulary: alloc and guard` runs. On
+  2026-09-25 the user chose not to sweep the existing uses inside this cycle.
 
 ## In Progress
 
@@ -73,7 +60,7 @@ buffer size, sorted smallest first.
 - [refactor: segmented pool stack geometry][7] (done)
 - [feat: segmented pool byte slots from descriptors][9] (done)
 - [test: segmented pool messages over every ring][10] (done)
-- [docs: segmented pool in the design note][5]
+- [docs: segmented pool in the design note][5] (done)
 - [feat: segmented pool v1 closing][6]
 
 #### Deliberation
@@ -350,7 +337,25 @@ v0 to v2, and dispatches them by type-tag on receipt. Inserted with the byte slo
 
 ##### docs: segmented pool in the design note
 
-A design-note section on the layout, the fallback, the miss counts, and the measured cost.
+The design note had no record of the multi-stack pool, and "type-tag" was a term the ring test
+used without a definition. A `### Multi-stack pool (0.18.0)` section records the pool as built,
+and a `#### Type-tag` entry beside `#### Descriptors` defines the term.
+
+- The section: the layout, the geometry and its ordering by `init`, the alloc family's pick and
+  fallback, the miss counts and `stats()`, the free to its own stack, the registry's `DescMap`
+  and the cross-stack `buf_idx`, the byte-first receive path (`to_slot_bytes`, `into_typed`),
+  the bench table with its readings, the tests, and what is out of scope. The messaging layer's
+  intro names it beside v0.
+- Type-tag: a message's first word naming its type, "type-tag" in prose and `type_tag` in code,
+  decoded to a `Kind` by `TryFrom<u64>`. The entry records the 2026-09-25 survey's finding: Rust
+  code pairs "tag" for the number with `Kind` for the enum (rustc, serde, h2, `enum-kinds`), and
+  never compounds them, so "kind-tag" was not taken. The 0.7.0 design bullet and the open
+  question link to the entry, and the `## Ideas` `Message` trait's `MSG_ID` became `TYPE_TAG`.
+- The unit test `mixed_messages_dispatch_by_tag` became `mixed_messages_dispatch_by_type_tag`,
+  its three consts a `Kind` enum decoded by `TryFrom<u64>` and its `tag` fields `type_tag`, the
+  same shape as the ring test, so the two specimens the entry names agree.
+- The user guide is unchanged: it covers the rings of segments, which take a v0 pool, and the
+  crate docs in `src/lib.rs` already name the pool family.
 
 ##### feat: segmented pool v1 closing
 
@@ -370,6 +375,15 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 `###` heading, so a citation is a link to its anchor. Long-tail entries live in
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
+
+### Test an inter-application message
+
+This is one of the primary initial goals of this project and we've
+never tested if it works. The minimal test I can think of is an SPSC
+between two apps with the producer sending one message to a consumer.
+The consumer will be started first and then the producer sends a
+message that is a random number and a checksum of that number to
+prove the message arrived intact.
 
 ### Unwrap lints for the library
 
@@ -597,9 +611,10 @@ Unranked, not yet solid enough for `## Todo`. Triaged at an opening: promoted to
   ns single-thread round trip (vs malloc tcache's zero atomics). Hold until iiac-perf shows per-op
   CAS matters in a composed workload. We think the pool's tail latency (p99, stddev) already beats
   malloc (no arena locks, no brk/mmap), and that matters more than the mean.
-- `Message` trait over the payload cast boilerplate: const `MSG_ID` + the zerocopy bounds,
-  receiver-side dispatch (read tag, match, cast) without per-call-site ceremony, and maybe a
-  transport seam so an embedded pointer-descriptor profile slots in behind the same API
+- `Message` trait over the payload cast boilerplate: const `TYPE_TAG` + the zerocopy bounds,
+  receiver-side dispatch (read the [type-tag](notes/ring-buffer-design.md#type-tag), decode to
+  a `Kind`, match, cast) without per-call-site ceremony, and maybe a transport seam so an
+  embedded pointer-descriptor profile slots in behind the same API
   [details](notes/ring-buffer-design.md#descriptor-and-registry-design-070).
 - BufSlot auto-free on Drop (RAII, iceoryx2-style): kills the silent leak-on-drop footgun at the
   cost of guard-type asymmetry (ring guards' drop = do-nothing) and a ManuallyDrop dance in

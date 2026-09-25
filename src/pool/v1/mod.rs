@@ -585,8 +585,8 @@ impl<'p> BufSlot<'p, [u8]> {
     /// Turn a guard over the buffer's bytes into a guard over a `T`, after checking `T` fits the
     /// buffer, or hand the byte guard back unchanged.
     ///
-    /// - For a receiver that learns a message's type from its bytes, a tag read through the byte
-    ///   guard, and then wants it typed.
+    /// - For a receiver that learns a message's type from its bytes, a type-tag read through the
+    ///   byte guard, and then wants it typed.
     /// - A misfit is an `Err`, not a panic, since the type chosen follows from bytes that
     ///   arrived.
     pub fn into_typed<T>(self) -> Result<BufSlot<'p, T>, Self>
@@ -1354,18 +1354,35 @@ mod tests {
         assert_eq!(pool.misses, [0, 0, 0]);
     }
 
-    /// A message's first word, which says which message it is.
-    const PING: u64 = 1;
-    /// The tag of a [`Text`].
-    const TEXT: u64 = 2;
-    /// The tag of a [`Blob`].
-    const BLOB: u64 = 3;
+    /// Which kind of message a buffer holds, each variant's value its type-tag, the message's
+    /// first word.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[repr(u64)]
+    enum Kind {
+        Ping = 1,
+        Text = 2,
+        Blob = 3,
+    }
+
+    impl TryFrom<u64> for Kind {
+        type Error = u64;
+
+        /// Decode a type-tag, or hand back one that names no kind.
+        fn try_from(type_tag: u64) -> Result<Self, u64> {
+            match type_tag {
+                1 => Ok(Kind::Ping),
+                2 => Ok(Kind::Text),
+                3 => Ok(Kind::Blob),
+                _ => Err(type_tag),
+            }
+        }
+    }
 
     /// A small message, 16 bytes.
     #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
     #[repr(C)]
     struct Ping {
-        tag: u64,
+        type_tag: u64,
         seq: u64,
     }
 
@@ -1373,7 +1390,7 @@ mod tests {
     #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
     #[repr(C)]
     struct Text {
-        tag: u64,
+        type_tag: u64,
         len: u64,
         bytes: [u8; 96],
     }
@@ -1382,7 +1399,7 @@ mod tests {
     #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
     #[repr(C)]
     struct Blob {
-        tag: u64,
+        type_tag: u64,
         words: [u64; 49],
     }
 
@@ -1391,7 +1408,7 @@ mod tests {
         [geom(LINE, 2), geom(2 * LINE, 2), geom(8 * LINE, 2)];
 
     #[test]
-    fn mixed_messages_dispatch_by_tag() {
+    fn mixed_messages_dispatch_by_type_tag() {
         use crate::PoolRegistry;
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, MESSAGE_STACKS).unwrap();
@@ -1400,13 +1417,16 @@ mod tests {
 
         // The sender: three message types, each from the stack that fits it, into descriptors.
         let mut ping = pool.alloc::<Ping>().unwrap();
-        *ping = Ping { tag: PING, seq: 7 };
+        *ping = Ping {
+            type_tag: Kind::Ping as u64,
+            seq: 7,
+        };
         let mut text = pool.alloc::<Text>().unwrap();
-        text.tag = TEXT;
+        text.type_tag = Kind::Text as u64;
         text.len = 5;
         text.bytes[..5].copy_from_slice(b"hello");
         let mut blob = pool.alloc::<Blob>().unwrap();
-        blob.tag = BLOB;
+        blob.type_tag = Kind::Blob as u64;
         blob.words[48] = 0xb10b;
         let descs = [
             reg.to_desc(id, text).map_err(|(_, e)| e).unwrap(),
@@ -1415,19 +1435,21 @@ mod tests {
         ];
 
         // The receiver knows none of the types up front: it takes each descriptor back as
-        // bytes, reads the tag, and turns the guard typed by it.
+        // bytes, decodes the type-tag, and turns the bytes into the type it names.
         let mut seen = Vec::new();
         for desc in descs {
             // SAFETY: each desc came from to_desc on this thread and is taken back once.
             let bytes = unsafe { reg.to_slot_bytes(desc) }.unwrap();
-            let tag = u64::read_from_prefix(&bytes[..]).unwrap().0;
-            match tag {
-                PING => {
+            let type_tag = u64::read_from_prefix(&bytes[..]).unwrap().0;
+            let kind = Kind::try_from(type_tag)
+                .unwrap_or_else(|type_tag| panic!("unknown type-tag {type_tag}"));
+            match kind {
+                Kind::Ping => {
                     let ping = bytes.into_typed::<Ping>().map_err(|_| "ping").unwrap();
                     seen.push(format!("ping {}", ping.seq));
                     ping.free();
                 }
-                TEXT => {
+                Kind::Text => {
                     let text = bytes.into_typed::<Text>().map_err(|_| "text").unwrap();
                     let len = text.len as usize;
                     seen.push(format!(
@@ -1436,12 +1458,11 @@ mod tests {
                     ));
                     text.free();
                 }
-                BLOB => {
+                Kind::Blob => {
                     let blob = bytes.into_typed::<Blob>().map_err(|_| "blob").unwrap();
                     seen.push(format!("blob {:#x}", blob.words[48]));
                     blob.free();
                 }
-                _ => panic!("unknown tag {tag}"),
             }
         }
         assert_eq!(seen, ["text hello", "blob 0xb10b", "ping 7"]);
