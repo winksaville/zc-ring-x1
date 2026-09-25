@@ -1,9 +1,14 @@
-//! SPSC ring v4: v3's ring of segments, copied so a second
-//! process can attach to it and the two measure side by side.
+//! SPSC ring v4: v3's ring of segments over a ring that describes
+//! itself in the region, so a second process can attach to it,
+//! and v3 stays as built to measure against.
 //!
-//! - This rung is the verbatim copy. The control block, the
-//!   offsets, the role claims, and `attach` are the rungs after
-//!   it, and until they land v4 behaves as v3 does.
+//! - What v4 adds to v3: a control block at the front of segment
+//!   0 (magic, layout version, geometry, the role claims word, and
+//!   the table of every segment's pool buffer index), a table of
+//!   offsets instead of pointers in the endpoints, [`Ring::attach`]
+//!   from a pool and [`Ring::first_segment`], and the roles taken
+//!   by name, [`Ring::producer`] and [`Ring::consumer`], each held
+//!   once anywhere. The protocol below is v3's, unchanged.
 //! - A ring holds up to [`MAX_SEGMENTS`] segments, each a ring of
 //!   its own of the same depth, every one taken from the
 //!   application's pool at [`Ring::init`]. Nothing allocates,
@@ -31,12 +36,14 @@
 //! - Each side keeps a private resume position per segment. Both
 //!   leave a segment at the same slot, so a reused segment's
 //!   seqs are already claimable where the producer picks up.
-//! - No `attach`: the ring's state spans a pool and its
-//!   segments, and the endpoints are in-process.
-//! - How to use it, from a pool to two threads, is v3's user
-//!   guide, `notes/user-guide.md`, and what happens to the
-//!   segments over a run is the design note's Segment lifecycle
-//!   subsection, both unchanged by the copy.
+//! - Attach is a join, not a resume: an endpoint taken after
+//!   `attach` starts in segment 0 at position 0, as one taken
+//!   after `init` does, so a process joins before its role has
+//!   run.
+//! - How to use it, from a pool to two threads and to a second
+//!   process, is the user guide, `notes/user-guide.md`, and what
+//!   happens to the segments over a run is the design note's
+//!   Segment lifecycle subsection, v3's and v4's alike.
 
 use core::mem::{align_of, size_of};
 use core::sync::atomic::{AtomicU32, Ordering};

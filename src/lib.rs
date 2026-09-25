@@ -23,6 +23,9 @@
 //!   Primitive modules hold versioned sibling implementations
 //!   (`spsc::v0`, ...) behind per-module default-version
 //!   re-exports, and this crate root re-exports the defaults.
+//! - `spsc::v4`, by path, is the ring of segments a second
+//!   process can join: `Ring::attach` from a pool and a first
+//!   segment, and the roles taken by name.
 //! - Message pools live in the `pool` module: the default
 //!   [`Pool`] is `pool::v0`, a single-stack pool of one buffer
 //!   size, and `pool::v1` is a multi-stack pool, one stack per

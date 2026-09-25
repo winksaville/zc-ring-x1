@@ -13,8 +13,9 @@ Project design docs:
 - [ring-buffer-design.md](ring-buffer-design.md): the
   zero-copy ring buffer, its MPSC sibling, the seam-word
   SPSC v1, the in-slot seq SPSC v2, the ring of segments
-  SPSC v3, the equality-seq MPSC v1, and the ring of
-  segments MPSC v2 with their measurements at four depths,
+  SPSC v3, the equality-seq MPSC v1, the ring of
+  segments MPSC v2, and the attachable SPSC v4 with their
+  measurements at four depths,
   the pool-message sweep against cordyceps's intrusive MPSC, and
   the multi-stack pool with the type-tag a receiver dispatches
   on (terminology, requirements, layout, API, validation), kept

@@ -54,7 +54,13 @@ one segment, and the others absorb a producer that runs ahead
 ([Segment lifecycle](notes/ring-buffer-design.md#segment-lifecycle)).
 The points above describe the single-region rings, `spsc::v0`
 through `spsc::v2`, which stay available by path and keep
-`attach` and `user()`. The multi-producer sibling is
+`attach` and `user()`. `spsc::v4`, by path, is the ring of
+segments with `attach`: its segment 0 carries a control block,
+its endpoints keep offsets, and a second process joins through
+the pool and takes its role by name, `producer()` or
+`consumer()`, held once anywhere
+([SPSC v4](notes/ring-buffer-design.md#spsc-v4-attachable-segments)).
+The multi-producer sibling is
 `mpsc::v2::MpscRing`, the same ring of segments with any number
 of producers sending through a fill closure, reached by path
 since the crate-root `MpscRing` is still the single-region

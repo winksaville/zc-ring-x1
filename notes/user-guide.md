@@ -26,9 +26,10 @@ a producer that runs ahead, so the ring never reports Full until every segment i
   v2 by path.
 
 Both are `no_std`, allocate nothing after `init`, and are in-process only: neither has an
-`attach`, since a ring's state spans a pool and its segments. The single-region rings, `spsc::v0`
-to `v2` and `mpsc::v0` and `v1`, keep `attach` for shared memory between processes and are
-outside this guide.
+`attach`, since a ring's state spans a pool and its segments. **SPSC v4**, `zc_ring_x1::spsc::v4`,
+is SPSC v3 with an `attach`, for a ring shared between processes, in [Joining from another
+process](#joining-from-another-process) below. The single-region rings, `spsc::v0` to `v2` and
+`mpsc::v0` and `v1`, keep `attach` as well and are outside this guide.
 
 ## The message type
 
@@ -223,8 +224,40 @@ of zero says one segment would have done.
   reserve or send by a panic.
 - MPSC v2 needs a 32-bit compare-and-swap, so the `mpsc` module is gated on
   `target_has_atomic = "32"`. SPSC v3 uses loads and stores only.
-- No `attach`, so no sharing between processes. The single-region rings keep it.
+- No `attach` on SPSC v3 and MPSC v2, so no sharing between processes. SPSC v4 has it, and the
+  single-region rings keep theirs.
 - One reservation per endpoint at a time, by the guard's borrow.
+
+## Joining from another process
+
+`spsc::v4::Ring` is SPSC v3 with a control block at the front of its segment 0, so a process
+that maps the same pool region can find the ring and take a role in it.
+
+```rust
+// The process that builds the ring, over a pool it initialized.
+let ring = spsc::v4::Ring::init(&mut pool, SLOT, DEPTH, SEGMENTS)?;
+let mut consumer = ring.consumer()?;
+let first = ring.first_segment(); // hand this to the other process
+
+// The other process, over the same region mapped as it maps it.
+let pool = unsafe { Pool::attach(base, len) }?;
+let ring = unsafe { spsc::v4::Ring::attach(&pool, first) }?;
+let mut producer = ring.producer()?;
+```
+
+- There is no `split`: `producer()` and `consumer()` each take their role by a compare-and-swap
+  on the control block, from a `Ring` that `init` or `attach` returned, and the second taker of a
+  role anywhere, in this process or another, gets `Error::RoleTaken`. Dropping the endpoint
+  releases the role. A process that ends without dropping leaves its role held.
+- `first_segment` is the pool buffer index of the ring's segment 0, a number the building process
+  hands the other by whatever means it has, an argument, a file, or a message.
+- `attach` validates the control block and every segment's own header against the pool, so a
+  hostile region is an `Err`, and it is `unsafe` for what validation cannot check: that the index
+  came from a ring over this pool whose segments are still its own.
+- A joined endpoint starts in segment 0 at position 0, as one from `init` does, so join before
+  the role has run. A ring already run is not rejoined.
+- Everything after the join, sending, receiving, the policies, and the segment lifecycle, is
+  SPSC v3's, and the rows for both are in the measurement tools.
 
 ## Errors and panics
 
@@ -234,6 +267,8 @@ of zero says one segment would have done.
 | `Ring::init`, `MpscRing::init` | `Error::BadSlotSize`, `BadCapacity`, `BadSegmentCount` | a slot size not a line multiple, a capacity not a power of two or out of range, a segment count out of range |
 | `Ring::init`, `MpscRing::init` | `Error::TooSmall` | the pool's buffers do not hold `segment_size` |
 | `Ring::init`, `MpscRing::init` | `Error::Exhausted` | the pool had fewer free buffers than segments, and those taken were returned |
+| `spsc::v4::Ring::attach` | `Error::BadMagic`, `BadLayoutVersion`, `BadSegment`, `TooSmall`, and the geometry errors | the index names no v4 ring, another layout, a table or a segment header that disagrees with the pool, or a segment the pool's buffers cannot hold |
+| `spsc::v4::Ring::producer`, `consumer` | `Error::RoleTaken` | the role is held, in this process or another |
 | producer reserve or send | `Full` | the policy gave up with every segment full |
 | consumer reserve | `Empty` | the policy gave up with nothing committed |
 | first reserve or send | panic | `T` larger than the slot body or aligned beyond 16 |

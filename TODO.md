@@ -69,7 +69,7 @@ process attaches through the pool, and v3 stays as built, the baseline to measur
 - [feat: spsc v4 control block and offsets][3] (done)
 - [feat: spsc v4 attach and role claims][4] (done)
 - [perf: spsc v4 in the measurement tools][5] (done)
-- [docs: spsc v4 in the design note and guide][6]
+- [docs: spsc v4 in the design note and guide][6] (done)
 - [feat: attachable SPSC v4 closing][7]
 
 #### Deliberation
@@ -281,6 +281,18 @@ acceptance check's second clause.
 
 A "SPSC v4: attachable segments" section in the design note with the comparison, v3's Limits
 bullet pointing at it, the user guide's attach section, and the README's ring list.
+
+- The design note section: what v4 is for, the offsets and why they are from the buffer array,
+  the four-line control block and why the table holds indices, attach and what it validates and
+  what it cannot, roles by name and the claims word, join not resume, the Stacked Borrows finding
+  from the tests, the prediction, both runs' tables, the readings, and a verdict that keeps v3 as
+  the default and sends the two-thread gap to the fast-path Todo.
+- The user guide: SPSC v4 named in "What the rings are", the `attach` limit narrowed to v3 and
+  MPSC v2, a "Joining from another process" section with the two processes' code and the rules
+  (no `split`, `first_segment` handed over by the caller, `attach` unsafe for what it cannot
+  check, join before the role has run), and the errors table's `attach` and role rows.
+- The v4 module docs say what v4 adds to v3 instead of that it is a copy, the crate docs and the
+  README name `spsc::v4` by path, and `notes/README.md`'s design-doc entry lists it.
 
 ##### feat: attachable SPSC v4 closing
 
