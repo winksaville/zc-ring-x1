@@ -17,7 +17,7 @@
 //!   L3, x-CCX, cores on different L3s, SMT, one core's two
 //!   cpus sharing its L1 and L2, and unpinned.
 //!   Every ring version runs beside it at each placement, the
-//!   `spsc1_` to `spsc3_` and `mpsc0_` to `mpsc2_` lines
+//!   `spsc1_` to `spsc4_` and `mpsc0_` to `mpsc2_` lines
 //!   (the MPSC ones by send_with closure fill), the segmented
 //!   rings at one segment, plus a 2-producer + 1-consumer
 //!   line: the shape only the MPSC ring can run.
@@ -388,6 +388,8 @@ fn pin_to_cpu(_cpu: usize) {}
 /// - `segmented $segments`: a v3 ring of `$segments` segments,
 ///   each `$depth` slots, over a pool holding exactly those
 ///   segments.
+/// - `segmented_roles $segments`: the same over a v4 ring, whose
+///   endpoints are taken by name.
 macro_rules! spsc_pair {
     ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
      single $ring:path, $size:path) => {
@@ -409,6 +411,19 @@ macro_rules! spsc_pair {
             zc_ring_x1::spsc::v3::Ring::init(&mut $pool, slot, $depth, $segments)
                 .unwrap() // OK: the pool holds exactly the segments, sized by segment_size
                 .split();
+    };
+    ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
+     segmented_roles $segments:expr) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let buf = zc_ring_x1::spsc::v4::segment_size(slot, $depth);
+        let mut $store =
+            region(size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * $segments as u64);
+        let mut $pool = Pool::init($store.as_mut_bytes(), buf as u32, $segments)
+            .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
+        let ring = zc_ring_x1::spsc::v4::Ring::init(&mut $pool, slot, $depth, $segments)
+            .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
+        let mut $producer = ring.producer().unwrap(); // OK: a fresh ring, no role held
+        let mut $consumer = ring.consumer().unwrap(); // OK: a fresh ring, no role held
     };
 }
 
@@ -518,6 +533,11 @@ spsc_loops!(
     spsc3_ring_one_msg_1t,
     spsc3_ring_one_msg_2t,
     segmented SWEEP_SEGMENTS
+);
+spsc_loops!(
+    spsc4_ring_one_msg_1t,
+    spsc4_ring_one_msg_2t,
+    segmented_roles SWEEP_SEGMENTS
 );
 
 /// Bind one MPSC ring's `$producer` and `$consumer`, one-line
@@ -1039,7 +1059,7 @@ struct StreamFlavor {
 
 /// The flavors the sweep runs, in table order, named `xpsc-vN`
 /// after their module paths.
-const STREAM_FLAVORS: [StreamFlavor; 7] = [
+const STREAM_FLAVORS: [StreamFlavor; 8] = [
     StreamFlavor {
         name: "spsc-v0",
         min_depth: 1,
@@ -1063,6 +1083,12 @@ const STREAM_FLAVORS: [StreamFlavor; 7] = [
         min_depth: 1,
         one_t: spsc3_ring_one_msg_1t,
         two_t: spsc3_ring_one_msg_2t,
+    },
+    StreamFlavor {
+        name: "spsc-v4",
+        min_depth: 1,
+        one_t: spsc4_ring_one_msg_1t,
+        two_t: spsc4_ring_one_msg_2t,
     },
     StreamFlavor {
         name: "mpsc-v0",
@@ -1497,7 +1523,7 @@ fn depth_sweep(two_t: &[Placement]) {
     }
     let depth_list: Vec<String> = DEPTHS.iter().map(|d| d.to_string()).collect();
     println!(
-        "depth sweep: {} messages per cell, ns/msg at depths {}, spsc-v3 and mpsc-v2 with {SWEEP_SEGMENTS} segment(s)",
+        "depth sweep: {} messages per cell, ns/msg at depths {}, spsc-v3, spsc-v4, and mpsc-v2 with {SWEEP_SEGMENTS} segment(s)",
         commas(COUNT),
         depth_list.join(", ")
     );
@@ -1548,6 +1574,10 @@ fn two_t_lines(label: &str, pin: PinPair) {
     report(
         &format!("spsc3_ring_one_msg_2t ({label}):"),
         spsc3_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("spsc4_ring_one_msg_2t ({label}):"),
+        spsc4_ring_one_msg_2t(pin, DEPTH),
     );
     report(
         &format!("mpsc0_ring_one_msg_2t ({label}):"),
@@ -1629,6 +1659,10 @@ fn main() {
     report(
         &format!("spsc3_ring_one_msg_1t (core {base}):"),
         spsc3_ring_one_msg_1t(DEPTH),
+    );
+    report(
+        &format!("spsc4_ring_one_msg_1t (core {base}):"),
+        spsc4_ring_one_msg_1t(DEPTH),
     );
     report(
         &format!("mpsc0_ring_one_msg_1t (core {base}):"),

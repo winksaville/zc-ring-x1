@@ -16,10 +16,11 @@ through `perf_event_open`, with no perf(1) or root needed.
 SMT siblings share one core's caches, so there xfills reads
 near 0, which is expected.
 Runs vary by **flavor**, which ring (`spsc-v0`, `spsc-v1`,
-`spsc-v2`, `spsc-v3`, `mpsc-v0`, `mpsc-v1`, `mpsc-v2`, named
-after their module paths), and by **placement**, which CPUs
-the two threads sit on: same L3, different L3, SMT siblings,
-or unpinned. `spsc-v3` and `mpsc-v2` are rings of segments:
+`spsc-v2`, `spsc-v3`, `spsc-v4`, `mpsc-v0`, `mpsc-v1`,
+`mpsc-v2`, named after their module paths), and by
+**placement**, which CPUs the two threads sit on: same L3,
+different L3, SMT siblings, or unpinned. `spsc-v3`, `spsc-v4`,
+and `mpsc-v2` are rings of segments:
 `--segments N`, 1 to 32 and default 2, sets how many per ring,
 the depth is each segment's, and their rows add how often they
 switched segments, `switches/RT` in `tp-matrix` and
@@ -110,11 +111,11 @@ samples enough for the mean and stdev at millions of trips a
 second, and a calmer number wants `-d 5`.
 
 ```sh
-$ tp-matrix -d 10                  # 28 cells x 10 s on a typical SMT machine, depth 8
+$ tp-matrix -d 10                  # 32 cells x 10 s on a typical SMT machine, depth 8
 $ tp-matrix -d 5 --depth 1,2,8,64  # every cell again at each depth
 $ tp-matrix -d 1 -v                # with the column legend
 tp-matrix 0.1.0 - run the full measurement matrix, markdown tables out
-28 cells, 1.0s each, spsc-v3 and mpsc-v2 with 2 segments
+32 cells, 1.0s each, spsc-v3, spsc-v4, and mpsc-v2 with 2 segments
 ...
 | placement  | flavor  | depth |   m.send |     w.recv |     w.spin | ... |  RTs | xfills/RT |
 |------------|---------|------:|---------:|-----------:|-----------:|-----|-----:|----------:|

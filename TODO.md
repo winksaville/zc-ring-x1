@@ -68,7 +68,7 @@ process attaches through the pool, and v3 stays as built, the baseline to measur
 - [feat: spsc v4 as a copy of v3][2] (done)
 - [feat: spsc v4 control block and offsets][3] (done)
 - [feat: spsc v4 attach and role claims][4] (done)
-- [perf: spsc v4 in the measurement tools][5]
+- [perf: spsc v4 in the measurement tools][5] (done)
 - [docs: spsc v4 in the design note and guide][6]
 - [feat: attachable SPSC v4 closing][7]
 
@@ -219,6 +219,63 @@ clauses.
 
 v4 rows beside v3's in `tp-matrix`, `tp-stream`, and the demo, and the measurement of the
 acceptance check's second clause.
+
+- The tools: `Flavor::SpscV4` (`spsc-v4`) in `tp_matrix`, `run_cell` and `run_stream` dispatching
+  to it, and `spsc_pair!`'s segmented arm now takes the ring and its `segment_size` instead of
+  naming v3, with a `segmented_roles` arm for a ring whose endpoints are taken by name. The demo
+  gains the same arm, the `spsc4_ring_one_msg_1t` / `_2t` loops, and the depth-sweep flavor. The
+  banners and legends name `spsc-v4`, and the tp_matrix README counts 32 cells.
+  - The segment-stress table stays v3 and mpsc-v2: its subject is the switch cost, which v4 does
+    not change, and its macros bind the v3 pair by name.
+- Measured 2026-09-25 on the 3900X, `tp-stream` and `tp-matrix` at `-d 1 --depth 1,8,64,1024`,
+  two segments, each run twice, and the demo once. Prediction on record: v4 within run-to-run
+  noise of v3 where no switch happens. Stream ns per message, v3 / v4, run 1 then run 2:
+
+  | placement | d=1 | d=8 | d=64 | d=1024 |
+  |---|---|---|---|---|
+  | 11,10 CCX | 74.0 / 75.5, 67.5 / 68.3 | 15.9 / 18.1, 14.3 / 16.4 | 14.3 / 15.1, 13.0 / 13.6 | 13.7 / 15.4, 12.3 / 13.9 |
+  | 11,8 x-CCX | 228.7 / 231.5, 227.2 / 231.1 | 49.0 / 48.8, 48.8 / 48.2 | 23.7 / 22.1, 24.2 / 23.2 | 16.1 / 19.3, 16.1 / 16.8 |
+  | 11,23 SMT | 31.3 / 33.4, 31.3 / 33.2 | 17.2 / 20.0, 17.1 / 19.9 | 17.2 / 20.0, 17.1 / 19.9 | 17.2 / 20.0, 17.1 / 19.9 |
+  | unpinned | 62.0 / 64.4, 60.9 / 64.0 | 15.0 / 16.0, 14.8 / 15.4 | 12.7 / 12.9, 12.3 / 13.5 | 11.7 / 12.9, 11.9 / 13.0 |
+
+  The round trip, main's send and the worker's receive in ns, v3 / v4, run 1 then run 2, and
+  the cross-core fills per round trip from run 1:
+
+  | placement | depth | m.send | w.recv | xfills/RT |
+  |---|---|---|---|---|
+  | 11,10 CCX | 1 | 16.7 / 15.9, 17.0 / 15.7 | 132.0 / 101.3, 132.0 / 101.2 | 9.001 / 8.004 |
+  | 11,10 CCX | 8 | 12.9 / 13.1, 12.5 / 13.3 | 110.7 / 107.6, 109.3 / 105.1 | 3.191 / 3.214 |
+  | 11,10 CCX | 64 | 13.1 / 13.1, 12.7 / 13.3 | 90.1 / 99.2, 89.0 / 98.9 | 2.168 / 2.150 |
+  | 11,10 CCX | 1024 | 13.1 / 13.1, 12.7 / 13.3 | 96.8 / 98.0, 96.9 / 98.2 | 2.006 / 2.005 |
+  | 11,8 x-CCX | 1 | 21.9 / 29.5, 65.2 / 31.9 | 481.7 / 351.3, 472.8 / 355.0 | 8.969 / 8.035 |
+  | 11,8 x-CCX | 64 | 13.1 / 13.4, 12.3 / 13.3 | 276.0 / 266.0, 282.2 / 264.7 | 2.134 / 2.217 |
+  | 11,8 x-CCX | 1024 | 13.2 / 13.8, 12.4 / 13.4 | 273.6 / 264.0, 276.2 / 260.8 | 2.021 / 2.022 |
+  | 11,23 SMT | 1 | 24.8 / 25.5, 24.8 / 25.1 | 114.3 / 116.7, 114.1 / 114.0 | 0.0004 / 0.0004 |
+  | 11,23 SMT | 64 | 17.6 / 18.4, 17.6 / 18.5 | 113.0 / 116.8, 112.6 / 116.5 | 0.0004 / 0.0004 |
+  | 11,23 SMT | 1024 | 18.0 / 18.5, 18.0 / 18.5 | 111.6 / 115.3, 111.6 / 115.4 | 0.0005 / 0.0006 |
+
+  The demo, one segment at depth 64, ns per message: the single-thread loop v3 20.5 and v4
+  19.5, and the two-thread loop v3 / v4 at 21.6 / 23.5 on the CCX, 28.7 / 32.3 across it, 20.0 /
+  21.4 on the SMT pair, and 23.8 / 26.6 unpinned. The depth sweep's single-thread rows read v4
+  under v3 at every depth, 19.5 to 23.7 against 20.3 to 24.7.
+- Readings, the prediction failed and the failure is not the add:
+  - Streaming with no switch, v4 runs 0.6 to 2.8 ns per message slower than v3 on every pinned
+    placement in both runs, 5 to 16 percent, the most on the SMT pair (17.1 against 19.9 at every
+    depth, the two runs agreeing to 0.1), and at depth 1024 across the CCX. The sends of the
+    round trip read 0.2 to 0.9 ns slower, and its receives 4 ns slower on the SMT pair.
+  - The single-thread loop, the instruction path alone, reads v4 a nanosecond under v3, so the
+    added offset add is not the cost. The fills per message read the same or fewer for v4. What
+    two threads pay that one does not is not found here, and the code delta is 16 bytes in the
+    copied table, one add per slot access, and three more header lines ahead of the slots.
+  - v4 wins where the ring switches on every message: the round trip at depth 1 moves 8 lines
+    against v3's 9 and its receive runs a fifth to a quarter faster (101 against 132 ns on the
+    CCX, 351 against 477 across it). We think the claims line is a spacer: v3's `given` word
+    shares its 128-byte pair with slot 0, which the adjacent-line prefetcher drags along on every
+    give-back, and v4's shares it with the untouched claims line.
+  - The comparison to trust is the one the fast-path Todo makes, since both rings copy the table
+    per message and that copy is more than half of v3's gap to v2. The `### SPSC v3 fast path`
+    Todo measures v4 beside v3 when it runs, and the cause of the two-thread gap is looked for
+    there, with v4's stream rows as the mark.
 
 ##### docs: spsc v4 in the design note and guide
 
