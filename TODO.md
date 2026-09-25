@@ -70,6 +70,7 @@ process attaches through the pool, and v3 stays as built, the baseline to measur
 - [feat: spsc v4 attach and role claims][4] (done)
 - [perf: spsc v4 in the measurement tools][5] (done)
 - [docs: spsc v4 in the design note and guide][6] (done)
+- [perf: spsc v4 in the segment stress table][8] (done)
 - [feat: attachable SPSC v4 closing][7]
 
 #### Deliberation
@@ -293,6 +294,42 @@ bullet pointing at it, the user guide's attach section, and the README's ring li
   check, join before the role has run), and the errors table's `attach` and role rows.
 - The v4 module docs say what v4 adds to v3 instead of that it is a copy, the crate docs and the
   README name `spsc::v4` by path, and `notes/README.md`'s design-doc entry lists it.
+
+##### perf: spsc v4 in the segment stress table
+
+The demo's segment stress table, the switch cost's home, runs spsc-v3 and mpsc-v2 alone, so v4's
+switch cost is unmeasured. v4 rows beside v3's in every line of it. Inserted at the user's call
+on 2026-09-25, after the closing had pushed and before Land, as a rung ahead of the closing.
+
+- The stress macros spell their pair `segmented segments` by name, so `spsc4_pair!` is a one-arm
+  macro that forwards that spelling to `spsc_pair!`'s `segmented_roles` arm, and the three
+  macros bind `spsc4_burst_1t`, `spsc4_lagging_2t`, and `spsc4_stream_2t` through it. The table
+  gains a v4 row after each v3 row: the burst, the lagging consumer at every placement, and the
+  switch-cost pairs single-threaded and streaming across the CCX. The banner and the module docs
+  name it.
+- Measured 2026-09-25 on the 3900X, one demo run, so indicative as the demo's numbers are:
+
+  | line | placement | shape | ns/msg | switches | sw/msg | switch ns |
+  |---|---|---|---|---|---|---|
+  | spsc3 burst 1t | core 11 | 4x64 | 22.2 | 11,719 | 0.012 | - |
+  | spsc4 burst 1t | core 11 | 4x64 | 22.4 | 11,719 | 0.012 | - |
+  | spsc3 burst 1t | core 11 | 1x32 | 22.3 | 0 | 0.000 | - |
+  | spsc3 burst 1t | core 11 | 32x1 | 29.2 | 968,750 | 0.969 | 7.1 |
+  | spsc4 burst 1t | core 11 | 1x32 | 22.8 | 0 | 0.000 | - |
+  | spsc4 burst 1t | core 11 | 32x1 | 34.1 | 968,750 | 0.969 | 11.7 |
+  | spsc3 stream 2t | 11,8 x-CCX | 1x32 | 33.5 | 0 | 0.000 | - |
+  | spsc3 stream 2t | 11,8 x-CCX | 32x1 | 157.1 | 999,989 | 1.000 | 123.6 |
+  | spsc4 stream 2t | 11,8 x-CCX | 1x32 | 57.9 | 0 | 0.000 | - |
+  | spsc4 stream 2t | 11,8 x-CCX | 32x1 | 177.8 | 999,983 | 1.000 | 119.9 |
+
+  The lagging rows use every segment on both rings at every placement with the same switch
+  counts, 11,718 to 11,732, so v4 switches as v3 does.
+- Readings: the switch itself costs v4 more single-threaded, 11.7 against 7.1 ns per switch, a
+  4.6 ns gap where the two-thread stream at depth 1 had none in the tools rung's tables (the
+  round trip there favored v4). Streaming across the CCX the switch costs the same, 120 against
+  124, and the one-segment stream read 57.9 against 33.5 in this run, a gap the tools' two runs
+  at depth 64 (22.1 and 23.2 against 23.7 and 24.2) do not show, so it is one run's number until
+  the fast-path Todo repeats it. Nothing here changes the cycle's verdict.
 
 ##### feat: attachable SPSC v4 closing
 
@@ -650,3 +687,4 @@ of this section, and the cycles before the rule in the frozen [notes/chores/](no
 [5]: #perf-spsc-v4-in-the-measurement-tools
 [6]: #docs-spsc-v4-in-the-design-note-and-guide
 [7]: #feat-attachable-spsc-v4-closing
+[8]: #perf-spsc-v4-in-the-segment-stress-table

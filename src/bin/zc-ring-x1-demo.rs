@@ -25,8 +25,8 @@
 //!   placement and at depths 1, 2, 8, and 64, one table per
 //!   placement, so depth and protocol can be told apart, the
 //!   segmented rings again at one segment.
-//! - The segment stress, last, one table with a legend: spsc-v3
-//!   and mpsc-v2 at four segments, a burst that fills every
+//! - The segment stress, last, one table with a legend: spsc-v3,
+//!   spsc-v4, and mpsc-v2 at four segments, a burst that fills every
 //!   segment and drains on one thread, a lagging consumer at
 //!   each placement, and the cost of one switch measured at
 //!   depth 1 as a difference at equal capacity, 32 segments of
@@ -1330,11 +1330,24 @@ macro_rules! ring_recv {
     }};
 }
 
+/// The v4 pair under the stress macros' `segmented` spelling:
+/// the same arguments, bound through `spsc_pair!`'s
+/// `segmented_roles` arm.
+macro_rules! spsc4_pair {
+    ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
+     segmented $segments:expr) => {
+        spsc_pair!($producer, $consumer, $store, $pool, $depth, segmented_roles $segments);
+    };
+}
+
 burst_1t!(spsc3_burst_1t, spsc_send, ring_recv, spsc_pair);
+burst_1t!(spsc4_burst_1t, spsc_send, ring_recv, spsc4_pair);
 burst_1t!(mpsc2_burst_1t, mpsc_send, ring_recv, mpsc_pair);
 lagging_2t!(spsc3_lagging_2t, spsc_send, ring_recv, spsc_pair);
+lagging_2t!(spsc4_lagging_2t, spsc_send, ring_recv, spsc4_pair);
 lagging_2t!(mpsc2_lagging_2t, mpsc_send, ring_recv, mpsc_pair);
 stream_2t!(spsc3_stream_2t, spsc_send, ring_recv, spsc_pair);
+stream_2t!(spsc4_stream_2t, spsc_send, ring_recv, spsc4_pair);
 stream_2t!(mpsc2_stream_2t, mpsc_send, ring_recv, mpsc_pair);
 
 /// The two shapes the switch cost is a difference between: the
@@ -1394,7 +1407,7 @@ fn legend(text: &str) {
 /// at depth 1, single-threaded and streaming across cores.
 fn segment_stress(placements: &[Placement]) {
     println!(
-        "segment stress: {} messages per line, spsc-v3 and mpsc-v2 at {STRESS_SEGMENTS} segments \
+        "segment stress: {} messages per line, spsc-v3, spsc-v4, and mpsc-v2 at {STRESS_SEGMENTS} segments \
          of {DEPTH} slots, then the switch cost at depth 1",
         commas(COUNT)
     );
@@ -1406,6 +1419,7 @@ fn segment_stress(placements: &[Placement]) {
             "spsc3 burst 1t",
             spsc3_burst_1t as fn(u32, u32) -> (f64, u32, (u64, u64)),
         ),
+        ("spsc4 burst 1t", spsc4_burst_1t),
         ("mpsc2 burst 1t", mpsc2_burst_1t),
     ] {
         let (secs, used, (sent, seen)) = run(STRESS_SEGMENTS, DEPTH);
@@ -1430,6 +1444,7 @@ fn segment_stress(placements: &[Placement]) {
                 "spsc3 lagging 2t",
                 spsc3_lagging_2t as fn(PinPair, u32, u32) -> (u32, (u64, u64)),
             ),
+            ("spsc4 lagging 2t", spsc4_lagging_2t),
             ("mpsc2 lagging 2t", mpsc2_lagging_2t),
         ] {
             let (used, (sent, seen)) = run(*pin, STRESS_SEGMENTS, DEPTH);
@@ -1447,6 +1462,7 @@ fn segment_stress(placements: &[Placement]) {
     }
     let one_t = format!("core {}", base_cpu());
     switch_cost(&mut rows, "spsc3 burst 1t", &one_t, spsc3_burst_1t);
+    switch_cost(&mut rows, "spsc4 burst 1t", &one_t, spsc4_burst_1t);
     switch_cost(&mut rows, "mpsc2 burst 1t", &one_t, mpsc2_burst_1t);
     // The stream across cores at the farthest placement the
     // machine has, x-CCX, else CCX, else unpinned.
@@ -1464,6 +1480,12 @@ fn segment_stress(placements: &[Placement]) {
         "spsc3 stream 2t",
         &placement,
         |segments, depth| spsc3_stream_2t(pin, segments, depth),
+    );
+    switch_cost(
+        &mut rows,
+        "spsc4 stream 2t",
+        &placement,
+        |segments, depth| spsc4_stream_2t(pin, segments, depth),
     );
     switch_cost(
         &mut rows,
