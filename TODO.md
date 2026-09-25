@@ -9,7 +9,24 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-_None._
+- The cycle `feat: segmented pool v1` is mid-ladder on bookmark `feat-segmented-pool-v1`, every
+  rung through `test: segmented pool messages over every ring` pushed, both repos clean. Next
+  is the rung `docs: segmented pool in the design note`, then the closing.
+- The docs rung carries decisions made on 2026-09-24 and 2026-09-25, beyond its intent line:
+  - Define "type-tag" in the design note's terminology (prose "type-tag", code `type_tag`, the
+    decoded enum `Kind` via `TryFrom<u64>`), next to descriptor. Move the unit test
+    `mixed_messages_dispatch_by_tag` in `src/pool/v1/mod.rs` to it, as the ring test already is.
+  - Rename the `## Ideas` `Message` trait's `MSG_ID` to `TYPE_TAG`.
+  - Write no new "guard": the user's rule until `### Pool vocabulary: alloc and guard` runs.
+  - The section covers the multi-stack pool as built: `StackGeometry` in any order, sorted by
+    `init`, the fallback and `stats()`, the registry's `DescMap`, `to_desc` / `to_slot` /
+    `to_slot_bytes` / `into_typed`, and the bench findings (inlining, not the stack choice).
+    Maybe the user guide too.
+- At the closing: the acceptance check's demo clause came out 0.6 ns in v1's favor, outside the
+  noise, explained by v0's helpers not inlining across crates, so record it as a finding, not a
+  plain pass. The close-out shape is the user's choice, trapezoid by default.
+- `## Todo` order after this cycle: `### Unwrap lints for the library` first, then
+  `### spsc4 and mpsc3 over either pool`.
 
 ## In Progress
 
@@ -55,7 +72,7 @@ buffer size, sorted smallest first.
 - [test: segmented pool allocation order][8] (done)
 - [refactor: segmented pool stack geometry][7] (done)
 - [feat: segmented pool byte slots from descriptors][9] (done)
-- [test: segmented pool messages over every ring][10]
+- [test: segmented pool messages over every ring][10] (done)
 - [docs: segmented pool in the design note][5]
 - [feat: segmented pool v1 closing][6]
 
@@ -308,7 +325,28 @@ Inserted at the user's call on 2026-09-24, at the stack geometry rung.
 
 Every ring carries descriptors, plain data, so each should carry messages of mixed types from a
 multi-stack pool unchanged. One test sends them through all seven rings, spsc v0 to v3 and mpsc
-v0 to v2, and dispatches them by tag on receipt. Inserted with the byte slots rung.
+v0 to v2, and dispatches them by type-tag on receipt. Inserted with the byte slots rung.
+
+- `tests/pool_v1_over_rings.rs`, an integration test, so it uses the public API alone, as a
+  user would: one test per ring, each ring as it ships.
+- Three message types (24, 112, and 400 bytes) from pools of 64-, 128-, and 512-byte stacks,
+  two buffers each, so producers wait on empty stacks and every buffer recycles many times.
+- Every message starts with a type-tag, a number naming its kind, decoded into an `enum Kind` by
+  `TryFrom<u64>`, so the receive `match` is exhaustive and an unknown type-tag fails at the
+  decode. The consumer takes each descriptor back with `to_slot_bytes`, decodes the type-tag,
+  and turns the bytes into the message's type with `into_typed`, checking each message's
+  payload and each producer's order.
+- Vocabulary, the user's call at this rung's review: "type-tag" in prose and `type_tag` in
+  code, one term in both. It keeps clear of Rust's `TypeId`, a per-build value no other process
+  can share, and `Kind` names the decoded enum, as `std::io::ErrorKind` does. The design note
+  defines it, and the byte slots rung's unit test follows there.
+- MPSC rings run two producers, each with its own pool, a pool having one allocator, and both
+  pools in one registry, so one consumer takes back descriptors from two pools.
+- A small trait pair, `DescTx` and `DescRx`, implemented per ring version by a macro, lets one
+  producer and one consumer function drive all seven rings.
+- The segmented rings, spsc v3 and mpsc v2, still take their segments from a v0 pool beside the
+  v1 message pools, the spsc4 and mpsc3 Todo's to change.
+- All seven pass, under Miri too.
 
 ##### docs: segmented pool in the design note
 
@@ -361,7 +399,7 @@ baselines to measure against.
   alone), over a single-stack v1, and over a multi-stack v1 with one stack for segments beside
   the message stacks. The demo first, iiac-perf for the fine comparison.
 - Examples: one SPSC and one MPSC program with one v1 pool supplying both the ring's segments
-  and messages of several types, dispatched by tag on receipt, each MPSC producer with its own
+  and messages of several types, dispatched by type-tag on receipt, each MPSC producer with its own
   pool, since a pool has one allocator.
 - The user's direction on 2026-09-24, during `feat: segmented pool v1`: new versions rather than
   a generic `init` on v3 and v2, so the original code stays to measure against.
@@ -510,13 +548,17 @@ row is also too crude for differences near a nanosecond.
   the pool, rather than copies of the module, would let one harness binary compare them.
 - Raised by the user on 2026-09-24, at the bench rung of `feat: segmented pool v1`.
 
-### Pool alloc naming
+### Pool vocabulary: alloc and guard
 
 No pool allocates memory: the region is fixed at `init`, and `alloc` pops a free buffer off a
 stack. The `alloc` family's name suggests otherwise.
 
 - Candidates: `take` / `take_with` / `take_bytes`, paired with `free` or a `give_back`.
 - Reaches both pools, the registry docs, the demo, `tp_matrix`, the guide, and the README.
+- "Guard": the docs call a `BufSlot` and the ring slots guards about 266 times, never defined,
+  and to most readers a guard is a lock. Define it where readers start, or retire it for
+  "slot", which the type names already use. No new text uses "guard" meanwhile, the user's call
+  on 2026-09-25.
 - Raised by the user on 2026-09-24, at the review of `feat: segmented pool in the registry`.
 
 ## Ideas
