@@ -10,7 +10,8 @@ use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use super::{
-    MAX_SEGMENTS, MOVED, SEG_MASK, SEG_SHIFT, SEQ_MASK, Segments, check_body_type, seq_of,
+    CONSUMER_CLAIM, MAX_SEGMENTS, MOVED, SEG_MASK, SEG_SHIFT, SEQ_MASK, Segments, check_body_type,
+    seq_of,
 };
 use crate::Empty;
 
@@ -43,6 +44,13 @@ pub struct Consumer<'a> {
 // SAFETY: the handle owns the consumer role. See the Producer
 // Send rationale.
 unsafe impl Send for Consumer<'_> {}
+
+impl Drop for Consumer<'_> {
+    /// Release the role, so another endpoint may take it.
+    fn drop(&mut self) {
+        self.st.segs.release_role(CONSUMER_CLAIM);
+    }
+}
 
 impl<'a> Consumer<'a> {
     /// Start in segment 0, where the producer starts.

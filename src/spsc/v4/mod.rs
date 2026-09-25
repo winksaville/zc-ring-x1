@@ -96,6 +96,12 @@ const LAYOUT_VERSION: u32 = 1;
 /// A table entry naming no segment.
 const NO_SEGMENT: u32 = u32::MAX;
 
+/// The producer's bit in the claims word.
+const PRODUCER_CLAIM: u32 = 1;
+
+/// The consumer's bit in the claims word.
+const CONSUMER_CLAIM: u32 = 2;
+
 /// The first line of every segment: which ring it belongs to,
 /// written by [`Ring::init`] and read back by `attach`.
 ///
@@ -219,6 +225,40 @@ impl Segments {
         &self.header0().info.given
     }
 
+    /// The table every endpoint starts from, built the same way
+    /// by `init` and `attach`: each segment's slot array as an
+    /// offset from the pool's buffer array.
+    fn load(
+        base: *mut u8,
+        buf_size: usize,
+        indices: &[u32; MAX_SEGMENTS as usize],
+        slot_size: u32,
+        seg_capacity: u32,
+        seg_count: u32,
+    ) -> Self {
+        let mut slots = [0usize; MAX_SEGMENTS as usize];
+        for seg in 0..seg_count as usize {
+            slots[seg] = indices[seg] as usize * buf_size + size_of::<SegmentHeader>();
+        }
+        Segments {
+            base,
+            slots,
+            header0: indices[0] as usize * buf_size,
+            slot_size,
+            capacity: seg_capacity,
+            mask: seg_capacity - 1,
+            seg_count,
+        }
+    }
+
+    /// Release a role's bit in the claims word, the endpoint's
+    /// drop.
+    fn release_role(&self, bit: u32) {
+        // Release: the next claimant's AcqRel sees everything this
+        // endpoint did.
+        self.header0().claims.fetch_and(!bit, Ordering::Release);
+    }
+
     /// Every segment's bit.
     fn all(&self) -> u32 {
         if self.seg_count == MAX_SEGMENTS {
@@ -290,7 +330,6 @@ impl<'a> Ring<'a> {
         // scope with `taken`, never freed.
         let base = pool.bufs_ptr();
         let buf_size = pool.buf_size() as usize;
-        let mut slots = [0usize; MAX_SEGMENTS as usize];
         for seg in 0..seg_count as usize {
             let offset = indices[seg] as usize * buf_size;
             // SAFETY: the offset names a buffer of at least
@@ -329,21 +368,127 @@ impl<'a> Ring<'a> {
                 // sees the rest of the block.
                 header.info.magic.store(MAGIC, Ordering::Release);
             }
-            slots[seg] = offset + size_of::<SegmentHeader>();
         }
         Ok(Ring {
-            segs: Segments {
-                base,
-                slots,
-                header0: indices[0] as usize * buf_size,
-                slot_size,
-                capacity: seg_capacity,
-                mask: seg_capacity - 1,
-                seg_count,
-            },
+            segs: Segments::load(base, buf_size, &indices, slot_size, seg_capacity, seg_count),
             first_segment: indices[0],
             _region: core::marker::PhantomData,
         })
+    }
+
+    /// Join a ring another process (or an earlier call) initialized
+    /// over `pool`, from the pool buffer index of its segment 0.
+    ///
+    /// - Reads the control block, checks every field and every
+    ///   table entry against the pool's geometry, and every
+    ///   segment's own header against the block, so a hostile
+    ///   region is an `Err`, never an out-of-bounds access.
+    /// - The endpoints then taken start in segment 0 at position
+    ///   0, as after `init`, so attach is for a process joining
+    ///   before its role has run. Recovering a mid-run position is
+    ///   not done here.
+    ///
+    /// # Safety
+    ///
+    /// - `first_segment` came from [`first_segment`](Ring::first_segment)
+    ///   of a ring initialized over this pool's region, and its
+    ///   segments are still the ring's: validation cannot tell a
+    ///   ring's segment from a buffer since freed and reused, and
+    ///   the ring writes seq words into every segment it is told
+    ///   it has.
+    pub unsafe fn attach(pool: &Pool<'a>, first_segment: u32) -> Result<Self, Error> {
+        let buf_count = pool.buf_count();
+        if first_segment >= buf_count {
+            return Err(Error::BadSegment);
+        }
+        let base = pool.bufs_ptr();
+        let buf_size = pool.buf_size() as usize;
+        // SAFETY: first_segment < buf_count, so the header is the
+        // line-aligned front of a buffer inside the pool's region,
+        // and every field read is atomic.
+        let block =
+            unsafe { &*(base.add(first_segment as usize * buf_size) as *const SegmentHeader) };
+        // Acquire pairs with init's Release store of the magic.
+        if block.info.magic.load(Ordering::Acquire) != MAGIC {
+            return Err(Error::BadMagic);
+        }
+        if block.info.layout_version.load(Ordering::Relaxed) != LAYOUT_VERSION {
+            return Err(Error::BadLayoutVersion);
+        }
+        let slot_size = block.info.slot_size.load(Ordering::Relaxed);
+        let seg_capacity = block.info.seg_capacity.load(Ordering::Relaxed);
+        let seg_count = block.info.seg_count.load(Ordering::Relaxed);
+        validate_geometry(slot_size, seg_capacity, seg_count)?;
+        if (buf_size as u64) < segment_size(slot_size, seg_capacity) {
+            return Err(Error::TooSmall);
+        }
+        if block.info.seg_num.load(Ordering::Relaxed) != 0 {
+            return Err(Error::BadSegment);
+        }
+        let mut indices = [NO_SEGMENT; MAX_SEGMENTS as usize];
+        for seg in 0..seg_count as usize {
+            let idx = block.table[seg].load(Ordering::Relaxed);
+            if idx >= buf_count || indices[..seg].contains(&idx) {
+                return Err(Error::BadSegment);
+            }
+            indices[seg] = idx;
+        }
+        if indices[0] != first_segment {
+            return Err(Error::BadSegment);
+        }
+        // Every segment's own header must agree with the block.
+        for (seg, &idx) in indices.iter().enumerate().take(seg_count as usize) {
+            // SAFETY: idx < buf_count, as checked above.
+            let info =
+                unsafe { &(*(base.add(idx as usize * buf_size) as *const SegmentHeader)).info };
+            let agrees = info.magic.load(Ordering::Acquire) == MAGIC
+                && info.layout_version.load(Ordering::Relaxed) == LAYOUT_VERSION
+                && info.slot_size.load(Ordering::Relaxed) == slot_size
+                && info.seg_capacity.load(Ordering::Relaxed) == seg_capacity
+                && info.seg_count.load(Ordering::Relaxed) == seg_count
+                && info.seg_num.load(Ordering::Relaxed) == seg as u32;
+            if !agrees {
+                return Err(Error::BadSegment);
+            }
+        }
+        Ok(Ring {
+            segs: Segments::load(base, buf_size, &indices, slot_size, seg_capacity, seg_count),
+            first_segment,
+            _region: core::marker::PhantomData,
+        })
+    }
+
+    /// Take the producer role.
+    ///
+    /// - One CAS on the control block's claims word, so a role
+    ///   held anywhere, in this process or another, is
+    ///   [`Error::RoleTaken`], and dropping the endpoint releases
+    ///   it. Nothing on the message path reads the word.
+    /// - Starts in segment 0 at position 0, which it holds as
+    ///   taken.
+    pub fn producer(&self) -> Result<Producer<'a>, Error> {
+        self.claim(PRODUCER_CLAIM)?;
+        Ok(Producer::new(self.segs))
+    }
+
+    /// Take the consumer role, the counterpart of
+    /// [`producer`](Ring::producer).
+    pub fn consumer(&self) -> Result<Consumer<'a>, Error> {
+        self.claim(CONSUMER_CLAIM)?;
+        Ok(Consumer::new(self.segs))
+    }
+
+    /// Set `bit` in the claims word, unless it was set.
+    fn claim(&self, bit: u32) -> Result<(), Error> {
+        // AcqRel: a claim that succeeds sees the state a released
+        // endpoint left, and its own release publishes the same.
+        // Setting a set bit changes nothing, so a failure needs no
+        // undo.
+        let before = self.segs.header0().claims.fetch_or(bit, Ordering::AcqRel);
+        if before & bit != 0 {
+            return Err(Error::RoleTaken);
+        }
+        Ok(())
     }
 
     /// The pool buffer index of segment 0, where the ring's
@@ -351,15 +496,6 @@ impl<'a> Ring<'a> {
     /// can find the ring in the same pool.
     pub fn first_segment(&self) -> u32 {
         self.first_segment
-    }
-
-    /// Split into the producer and consumer endpoint handles.
-    ///
-    /// - Consuming `self` makes each handle exist at most once
-    ///   per ring. Both start in segment 0, which the producer
-    ///   holds as taken.
-    pub fn split(self) -> (Producer<'a>, Consumer<'a>) {
-        (Producer::new(self.segs), Consumer::new(self.segs))
     }
 }
 
@@ -433,6 +569,11 @@ mod tests {
             slot.val = i * 10;
             slot.commit();
         }
+    }
+
+    /// Both roles of `ring`, the in-process pair.
+    fn endpoints<'a>(ring: &Ring<'a>) -> (Producer<'a>, Consumer<'a>) {
+        (ring.producer().unwrap(), ring.consumer().unwrap())
     }
 
     /// Receive `from..to` in order.
@@ -544,7 +685,7 @@ mod tests {
     fn one_segment_is_a_ring() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (mut prod, mut cons) = Ring::init(&mut pool, 64, 4, 1).unwrap().split();
+        let (mut prod, mut cons) = endpoints(&Ring::init(&mut pool, 64, 4, 1).unwrap());
         assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
         for lap in 0..3u64 {
             send(&mut prod, lap * 4, lap * 4 + 4);
@@ -562,7 +703,7 @@ mod tests {
         for (cap, count) in [(1u32, 2u32), (4, 3), (16, 4)] {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-            let (mut prod, mut cons) = Ring::init(&mut pool, 64, cap, count).unwrap().split();
+            let (mut prod, mut cons) = endpoints(&Ring::init(&mut pool, 64, cap, count).unwrap());
             let total = (cap * count) as u64;
             send(&mut prod, 0, total);
             assert_eq!(prod.reserve_slot_with::<Msg>(|_| false).err(), Some(Full));
@@ -583,7 +724,7 @@ mod tests {
         for (cap, count) in [(1u32, 2u32), (1, 5), (2, 3), (4, 2), (16, 8)] {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-            let (mut prod, mut cons) = Ring::init(&mut pool, 64, cap, count).unwrap().split();
+            let (mut prod, mut cons) = endpoints(&Ring::init(&mut pool, 64, cap, count).unwrap());
             let burst = (cap * count) as u64;
             let mut next = 0u64;
             for round in 0..200u64 {
@@ -603,7 +744,7 @@ mod tests {
     fn depth_one_switches_every_commit() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (mut prod, mut cons) = Ring::init(&mut pool, 64, 1, 2).unwrap().split();
+        let (mut prod, mut cons) = endpoints(&Ring::init(&mut pool, 64, 1, 2).unwrap());
         for i in 0..10u64 {
             let before = prod.st.cur;
             send(&mut prod, i, i + 1);
@@ -620,7 +761,7 @@ mod tests {
         // in place until the consumer frees that very slot.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (mut prod, mut cons) = Ring::init(&mut pool, 64, 1, 2).unwrap().split();
+        let (mut prod, mut cons) = endpoints(&Ring::init(&mut pool, 64, 1, 2).unwrap());
         send(&mut prod, 0, 2);
         assert_eq!(prod.st.cur, 1);
         assert_eq!(prod.reserve_slot_with::<Msg>(|_| false).err(), Some(Full));
@@ -642,7 +783,7 @@ mod tests {
     fn abandoned_guards_publish_nothing() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (mut prod, mut cons) = Ring::init(&mut pool, 64, 1, 2).unwrap().split();
+        let (mut prod, mut cons) = endpoints(&Ring::init(&mut pool, 64, 1, 2).unwrap());
         let mut slot = prod.reserve_slot_with::<Msg>(|_| false).unwrap();
         slot.seq = 99;
         drop(slot);
@@ -661,7 +802,7 @@ mod tests {
     fn reserve_slot_with_policy_counts_and_gives_up() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (mut prod, mut cons) = Ring::init(&mut pool, 64, 2, 1).unwrap().split();
+        let (mut prod, mut cons) = endpoints(&Ring::init(&mut pool, 64, 2, 1).unwrap());
         let mut seen = Vec::new();
         let err = cons
             .reserve_slot_with::<Msg>(|attempt| {
@@ -701,7 +842,7 @@ mod tests {
                     .store(seq_of(idx), Ordering::Relaxed);
             }
         }
-        let (mut prod, mut cons) = ring.split();
+        let (mut prod, mut cons) = endpoints(&ring);
         for st_pos in [&mut prod.st.pos, &mut cons.st.pos] {
             *st_pos = start;
         }
@@ -725,6 +866,175 @@ mod tests {
 
     /// The segment counts and depths the matrix covers: all of
     /// them, or under Miri a corner, its interpreter being slow.
+    #[test]
+    fn roles_are_claimed_once() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = Ring::init(&mut pool, 64, 4, 2).unwrap();
+        let prod = ring.producer().unwrap();
+        assert_eq!(ring.producer().err(), Some(Error::RoleTaken));
+        let cons = ring.consumer().unwrap();
+        assert_eq!(ring.consumer().err(), Some(Error::RoleTaken));
+        assert_eq!(ring.segs.header0().claims.load(Ordering::Relaxed), 3);
+        drop(prod);
+        assert_eq!(ring.segs.header0().claims.load(Ordering::Relaxed), 2);
+        let mut prod = ring.producer().unwrap();
+        drop(cons);
+        let mut cons = ring.consumer().unwrap();
+        send(&mut prod, 0, 3);
+        recv(&mut cons, 0, 3);
+    }
+
+    /// A region's one raw pointer and length, for a pool
+    /// initialized and then attached over it.
+    ///
+    /// - Stacked Borrows: the handle `init` returns holds pointers
+    ///   under the `&mut` it took, and a write through an attached
+    ///   handle, which holds the region's own pointer, invalidates
+    ///   them, so a test drops the initializing handle before it
+    ///   attaches and never writes through both, the hazard the
+    ///   pools' `attach` notes.
+    fn region(r: &mut Region) -> (*mut u8, usize) {
+        (r.0.as_mut_ptr(), r.0.len())
+    }
+
+    /// Initialize the test pool over `base` and run `f` on it,
+    /// dropping the handle after.
+    fn with_init_pool<R>(base: *mut u8, len: usize, f: impl FnOnce(&mut Pool<'_>) -> R) -> R {
+        // SAFETY: base and len are the region, and the slice is
+        // the only use of the region while it lives.
+        let mut pool = Pool::init(
+            unsafe { &mut *core::ptr::slice_from_raw_parts_mut(base, len) },
+            BUF as u32,
+            BUFS as u32,
+        )
+        .unwrap();
+        f(&mut pool)
+    }
+
+    /// Attach a pool handle over `base`.
+    fn attach_pool<'a>(base: *mut u8, len: usize) -> Pool<'a> {
+        // SAFETY: the same live region, and no attached handle
+        // allocates, so no second popper exists.
+        unsafe { Pool::attach(base, len) }.unwrap()
+    }
+
+    #[test]
+    fn attach_joins_the_ring() {
+        let mut r = Region::new();
+        let (base, len) = region(&mut r);
+        let (first, first2) = with_init_pool(base, len, |pool| {
+            let ring = Ring::init(pool, 64, 4, 3).unwrap();
+            let ring2 = Ring::init(pool, 64, 4, 2).unwrap();
+            (ring.first_segment(), ring2.first_segment())
+        });
+        // Two attached handles, as two processes would hold.
+        let (b1, b2) = (attach_pool(base, len), attach_pool(base, len));
+        // SAFETY: the indices came from first_segment of rings over
+        // this pool, whose segments are still the rings'.
+        let ring_1 = unsafe { Ring::attach(&b1, first) }.unwrap();
+        let ring_2 = unsafe { Ring::attach(&b2, first) }.unwrap();
+        assert_eq!(ring_2.first_segment(), first);
+        assert_eq!(ring_2.segs.slots, ring_1.segs.slots);
+
+        // The producer from one handle, the consumer from the other,
+        // and the claims are one word for both.
+        let mut prod = ring_1.producer().unwrap();
+        assert_eq!(ring_2.producer().err(), Some(Error::RoleTaken));
+        let mut cons = ring_2.consumer().unwrap();
+        assert_eq!(ring_1.consumer().err(), Some(Error::RoleTaken));
+        let mut next = 0u64;
+        for burst in [3u64, 9, 12, 5, 12, 12, 7] {
+            send(&mut prod, next, next + burst);
+            recv(&mut cons, next, next + burst);
+            next += burst;
+        }
+        assert!(prod.switches() > 3 && prod.switches() == cons.switches());
+        drop(prod);
+        drop(cons);
+
+        // The reverse pairing, on the second ring: a joined endpoint
+        // starts at position 0, so a ring already run is not
+        // rejoined.
+        // SAFETY: as above.
+        let ring_1 = unsafe { Ring::attach(&b1, first2) }.unwrap();
+        let ring_2 = unsafe { Ring::attach(&b2, first2) }.unwrap();
+        let mut prod = ring_2.producer().unwrap();
+        let mut cons = ring_1.consumer().unwrap();
+        let mut next = 0u64;
+        for burst in [5u64, 8, 8, 3, 8] {
+            send(&mut prod, next, next + burst);
+            recv(&mut cons, next, next + burst);
+            next += burst;
+        }
+        assert!(prod.switches() > 0 && prod.switches() == cons.switches());
+    }
+
+    #[test]
+    fn attach_rejects_hostile_control_blocks() {
+        let mut r = Region::new();
+        let (base, len) = region(&mut r);
+        let (first, spare) = with_init_pool(base, len, |pool| {
+            let ring = Ring::init(pool, 64, 4, 3).unwrap();
+            // A buffer that is no segment: free, its first word the
+            // free-stack link.
+            let spare = pool.alloc_bytes().unwrap();
+            let spare_idx = spare.idx();
+            spare.free();
+            (ring.first_segment(), spare_idx)
+        });
+        let b = attach_pool(base, len);
+        let attach = |idx| unsafe { Ring::attach(&b, idx) }.err();
+        // SAFETY: first names the ring's segment 0.
+        let ring = unsafe { Ring::attach(&b, first) }.unwrap();
+        let block = ring.segs.header0();
+
+        // Not a buffer of the pool, and a buffer that is no segment.
+        assert_eq!(attach(BUFS as u32), Some(Error::BadSegment));
+        assert_eq!(attach(spare), Some(Error::BadMagic));
+
+        // A field at a time, restored after each.
+        let version = &block.info.layout_version;
+        version.store(LAYOUT_VERSION + 1, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadLayoutVersion));
+        version.store(LAYOUT_VERSION, Ordering::Relaxed);
+
+        block.info.slot_size.store(63, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSlotSize));
+        block.info.slot_size.store(64, Ordering::Relaxed);
+
+        block.info.seg_count.store(0, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSegmentCount));
+        block.info.seg_count.store(3, Ordering::Relaxed);
+
+        // A segment the pool's buffers cannot hold.
+        block.info.seg_capacity.store(32, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::TooSmall));
+        block.info.seg_capacity.store(4, Ordering::Relaxed);
+
+        // Segment 0 claiming to be another segment.
+        block.info.seg_num.store(1, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSegment));
+        block.info.seg_num.store(0, Ordering::Relaxed);
+
+        // A table naming a buffer outside the pool, one twice, and
+        // two whose headers are each other's.
+        let second = block.table[1].load(Ordering::Relaxed);
+        let third = block.table[2].load(Ordering::Relaxed);
+        block.table[1].store(BUFS as u32, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSegment));
+        block.table[1].store(first, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSegment));
+        block.table[1].store(third, Ordering::Relaxed);
+        block.table[2].store(second, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSegment));
+        block.table[1].store(second, Ordering::Relaxed);
+        block.table[2].store(third, Ordering::Relaxed);
+
+        // Restored, it attaches.
+        assert!(unsafe { Ring::attach(&b, first) }.is_ok());
+    }
+
     fn matrix() -> (Vec<u32>, Vec<u32>) {
         if cfg!(miri) {
             (vec![1, 2, 32], vec![1, 8])
@@ -740,7 +1050,7 @@ mod tests {
         let bytes = size_of::<PoolHeader>() as u64 + buf * count as u64;
         let mut store = vec![Line([0; CACHE_LINE_SIZE]); bytes.div_ceil(64) as usize];
         let mut pool = Pool::init(store.as_mut_slice().as_mut_bytes(), buf as u32, count).unwrap();
-        let (prod, cons) = Ring::init(&mut pool, 64, depth, count).unwrap().split();
+        let (prod, cons) = endpoints(&Ring::init(&mut pool, 64, depth, count).unwrap());
         f(prod, cons);
     }
 
@@ -846,7 +1156,7 @@ mod tests {
     fn threaded(cap: u32, count: u32, total: u64) {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (mut prod, mut cons) = Ring::init(&mut pool, 64, cap, count).unwrap().split();
+        let (mut prod, mut cons) = endpoints(&Ring::init(&mut pool, 64, cap, count).unwrap());
         std::thread::scope(|s| {
             s.spawn(move || {
                 for i in 0..total {

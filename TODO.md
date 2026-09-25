@@ -67,7 +67,7 @@ process attaches through the pool, and v3 stays as built, the baseline to measur
 - [feat: attachable SPSC v4 opening][1] (done)
 - [feat: spsc v4 as a copy of v3][2] (done)
 - [feat: spsc v4 control block and offsets][3] (done)
-- [feat: spsc v4 attach and role claims][4]
+- [feat: spsc v4 attach and role claims][4] (done)
 - [perf: spsc v4 in the measurement tools][5]
 - [docs: spsc v4 in the design note and guide][6]
 - [feat: attachable SPSC v4 closing][7]
@@ -185,6 +185,35 @@ claims line, and the two lines of the segment table.
 offset accessors, the shared loader, `producer()` and `consumer()` claiming through the claims
 word with release on drop, `split` removed, and the tests of the acceptance check's first two
 clauses.
+
+- `attach` is `unsafe`, as the pools' is and for the same reason `to_slot` is: validation checks
+  every field of the control block, every table entry against the pool's count and against the
+  entries before it, and every segment's own header against the block, but it cannot tell a
+  ring's segment from a buffer freed and reused since, and the ring writes seq words into every
+  segment it is told it has. The contract is that `first_segment` came from a ring over this
+  pool whose segments are still its own.
+  - The failures are all `Err`: `BadSegment` (new) for an index outside the pool, one named
+    twice, a segment 0 that says it is another segment, or a segment whose header disagrees with
+    the block, and the existing `BadMagic`, `BadLayoutVersion`, the geometry errors, and
+    `TooSmall`.
+  - `Segments::load` builds the table for `init` and `attach` alike, from the buffer indices.
+- Roles: `producer()` and `consumer()` take `&self`, so a `Ring` outlives the roles it hands out
+  and either process may take one role and leave the other. The claim is one `fetch_or` with
+  AcqRel on the claims line, `RoleTaken` (new) when the bit was set, and a set bit needs no undo
+  since the or changed nothing. `Drop` on each endpoint clears its bit with Release.
+  - `split` is gone from v4, and the tests take the pair through an `endpoints` helper.
+- Stacked Borrows shaped the tests: the handle `init` returns holds pointers under the `&mut` it
+  took, and the first write through an attached handle, which holds the region's own raw
+  pointer, invalidates them, the hazard the pools' `attach` notes. So `attach_joins_the_ring`
+  drops the initializing handle once it has the first segment's index and attaches twice, one
+  handle per role, as two processes would, and the hostile-block test edits the block through
+  the attached handle. Real processes share no borrow stack, and the inter-application test
+  will hold one handle each.
+- `attach_joins_the_ring` runs the producer from one attached handle and the consumer from the
+  other over several segment switches, checks the claims are one word across handles, and
+  reverses the pairing on a second ring, since a joined endpoint starts at position 0 and a ring
+  already run is not rejoined. `roles_are_claimed_once` covers the claim, the refusal, and the
+  release. All 18 pass, under Miri too.
 
 ##### perf: spsc v4 in the measurement tools
 

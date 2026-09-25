@@ -140,6 +140,13 @@ pub enum Error {
     /// A ring of segments: the pool had fewer free buffers than
     /// the ring's segments.
     Exhausted,
+    /// A ring of segments, attach: the control block names a
+    /// buffer outside the pool or one twice, or a segment's own
+    /// header disagrees with the control block.
+    BadSegment,
+    /// A ring of segments: the role asked for is already held, in
+    /// this process or another.
+    RoleTaken,
 }
 
 /// Check `T` fits a slot, called once per `reserve_slot_with`

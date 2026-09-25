@@ -9,7 +9,7 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
-use super::{MAX_SEGMENTS, MOVED, SEG_SHIFT, Segments, check_body_type, seq_of};
+use super::{MAX_SEGMENTS, MOVED, PRODUCER_CLAIM, SEG_SHIFT, Segments, check_body_type, seq_of};
 use crate::Full;
 
 /// The producer's private state, held apart from the handle so a
@@ -46,6 +46,13 @@ pub struct Producer<'a> {
 // touches (slot seqs, the give-back word) is atomic, and slot
 // writes are handed off with Release/Acquire ordering.
 unsafe impl Send for Producer<'_> {}
+
+impl Drop for Producer<'_> {
+    /// Release the role, so another endpoint may take it.
+    fn drop(&mut self) {
+        self.st.segs.release_role(PRODUCER_CLAIM);
+    }
+}
 
 impl<'a> Producer<'a> {
     /// Start in segment 0, held as taken.
