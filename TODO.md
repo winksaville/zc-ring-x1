@@ -65,7 +65,7 @@ process attaches through the pool, and v3 stays as built, the baseline to measur
 #### Ladder
 
 - [feat: attachable SPSC v4 opening][1] (done)
-- [feat: spsc v4 as a copy of v3][2]
+- [feat: spsc v4 as a copy of v3][2] (done)
 - [feat: spsc v4 control block and offsets][3]
 - [feat: spsc v4 attach and role claims][4]
 - [perf: spsc v4 in the measurement tools][5]
@@ -138,6 +138,14 @@ decisions went into its Todo entry, and the either-pool Todo was retitled.
 
 `src/spsc/v4` as a verbatim copy of v3 with its tests, so the next rung's diff is the design
 change alone. No example is copied.
+
+- The copy differs from v3 in its module docs alone: the intro names what the copy is for and
+  that v4 behaves as v3 until the rungs after it land, and the guide reference says the guide
+  is v3's. `spsc/mod.rs` lists the module, and the default `Ring` stays v3.
+- v3 has no magic to make distinct: nothing in its region names the ring, which is the control
+  block rung's problem. `mpsc::v2` keeps importing v3's `check_body_type`, `seq_of`, and
+  `validate_geometry`, and the copy has its own.
+- The 14 copied tests pass.
 
 ##### feat: spsc v4 control block and offsets
 
