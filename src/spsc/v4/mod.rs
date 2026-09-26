@@ -6,9 +6,10 @@
 //!   0 (magic, layout version, geometry, the role claims word, and
 //!   the table of every segment's pool buffer index), a table of
 //!   offsets instead of pointers in the endpoints, [`Ring::attach`]
-//!   from a pool and [`Ring::first_segment`], and the roles taken
-//!   by name, [`Ring::producer`] and [`Ring::consumer`], each held
-//!   once anywhere. The protocol below is v3's, unchanged.
+//!   from a pool and [`Ring::first_segment`], and the roles
+//!   claimed by name, [`Ring::claim_producer`] and
+//!   [`Ring::claim_consumer`], each held once anywhere by a holder
+//!   the claim names. The protocol below is v3's, unchanged.
 //! - A ring holds up to [`MAX_SEGMENTS`] segments, each a ring of
 //!   its own of the same depth, every one taken from the
 //!   application's pool at [`Ring::init`]. Nothing allocates,
@@ -98,16 +99,17 @@ pub(crate) fn seq_of(idx: u32) -> u32 {
 const MAGIC: u32 = 0x5A43_5234; // "ZCR4"
 
 /// Bumped on any change to the segment layout.
-const LAYOUT_VERSION: u32 = 1;
+const LAYOUT_VERSION: u32 = 2;
 
 /// A table entry naming no segment.
 const NO_SEGMENT: u32 = u32::MAX;
 
-/// The producer's bit in the claims word.
-const PRODUCER_CLAIM: u32 = 1;
+/// A role word naming no holder, the role never claimed.
+const ROLE_FREE: u32 = 0;
 
-/// The consumer's bit in the claims word.
-const CONSUMER_CLAIM: u32 = 2;
+/// A role word naming no holder, the role given back by
+/// `release` with its state.
+const ROLE_RELEASED: u32 = u32::MAX;
 
 /// The first line of every segment: which ring it belongs to,
 /// written by [`Ring::init`] and read back by `attach`.
@@ -118,6 +120,9 @@ const CONSUMER_CLAIM: u32 = 2;
 ///   segment 0 only, the one word both sides share besides the
 ///   slots. It shares the line with the geometry because the
 ///   geometry is read at attach and never after.
+/// - The two resume positions are each side's checkpoint of
+///   where it left this segment, the private `resume` entries a
+///   successor loads.
 #[repr(C)]
 struct Info {
     magic: AtomicU32,
@@ -128,6 +133,41 @@ struct Info {
     /// This segment's number in the ring.
     seg_num: AtomicU32,
     given: AtomicU32,
+    /// The producer's resume position in this segment.
+    prod_resume: AtomicU32,
+    /// The consumer's resume position in this segment.
+    cons_resume: AtomicU32,
+}
+
+/// The claims line of segment 0: who holds each role, and each
+/// endpoint's checkpoint, the private state a successor loads.
+///
+/// - A role word is [`ROLE_FREE`], [`ROLE_RELEASED`], or the id
+///   of the holder, which the app chooses and the crate never
+///   interprets, so claim, release, and takeover are each one CAS
+///   on it.
+/// - The consumer's give-back word is its own checkpoint, as it
+///   is already shared in the info line.
+/// - Nothing on the message path reads or writes the line.
+#[repr(C)]
+struct Claims {
+    /// The producer role's holder.
+    producer: AtomicU32,
+    /// The consumer role's holder.
+    consumer: AtomicU32,
+    /// The producer's segment.
+    prod_cur: AtomicU32,
+    /// The producer's position in its segment.
+    prod_pos: AtomicU32,
+    /// The producer's segment-take word.
+    prod_taken: AtomicU32,
+    /// Whether the slot at the producer's position was seen
+    /// claimable, `0` or `1`.
+    prod_claimable: AtomicU32,
+    /// The consumer's segment.
+    cons_cur: AtomicU32,
+    /// The consumer's position in its segment.
+    cons_pos: AtomicU32,
 }
 
 /// The four lines at the front of every segment: the ring's
@@ -137,14 +177,15 @@ struct Info {
 /// - The pool buffer index of each segment is in the table, so a
 ///   process holding the pool and segment 0's index finds every
 ///   segment: the offsets-only rule, applied to the ring's table.
-/// - The claims word is its own line, so the CAS that takes a
-///   role never shares a line with `given`.
+/// - The claims are their own line, so the CAS that takes a role
+///   never shares a line with `given`.
 #[repr(C)]
 struct SegmentHeader {
-    /// Line 0: the ring's identity and geometry, and `given`.
+    /// Line 0: the ring's identity and geometry, `given`, and the
+    /// segment's resume positions.
     info: CacheAligned<Info>,
-    /// Line 1: the role claims word, segment 0's only.
-    claims: CacheAligned<AtomicU32>,
+    /// Line 1: the role claims and checkpoints, segment 0's only.
+    claims: CacheAligned<Claims>,
     /// Lines 2 and 3: the pool buffer index of segment `i` at
     /// `table[i]`, [`NO_SEGMENT`] past `seg_count`, segment 0's
     /// only.
@@ -178,7 +219,7 @@ struct Segments {
     /// offset from `base`.
     slots: [usize; MAX_SEGMENTS as usize],
     /// Segment 0's header as an offset from `base`: `given` and
-    /// the claims word live there.
+    /// the claims line live there.
     header0: usize,
     /// Slot size N in bytes.
     slot_size: u32,
@@ -258,12 +299,24 @@ impl Segments {
         }
     }
 
-    /// Release a role's bit in the claims word, the endpoint's
-    /// drop.
-    fn release_role(&self, bit: u32) {
+    /// The producer role's word in the claims line.
+    fn producer_role(&self) -> &AtomicU32 {
+        &self.header0().claims.producer
+    }
+
+    /// The consumer role's word in the claims line.
+    fn consumer_role(&self) -> &AtomicU32 {
+        &self.header0().claims.consumer
+    }
+
+    /// Give `role` back as released, if `holder` still holds it.
+    ///
+    /// - A CAS from the holder's own id, so an endpoint whose role
+    ///   was taken over releases nothing.
+    fn release_role(role: &AtomicU32, holder: u32) {
         // Release: the next claimant's AcqRel sees everything this
         // endpoint did.
-        self.header0().claims.fetch_and(!bit, Ordering::Release);
+        let _ = role.compare_exchange(holder, ROLE_RELEASED, Ordering::Release, Ordering::Relaxed);
     }
 
     /// Every segment's bit.
@@ -276,8 +329,9 @@ impl Segments {
     }
 }
 
-/// A ring of segments over the application's pool, split into
-/// the two endpoint handles with [`Ring::split`].
+/// A ring of segments over the application's pool, its two roles
+/// claimed with [`Ring::claim_producer`] and
+/// [`Ring::claim_consumer`].
 pub struct Ring<'a> {
     /// Geometry and segment offsets.
     segs: Segments,
@@ -465,37 +519,30 @@ impl<'a> Ring<'a> {
         })
     }
 
-    /// Take the producer role.
+    /// Claim the producer role for holder `id`.
     ///
-    /// - One CAS on the control block's claims word, so a role
-    ///   held anywhere, in this process or another, is
-    ///   [`Error::RoleTaken`], and dropping the endpoint releases
-    ///   it. Nothing on the message path reads the word.
+    /// - `id` is the app's name for the holder, any `u32` but `0`
+    ///   and `u32::MAX`, which are [`Error::BadHolder`]. The crate
+    ///   records it and never interprets it.
+    /// - One CAS on the control block's role word, so a role held
+    ///   anywhere, in this process or another, is
+    ///   [`Error::RoleTaken`]. A released role is refused the
+    ///   same way for now. Nothing on the message path reads the
+    ///   word.
+    /// - The role stays held until [`Producer::release`]:
+    ///   dropping the endpoint writes nothing.
     /// - Starts in segment 0 at position 0, which it holds as
     ///   taken.
-    pub fn producer(&self) -> Result<Producer<'a>, Error> {
-        self.claim(PRODUCER_CLAIM)?;
-        Ok(Producer::new(self.segs))
+    pub fn claim_producer(&self, id: u32) -> Result<Producer<'a>, Error> {
+        claim(self.segs.producer_role(), id)?;
+        Ok(Producer::new(self.segs, id))
     }
 
-    /// Take the consumer role, the counterpart of
-    /// [`producer`](Ring::producer).
-    pub fn consumer(&self) -> Result<Consumer<'a>, Error> {
-        self.claim(CONSUMER_CLAIM)?;
-        Ok(Consumer::new(self.segs))
-    }
-
-    /// Set `bit` in the claims word, unless it was set.
-    fn claim(&self, bit: u32) -> Result<(), Error> {
-        // AcqRel: a claim that succeeds sees the state a released
-        // endpoint left, and its own release publishes the same.
-        // Setting a set bit changes nothing, so a failure needs no
-        // undo.
-        let before = self.segs.header0().claims.fetch_or(bit, Ordering::AcqRel);
-        if before & bit != 0 {
-            return Err(Error::RoleTaken);
-        }
-        Ok(())
+    /// Claim the consumer role for holder `id`, the counterpart of
+    /// [`claim_producer`](Ring::claim_producer).
+    pub fn claim_consumer(&self, id: u32) -> Result<Consumer<'a>, Error> {
+        claim(self.segs.consumer_role(), id)?;
+        Ok(Consumer::new(self.segs, id))
     }
 
     /// The pool buffer index of segment 0, where the ring's
@@ -504,6 +551,19 @@ impl<'a> Ring<'a> {
     pub fn first_segment(&self) -> u32 {
         self.first_segment
     }
+}
+
+/// Write holder `id` into a free `role` word.
+fn claim(role: &AtomicU32, id: u32) -> Result<(), Error> {
+    if id == ROLE_FREE || id == ROLE_RELEASED {
+        return Err(Error::BadHolder);
+    }
+    // AcqRel: a claim that succeeds sees the state a released
+    // endpoint left, and publishes its own id. A failed CAS
+    // writes nothing, so it needs no undo.
+    role.compare_exchange(ROLE_FREE, id, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ())
+        .map_err(|_| Error::RoleTaken)
 }
 
 /// Geometry checks for [`Ring::init`].
@@ -578,9 +638,18 @@ mod tests {
         }
     }
 
+    /// The producer's holder id in the tests.
+    const PROD_ID: u32 = 1;
+
+    /// The consumer's holder id in the tests.
+    const CONS_ID: u32 = 2;
+
     /// Both roles of `ring`, the in-process pair.
     fn endpoints<'a>(ring: &Ring<'a>) -> (Producer<'a>, Consumer<'a>) {
-        (ring.producer().unwrap(), ring.consumer().unwrap())
+        (
+            ring.claim_producer(PROD_ID).unwrap(),
+            ring.claim_consumer(CONS_ID).unwrap(),
+        )
     }
 
     /// Receive `from..to` in order.
@@ -655,7 +724,20 @@ mod tests {
             ring.first_segment(),
             header0.table[0].load(Ordering::Relaxed)
         );
-        assert_eq!(header0.claims.load(Ordering::Relaxed), 0);
+        // Both roles free and every checkpoint word zero.
+        let c = &header0.claims;
+        for word in [
+            &c.producer,
+            &c.consumer,
+            &c.prod_cur,
+            &c.prod_pos,
+            &c.prod_taken,
+            &c.prod_claimable,
+            &c.cons_cur,
+            &c.cons_pos,
+        ] {
+            assert_eq!(word.load(Ordering::Relaxed), 0);
+        }
         for (i, entry) in header0.table.iter().enumerate() {
             let idx = entry.load(Ordering::Relaxed);
             assert_eq!(idx == NO_SEGMENT, i >= 3, "table entry {i}");
@@ -685,6 +767,8 @@ mod tests {
             assert_eq!(info.seg_count.load(Ordering::Relaxed), 3);
             assert_eq!(info.seg_num.load(Ordering::Relaxed), seg);
             assert_eq!(info.given.load(Ordering::Relaxed), 0);
+            assert_eq!(info.prod_resume.load(Ordering::Relaxed), 0);
+            assert_eq!(info.cons_resume.load(Ordering::Relaxed), 0);
         }
     }
 
@@ -871,25 +955,57 @@ mod tests {
     #[repr(C, align(64))]
     struct Line([u8; CACHE_LINE_SIZE]);
 
-    /// The segment counts and depths the matrix covers: all of
-    /// them, or under Miri a corner, its interpreter being slow.
     #[test]
-    fn roles_are_claimed_once() {
+    // Dropping the endpoint is the behavior under test. It has no
+    // Drop impl by design (a destructor never touches shared
+    // memory).
+    #[allow(clippy::drop_non_drop)]
+    fn claims_name_their_holder() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
         let ring = Ring::init(&mut pool, 64, 4, 2).unwrap();
-        let prod = ring.producer().unwrap();
-        assert_eq!(ring.producer().err(), Some(Error::RoleTaken));
-        let cons = ring.consumer().unwrap();
-        assert_eq!(ring.consumer().err(), Some(Error::RoleTaken));
-        assert_eq!(ring.segs.header0().claims.load(Ordering::Relaxed), 3);
-        drop(prod);
-        assert_eq!(ring.segs.header0().claims.load(Ordering::Relaxed), 2);
-        let mut prod = ring.producer().unwrap();
-        drop(cons);
-        let mut cons = ring.consumer().unwrap();
+        let roles = |ring: &Ring<'_>| {
+            (
+                ring.segs.producer_role().load(Ordering::Relaxed),
+                ring.segs.consumer_role().load(Ordering::Relaxed),
+            )
+        };
+        // The two ids that name no holder are refused.
+        for id in [ROLE_FREE, ROLE_RELEASED] {
+            assert_eq!(ring.claim_producer(id).err(), Some(Error::BadHolder));
+            assert_eq!(ring.claim_consumer(id).err(), Some(Error::BadHolder));
+        }
+        assert_eq!(roles(&ring), (ROLE_FREE, ROLE_FREE));
+        let (mut prod, mut cons) = endpoints(&ring);
+        assert_eq!(roles(&ring), (PROD_ID, CONS_ID));
+        assert_eq!(ring.claim_producer(7).err(), Some(Error::RoleTaken));
+        assert_eq!(ring.claim_consumer(7).err(), Some(Error::RoleTaken));
         send(&mut prod, 0, 3);
         recv(&mut cons, 0, 3);
+        // A dropped endpoint writes nothing: its role stays held.
+        drop(prod);
+        assert_eq!(roles(&ring), (PROD_ID, CONS_ID));
+        assert_eq!(ring.claim_producer(7).err(), Some(Error::RoleTaken));
+        // A released one is given back, and refused a claim until
+        // a claim can resume it.
+        cons.release();
+        assert_eq!(roles(&ring), (PROD_ID, ROLE_RELEASED));
+        assert_eq!(ring.claim_consumer(7).err(), Some(Error::RoleTaken));
+    }
+
+    #[test]
+    fn release_after_takeover_releases_nothing() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = Ring::init(&mut pool, 64, 4, 2).unwrap();
+        let (prod, cons) = endpoints(&ring);
+        // Another holder in each role word, as a takeover leaves it.
+        ring.segs.producer_role().store(7, Ordering::Relaxed);
+        ring.segs.consumer_role().store(8, Ordering::Relaxed);
+        prod.release();
+        cons.release();
+        assert_eq!(ring.segs.producer_role().load(Ordering::Relaxed), 7);
+        assert_eq!(ring.segs.consumer_role().load(Ordering::Relaxed), 8);
     }
 
     /// A region's one raw pointer and length, for a pool
@@ -945,11 +1061,11 @@ mod tests {
         assert_eq!(ring_2.segs.slots, ring_1.segs.slots);
 
         // The producer from one handle, the consumer from the other,
-        // and the claims are one word for both.
-        let mut prod = ring_1.producer().unwrap();
-        assert_eq!(ring_2.producer().err(), Some(Error::RoleTaken));
-        let mut cons = ring_2.consumer().unwrap();
-        assert_eq!(ring_1.consumer().err(), Some(Error::RoleTaken));
+        // and the claims are one line for both.
+        let mut prod = ring_1.claim_producer(PROD_ID).unwrap();
+        assert_eq!(ring_2.claim_producer(7).err(), Some(Error::RoleTaken));
+        let mut cons = ring_2.claim_consumer(CONS_ID).unwrap();
+        assert_eq!(ring_1.claim_consumer(7).err(), Some(Error::RoleTaken));
         let mut next = 0u64;
         for burst in [3u64, 9, 12, 5, 12, 12, 7] {
             send(&mut prod, next, next + burst);
@@ -957,8 +1073,8 @@ mod tests {
             next += burst;
         }
         assert!(prod.switches() > 3 && prod.switches() == cons.switches());
-        drop(prod);
-        drop(cons);
+        prod.release();
+        cons.release();
 
         // The reverse pairing, on the second ring: a joined endpoint
         // starts at position 0, so a ring already run is not
@@ -966,8 +1082,8 @@ mod tests {
         // SAFETY: as above.
         let ring_1 = unsafe { Ring::attach(&b1, first2) }.unwrap();
         let ring_2 = unsafe { Ring::attach(&b2, first2) }.unwrap();
-        let mut prod = ring_2.producer().unwrap();
-        let mut cons = ring_1.consumer().unwrap();
+        let mut prod = ring_2.claim_producer(PROD_ID).unwrap();
+        let mut cons = ring_1.claim_consumer(CONS_ID).unwrap();
         let mut next = 0u64;
         for burst in [5u64, 8, 8, 3, 8] {
             send(&mut prod, next, next + burst);
@@ -1042,6 +1158,8 @@ mod tests {
         assert!(unsafe { Ring::attach(&b, first) }.is_ok());
     }
 
+    /// The segment counts and depths the matrix covers: all of
+    /// them, or under Miri a corner, its interpreter being slow.
     fn matrix() -> (Vec<u32>, Vec<u32>) {
         if cfg!(miri) {
             (vec![1, 2, 32], vec![1, 8])

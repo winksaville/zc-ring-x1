@@ -9,22 +9,7 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- The cycle `fix: spsc v4 roles survive their holders` is open on bookmark
-  `fix-spsc-v4-roles-survive-their-holders`, its opening pushed, both repos clean. Next is the rung
-  `feat: spsc v4 claims name their holder`, then the two after it, the docs rung, and the closing.
-  The block below is the plan, settled with the user on 2026-09-25 through three revisions
-  (claim for life, then release parks, then this), and the deliberation says why each was left.
-- Owed on the messages thread `m-7`: a correcting line, `m-7-2` to iiac-perf, saying `split` is
-  refused (the multi-process shape, each app owning the ring it reads) and that the fix is a
-  named, checkpointed claim with `release` and `take_over_*` rather than a claim for life, plus
-  the landmark's sha-link at Land. A write to `../vc-x1-messages` under its README, on the user's
-  go. `m-7-1` and iiac-perf's `m-7-0` are uncommitted there, committing being the closer's.
-- The design decisions of 2026-09-25 beyond this cycle are in the design note's open questions
-  (Naming and transport, MPMC: shared and copied, Message header shape's fields) and in the
-  phase-2 bullet under Pool topology and phasing, and in the Todo entry `### Shared allocation`.
-  The pool half of crash recovery, an owner word in the in-buffer header and a sweeper, has no
-  Todo entry yet and is named in this block's deliberation, to be written as one after the header
-  question is picked up.
+_None._
 
 ## In Progress
 
@@ -96,15 +81,6 @@ from the checkpoint and a scan of one segment, and a destructor never touches sh
 - The design note names the rule, the inbox model, the handoff, and the takeover, and the guide's
   joining section says how a role is released, reclaimed, and taken over.
 
-#### Ladder
-
-- [fix: spsc v4 roles survive their holders opening][1] (done)
-- [feat: spsc v4 claims name their holder][2]
-- [feat: spsc v4 endpoints checkpoint at each switch][3]
-- [feat: spsc v4 claim resumes and takeover replaces][4]
-- [docs: destructors never touch shared memory][5]
-- [fix: spsc v4 roles survive their holders closing][6]
-
 #### Deliberation
 
 - The requirement, the user's on 2026-09-25: a pool shared by processes cannot lose what a
@@ -150,10 +126,17 @@ from the checkpoint and a scan of one segment, and a destructor never touches sh
   the API settles first.
 - From a message, not a Todo entry: `m-7` in the messages repo is the source, so the opening
   moves no entry. The reply `m-7-1` said all three were taken with a claim for life and promised
-  the landmark's sha-link at Land, and it owes a correcting line: `split` refused, and the fix
-  now a named, checkpointed claim with release and takeover.
+  the landmark's sha-link at Land, and the correcting line `m-7-2` followed: `split` refused, and
+  the fix now a named, checkpointed claim with release and takeover.
 
-#### Ladder details
+#### Ladder
+
+- [fix: spsc v4 roles survive their holders opening][1] (done)
+- [feat: spsc v4 claims name their holder][2] (done)
+- [feat: spsc v4 endpoints checkpoint at each switch][3]
+- [feat: spsc v4 claim resumes and takeover replaces][4]
+- [docs: destructors never touch shared memory][5]
+- [fix: spsc v4 roles survive their holders closing][6]
 
 ##### fix: spsc v4 roles survive their holders opening
 
@@ -169,9 +152,34 @@ transport, each as an open question so the next cycles find them.
 
 ##### feat: spsc v4 claims name their holder
 
-The claims line laid out as states, holder ids, and checkpoint words, `claim_producer(id)` and
-`claim_consumer(id)` writing the id and refusing a held role, `Drop` removed from both endpoints,
-`release(self)` flipping held to released, and the tools and the demo on the new names.
+The region's new words laid out, and the claim naming its holder. Nothing yet writes or loads a
+checkpoint.
+
+- A role is one word per role in the claims line, `0` free, `u32::MAX` released, anything else
+  the holder's id, so claim, release, and takeover are each one CAS on it and two takeovers
+  cannot both win. The user's choice on 2026-09-26 over a state word beside an id word, which
+  would let a reader see held before the id lands. The two reserved values cost the app two ids,
+  refused as the new `Error::BadHolder`.
+- The claims line also holds the checkpoint words, the producer's `cur`, `pos`, `taken`, and
+  `claimable` and the consumer's `cur` and `pos`, and each segment's info line its two resume
+  positions. The consumer's `given` needs no checkpoint word: the shared give-back word is it.
+  The layout version is 2.
+- `claim_producer(id)` and `claim_consumer(id)` replace `producer()` and `consumer()`, CAS the
+  role word from free to the id, and refuse a held role as `RoleTaken`. A released role is
+  refused the same way until the resume rung, the user's choice, so the start-at-zero bug has no
+  way back in between.
+- Neither endpoint has a `Drop`, so a dropped endpoint leaves its role held. `release(self)` CASes
+  the role word from its own id to released, so an endpoint whose role was taken over releases
+  nothing.
+- The tools and the demo claim their pairs as holders 1 and 2.
+- The design note's v4 section, at the user's call, pulled forward from the docs rung: the
+  control block's new words, the roles bullet rewritten as claims by a named holder with how ids
+  are chosen and kept unique and a short how-to, and "Join, not resume" pointing at the rest of
+  the cycle. The README gained a short v4 section, a broad overview pointing at the design note.
+  The guide, the module docs beyond the names, and the design note's stale "a claim is for life"
+  under Naming and transport stay the docs rung's.
+- A Todo entry, `### Find a ring by name`, after the inter-application test, from the discussion
+  of how a process finds a ring, at the user's call.
 
 ##### feat: spsc v4 endpoints checkpoint at each switch
 
@@ -189,11 +197,14 @@ acceptance check's first two clauses.
 
 The rule, the inbox model, the handoff, the takeover and whose judgment it is, and the pool half
 named as later cycles, in the design note, the guide's joining section and errors table following,
-the module docs and the README on the new names.
+and the module docs on the new names. The v4 roles bullet and the README's v4 section came
+earlier, in `feat: spsc v4 claims name their holder`, and this rung brings them up to the takeover.
 
 ##### fix: spsc v4 roles survive their holders closing
 
-Closing out the cycle.
+Closing out the cycle. Owed at Land: a line on `m-7` to iiac-perf with the landmark's sha-link,
+and a Todo entry for the pool half of crash recovery, an owner word in the in-buffer header and a
+sweeper, placed after the header question.
 
 ## Waiting
 
@@ -227,6 +238,29 @@ prove the message arrived intact.
     re-executing itself was rejected as the harder pattern to follow.
   - The region is a file under the target directory, mapped `MAP_SHARED` through `libc`, which
     becomes a Linux dev-dependency. The consumer creates and sizes it, the producer attaches.
+
+### Find a ring by name
+
+A process that reads a ring owns it, and every producer joins it, but how a producer finds the
+ring is not decided: its address is `(region, first_segment)`, and nothing maps a name to that.
+The design note's [Naming and transport](notes/ring-buffer-design.md#naming-and-transport) settles
+the shape, one `find(name)` returning an endpoint so the resolver is all a transport replaces, and
+leaves the mechanism open with the Setup plane question.
+
+- Three candidates, from the discussion on 2026-09-26:
+  - The filesystem as the directory: a name is a path, `/dev/shm/<name>`, one inbox region per
+    name, `first_segment` at a well-known place in the region. No daemon, the OS handles
+    permissions and collisions, and a stale name is a file someone removes.
+  - A directory region: a well-known shared object holding name, `(region, first_segment)`, and
+    owner id entries, inserted by CAS. No daemon, but a stale entry needs the owner word and
+    sweeper the pool's crash recovery needs.
+  - A broker: a process owning the names that passes region fds over a Unix socket, the most
+    dynamic and the nearest to a network resolver, and one more process to supervise.
+- Suggested first: the filesystem, behind the one `find`, so replacing it changes one function.
+- Open with it: where `first_segment` lives in the region, what a name whose owner died means,
+  and cross-process pool ids.
+- After `### Test an inter-application message`, whose producer needs some answer to how it
+  learns `first_segment` and which will show what `find` must do.
 
 ### Shared allocation: a pool any process can allocate from
 

@@ -150,6 +150,9 @@ pub enum Error {
     /// A ring of segments: the role asked for is already held, in
     /// this process or another.
     RoleTaken,
+    /// A ring of segments: a claim's holder id is `0` or
+    /// `u32::MAX`, the role word's two values that name no holder.
+    BadHolder,
 }
 
 /// Check `T` fits a slot, called once per `reserve_slot_with`

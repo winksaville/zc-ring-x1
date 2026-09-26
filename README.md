@@ -57,9 +57,8 @@ through `spsc::v2`, which stay available by path and keep
 `attach` and `user()`. `spsc::v4`, by path, is the ring of
 segments with `attach`: its segment 0 carries a control block,
 its endpoints keep offsets, and a second process joins through
-the pool and takes its role by name, `producer()` or
-`consumer()`, held once anywhere
-([SPSC v4](notes/ring-buffer-design.md#spsc-v4-attachable-segments)).
+the pool and claims its role for a named holder, held once
+anywhere ([SPSC v4: attachable ring](#spsc-v4-attachable-ring)).
 The multi-producer sibling is
 `mpsc::v2::MpscRing`, the same ring of segments with any number
 of producers sending through a fill closure, reached by path
@@ -256,6 +255,32 @@ memory is untrusted input. The pool validates the head and
 next-link at every pop and fails toward `Exhausted`, so a
 hostile peer can degrade service (garbage messages, lost
 buffers, spurious exhaustion), never cause UB on this side.
+
+## SPSC v4: attachable ring
+
+`spsc::v4` is the ring of segments a second process can join:
+v3's protocol, over a ring that describes itself in the region.
+The details are the design note's [SPSC
+v4](notes/ring-buffer-design.md#spsc-v4-attachable-segments), and
+the how-to the guide's [Joining from another
+process](notes/user-guide.md#joining-from-another-process).
+
+- **Found by an index**: segment 0's control block names the
+  ring, its geometry, and every segment's pool buffer index, so
+  a process holding the same pool and `ring.first_segment()`
+  attaches with `Ring::attach`, every field validated.
+- **Roles claimed by a holder**: `claim_producer(id)` and
+  `claim_consumer(id)` write the app's id for the holder into
+  the role's word, one CAS, so a role is held once anywhere and
+  a second claim is `RoleTaken`. The id is the app's, the pid
+  being the natural one, and the crate never interprets it.
+- **Released, never dropped**: an endpoint has no `Drop`, since
+  a destructor never touches shared memory, so dropping one
+  leaves its role held and `release()` gives it back.
+- **Built to survive its holders**: the claims line carries each
+  endpoint's checkpoint, so a released role resumes and a dead
+  holder's is taken over. That half is in progress, and until
+  it lands a released role is refused a claim.
 
 ## Workspace and tools
 

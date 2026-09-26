@@ -1261,11 +1261,13 @@ another process](user-guide.md#joining-from-another-process).
 - **The control block**: every segment's header grows from v3's
   one line to four, so `segment_size` is v3's plus 192 bytes and
   every segment's slots start at one offset. Line 0 names the
-  ring, seven `AtomicU32`s: magic (`"ZCR4"`), layout version,
+  ring, nine `AtomicU32`s: magic (`"ZCR4"`), layout version,
   `slot_size`, `seg_capacity`, `seg_count`, the segment's own
-  number, and `given`, the consumer's give-back word. Line 1 is
-  the role claims word, alone so the CAS that takes a role never
-  shares a line with `given`. Lines 2 and 3 are the table, the
+  number, `given`, the consumer's give-back word, and the
+  producer's and consumer's resume positions in this segment.
+  Line 1 is the claims line, the two role words and the
+  endpoints' checkpoints, alone so the CAS that takes a role
+  never shares a line with `given`. Lines 2 and 3 are the table, the
   pool buffer index of segment `i` at entry `i`, `u32::MAX` past
   `seg_count`. Every segment writes line 0, and lines 1 to 3 are
   meaningful in segment 0. `init` stores the magic last, with
@@ -1294,25 +1296,74 @@ another process](user-guide.md#joining-from-another-process).
   a ring's segment and a buffer freed and reused since look the
   same, and the ring writes seq words into every segment it is
   told it has.
-- **Roles by name, no `split`**: `ring.producer()` and
-  `ring.consumer()` each take their role by one `fetch_or` on
-  the claims word, from a `Ring` that `init` or `attach`
-  returned, `Err(RoleTaken)` when the bit was set anywhere, in
-  this process or another, and a set bit needs no undo since the
-  or changed nothing. `Drop` on the endpoint clears its bit.
-  Nothing on the message path reads the word. `split` handed
-  every attacher both endpoints and left the SPSC contract to
-  the caller's discipline, and the `### Endpoint claims word`
-  Todo asked for this in the single-region rings at the cost of
-  a layout bump, which v4's new block does not pay.
-  - A crashed process leaves its role claimed. Recovery, a forced
-    claim or a reset, is not built: a fresh region per run is the
-    inter-application test's case.
+- **Roles claimed by a named holder** (layout version 2, the
+  cycle `fix: spsc v4 roles survive their holders`): each role
+  is one `AtomicU32` in the claims line, `0` free, `u32::MAX`
+  released, and anything else the id of its holder, so claim,
+  release, and takeover are each one CAS on it and two
+  takeovers cannot both win.
+  - `claim_producer(id)` and `claim_consumer(id)`, from a `Ring`
+    that `init` or `attach` returned, CAS the role word from
+    free to `id`. A held role is `Err(RoleTaken)`, in this
+    process or another, and so is a released one until a claim
+    can resume it. The ids `0` and `u32::MAX` name no holder
+    and are `Err(BadHolder)`. Nothing on the message path reads
+    the word.
+  - Neither endpoint has a `Drop`: a destructor never touches
+    shared memory, since a process that dies never runs one and
+    one that runs leaves the word saying the role is free when
+    its state is lost. A dropped endpoint leaves its role held.
+    `release(self)` CASes the role word from its own id to
+    released, so an endpoint whose role was taken over releases
+    nothing.
+  - The id is the app's, recorded and never interpreted by the
+    crate. On Linux the pid is the natural one, never `0` and
+    below `pid_max`, at most `2^22`, so never `u32::MAX`, and a
+    supervisor may hand out ids from a counter instead. An id
+    must name one holder for the life of the ring, since the
+    release CAS is what keeps a stale holder from releasing its
+    successor's role. Pids are reused, so an app that restarts
+    holders packs a generation into the high bits, 22 bits of
+    pid and a 10-bit restart count. Whether a holder is alive
+    is the app's judgment, never the crate's.
+  - The checkpoint words are laid out beside the role words,
+    the producer's `cur`, `pos`, `taken`, and `claimable` and
+    the consumer's `cur` and `pos`, with each segment's two
+    resume positions in its info line. The consumer's `given`
+    is already shared, so it is its own checkpoint.
+  - `split` stays out. The shape the crate serves is
+    multi-process: each app creates the ring it reads and joins
+    the other's as producer, so no process holds both roles of
+    one ring, and in-process callers claim twice.
+  - How to, in brief:
+
+    ```rust
+    // In-process, as the tools and the demo do: both claims
+    // on a fresh ring, so neither can fail.
+    let ring = spsc::v4::Ring::init(&mut pool, 64, 8, 4)?;
+    let mut prod = ring.claim_producer(1)?;
+    let mut cons = ring.claim_consumer(2)?;
+
+    // Across processes: the reader inits the ring, claims its
+    // consumer, and hands `ring.first_segment()` to the
+    // producer's process, which attaches its own pool handle
+    // over the same region and claims.
+    // SAFETY: first_segment came from the reader's ring over
+    // this pool's region, whose segments are still the ring's.
+    let ring = unsafe { spsc::v4::Ring::attach(&pool, first_segment) }?;
+    let mut prod = ring.claim_producer(std::process::id())?;
+
+    // Giving the role back: release, since dropping keeps it.
+    prod.release();
+    ```
+
 - **Join, not resume**: an endpoint taken after `attach` starts
   in segment 0 at position 0, as one taken after `init` does, so
   attach is for a process joining before its role has run. v2's
-  `attach` has the same limit. Recovering a mid-run position
-  from the slots' seq words is a design of its own, not started.
+  `attach` has the same limit. Resuming a released role from its
+  checkpoint and taking over a dead holder's from the checkpoint
+  and a scan of one segment's seq words are the rest of the
+  cycle `fix: spsc v4 roles survive their holders`.
 - **Stacked Borrows shaped the tests**: the handle `init`
   returns holds pointers under the `&mut` it took, and the first
   write through an attached handle, which holds the region's

@@ -10,8 +10,7 @@ use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use super::{
-    CONSUMER_CLAIM, MAX_SEGMENTS, MOVED, SEG_MASK, SEG_SHIFT, SEQ_MASK, Segments, check_body_type,
-    seq_of,
+    MAX_SEGMENTS, MOVED, SEG_MASK, SEG_SHIFT, SEQ_MASK, Segments, check_body_type, seq_of,
 };
 use crate::Empty;
 
@@ -20,6 +19,8 @@ use crate::Empty;
 pub(super) struct ConsumerState {
     /// Geometry and segment addresses.
     pub(super) segs: Segments,
+    /// The id this consumer's claim wrote into the role word.
+    pub(super) holder: u32,
     /// The segment being read.
     pub(super) cur: u32,
     /// Free-running position in `cur`.
@@ -35,6 +36,10 @@ pub(super) struct ConsumerState {
 
 /// The consuming endpoint: `reserve_slot_with` the oldest
 /// committed slot, read in place, `release`.
+///
+/// - It has no `Drop`, as [`Producer`](super::Producer) has none:
+///   dropping it leaves the role held, and giving the role back is
+///   [`release`](Consumer::release).
 pub struct Consumer<'a> {
     /// Private state, borrowed by each guard.
     pub(super) st: ConsumerState,
@@ -45,19 +50,14 @@ pub struct Consumer<'a> {
 // Send rationale.
 unsafe impl Send for Consumer<'_> {}
 
-impl Drop for Consumer<'_> {
-    /// Release the role, so another endpoint may take it.
-    fn drop(&mut self) {
-        self.st.segs.release_role(CONSUMER_CLAIM);
-    }
-}
-
 impl<'a> Consumer<'a> {
-    /// Start in segment 0, where the producer starts.
-    pub(super) fn new(segs: Segments) -> Self {
+    /// Start in segment 0, where the producer starts, for holder
+    /// `holder`.
+    pub(super) fn new(segs: Segments, holder: u32) -> Self {
         Consumer {
             st: ConsumerState {
                 segs,
+                holder,
                 cur: 0,
                 pos: 0,
                 resume: [0; MAX_SEGMENTS as usize],
@@ -66,6 +66,12 @@ impl<'a> Consumer<'a> {
             },
             _region: PhantomData,
         }
+    }
+
+    /// Give the consumer role back as released, the counterpart
+    /// of [`Producer::release`](super::Producer::release).
+    pub fn release(self) {
+        Segments::release_role(self.st.segs.consumer_role(), self.st.holder);
     }
 
     /// Segment switches this consumer has made: how many MOVED

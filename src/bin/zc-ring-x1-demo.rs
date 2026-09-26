@@ -422,8 +422,8 @@ macro_rules! spsc_pair {
             .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
         let ring = zc_ring_x1::spsc::v4::Ring::init(&mut $pool, slot, $depth, $segments)
             .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
-        let mut $producer = ring.producer().unwrap(); // OK: a fresh ring, no role held
-        let mut $consumer = ring.consumer().unwrap(); // OK: a fresh ring, no role held
+        let mut $producer = ring.claim_producer(1).unwrap(); // OK: a fresh ring, no role held
+        let mut $consumer = ring.claim_consumer(2).unwrap(); // OK: a fresh ring, no role held
     };
 }
 

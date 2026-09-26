@@ -9,7 +9,7 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
-use super::{MAX_SEGMENTS, MOVED, PRODUCER_CLAIM, SEG_SHIFT, Segments, check_body_type, seq_of};
+use super::{MAX_SEGMENTS, MOVED, SEG_SHIFT, Segments, check_body_type, seq_of};
 use crate::Full;
 
 /// The producer's private state, held apart from the handle so a
@@ -17,6 +17,8 @@ use crate::Full;
 pub(super) struct ProducerState {
     /// Geometry and segment addresses.
     pub(super) segs: Segments,
+    /// The id this producer's claim wrote into the role word.
+    pub(super) holder: u32,
     /// The segment being written.
     pub(super) cur: u32,
     /// Free-running position in `cur`.
@@ -36,6 +38,10 @@ pub(super) struct ProducerState {
 
 /// The producing endpoint: `reserve_slot_with`, write in place,
 /// `commit`.
+///
+/// - It has no `Drop`: a destructor never touches shared memory,
+///   so dropping it leaves the role held, and giving the role back
+///   is [`release`](Producer::release).
 pub struct Producer<'a> {
     /// Private state, borrowed by each guard.
     pub(super) st: ProducerState,
@@ -47,19 +53,13 @@ pub struct Producer<'a> {
 // writes are handed off with Release/Acquire ordering.
 unsafe impl Send for Producer<'_> {}
 
-impl Drop for Producer<'_> {
-    /// Release the role, so another endpoint may take it.
-    fn drop(&mut self) {
-        self.st.segs.release_role(PRODUCER_CLAIM);
-    }
-}
-
 impl<'a> Producer<'a> {
-    /// Start in segment 0, held as taken.
-    pub(super) fn new(segs: Segments) -> Self {
+    /// Start in segment 0, held as taken, for holder `holder`.
+    pub(super) fn new(segs: Segments, holder: u32) -> Self {
         Producer {
             st: ProducerState {
                 segs,
+                holder,
                 cur: 0,
                 pos: 0,
                 resume: [0; MAX_SEGMENTS as usize],
@@ -69,6 +69,15 @@ impl<'a> Producer<'a> {
             },
             _region: PhantomData,
         }
+    }
+
+    /// Give the producer role back as released, so a later claim
+    /// may take it.
+    ///
+    /// - One CAS on the role word from this producer's id, so a
+    ///   producer whose role was taken over releases nothing.
+    pub fn release(self) {
+        Segments::release_role(self.st.segs.producer_role(), self.st.holder);
     }
 
     /// Segment switches this producer has made: how many of its
