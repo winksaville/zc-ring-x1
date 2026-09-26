@@ -107,6 +107,27 @@ const NO_SEGMENT: u32 = u32::MAX;
 /// A role word naming no holder, the role never claimed.
 const ROLE_FREE: u32 = 0;
 
+/// Set in a switch intent word while its switch is in flight:
+/// the holder's stores for it are not all made.
+const SWITCH_SET: u32 = 1 << 31;
+
+/// Where an intent word holds the segment being switched into.
+const SWITCH_TO_SHIFT: u32 = 8;
+
+/// Where an intent word holds the bit the switch leaves in the
+/// side's free-set word for the segment it flips.
+const SWITCH_BIT_SHIFT: u32 = 16;
+
+const _: () = assert!(MAX_SEGMENTS <= 1 << SWITCH_TO_SHIFT);
+const _: () = assert!(MAX_SEGMENTS <= 1 << (SWITCH_BIT_SHIFT - SWITCH_TO_SHIFT));
+
+/// A switch intent word: a switch from segment `from` into `to`
+/// is in flight, flipping one segment's bit of the side's
+/// free-set word to `bit`.
+fn switch_intent(from: u32, to: u32, bit: u32) -> u32 {
+    SWITCH_SET | from | (to << SWITCH_TO_SHIFT) | (bit << SWITCH_BIT_SHIFT)
+}
+
 /// A role word naming no holder, the role given back by
 /// `release` with its state.
 const ROLE_RELEASED: u32 = u32::MAX;
@@ -146,9 +167,18 @@ struct Info {
 ///   of the holder, which the app chooses and the crate never
 ///   interprets, so claim, release, and takeover are each one CAS
 ///   on it.
-/// - The consumer's give-back word is its own checkpoint, as it
-///   is already shared in the info line.
-/// - Nothing on the message path reads or writes the line.
+/// - Each switch writes its side's segment, and the producer its
+///   take word, with the left segment's resume position in that
+///   segment's info line. The consumer's give-back word is its
+///   own checkpoint, as it is already shared. `release` adds the
+///   position, the one thing a switch does not record.
+/// - A switch is several stores and its holder can die between
+///   any two, so it sets the side's intent word before its first
+///   checkpoint store and clears it after its last shared store:
+///   a clear word means the checkpoint is whole, and a set one
+///   names the switch a takeover must finish or undo.
+/// - Nothing on the message path reads or writes the line, only
+///   the switch path and `release`.
 #[repr(C)]
 struct Claims {
     /// The producer role's holder.
@@ -157,17 +187,20 @@ struct Claims {
     consumer: AtomicU32,
     /// The producer's segment.
     prod_cur: AtomicU32,
-    /// The producer's position in its segment.
+    /// The producer's position in its segment, written by
+    /// `release`.
     prod_pos: AtomicU32,
     /// The producer's segment-take word.
     prod_taken: AtomicU32,
-    /// Whether the slot at the producer's position was seen
-    /// claimable, `0` or `1`.
-    prod_claimable: AtomicU32,
+    /// The producer's switch in flight, `0` when none.
+    prod_switch: AtomicU32,
     /// The consumer's segment.
     cons_cur: AtomicU32,
-    /// The consumer's position in its segment.
+    /// The consumer's position in its segment, written by
+    /// `release`.
     cons_pos: AtomicU32,
+    /// The consumer's switch in flight, `0` when none.
+    cons_switch: AtomicU32,
 }
 
 /// The four lines at the front of every segment: the ring's
@@ -271,6 +304,83 @@ impl Segments {
     /// The consumer's give-back word.
     fn given(&self) -> &AtomicU32 {
         &self.header0().info.given
+    }
+
+    /// The claims line, the roles and the checkpoints.
+    fn claims(&self) -> &Claims {
+        &self.header0().claims
+    }
+
+    /// Segment `seg`'s info line, where its resume positions are.
+    fn info(&self, seg: u32) -> &Info {
+        // SAFETY: seg < seg_count, and the segment's header sits
+        // just ahead of its slots, the front of a buffer that
+        // lives as long as the pool region, every field atomic.
+        unsafe {
+            &(*(self
+                .base
+                .add(self.slots[seg as usize] - size_of::<SegmentHeader>())
+                as *const SegmentHeader))
+                .info
+        }
+    }
+
+    /// Checkpoint a producer switch from `from` into `to`, ahead
+    /// of the MOVED commit that publishes it.
+    ///
+    /// - `left_at` is the position after the MOVED slot, where a
+    ///   later stint in `from` starts, and `taken` the take word
+    ///   with `to` flipped.
+    /// - The resume position goes first, ahead of the intent: an
+    ///   entry for the segment still current is read by nobody.
+    /// - Every store is Release, so a reader that sees one sees
+    ///   the stores before it, the intent included.
+    /// - Out of line and cold, as its two siblings are, so the
+    ///   message path's code stays what it was without them.
+    #[cold]
+    #[inline(never)]
+    fn producer_switch(&self, from: u32, to: u32, left_at: u32, taken: u32) {
+        let c = self.claims();
+        self.info(from)
+            .prod_resume
+            .store(left_at, Ordering::Release);
+        c.prod_switch.store(
+            switch_intent(from, to, (taken >> to) & 1),
+            Ordering::Release,
+        );
+        c.prod_taken.store(taken, Ordering::Release);
+        c.prod_cur.store(to, Ordering::Release);
+    }
+
+    /// Checkpoint a consumer switch from `from` into `to`, ahead
+    /// of the release that frees the MOVED slot, as
+    /// [`producer_switch`](Segments::producer_switch) does.
+    ///
+    /// - `given` is the give-back word with `from` flipped, stored
+    ///   to the shared word after the release, so the intent
+    ///   records the bit it leaves for `from`.
+    #[cold]
+    #[inline(never)]
+    fn consumer_switch(&self, from: u32, to: u32, left_at: u32, given: u32) {
+        let c = self.claims();
+        self.info(from)
+            .cons_resume
+            .store(left_at, Ordering::Release);
+        c.cons_switch.store(
+            switch_intent(from, to, (given >> from) & 1),
+            Ordering::Release,
+        );
+        c.cons_cur.store(to, Ordering::Release);
+    }
+
+    /// Clear an intent word once its switch's last shared store
+    /// is made.
+    #[cold]
+    #[inline(never)]
+    fn switch_done(intent: &AtomicU32) {
+        // Release: a reader that sees the word clear sees the
+        // switch's stores, the seq word's among them.
+        intent.store(0, Ordering::Release);
     }
 
     /// The table every endpoint starts from, built the same way
@@ -417,6 +527,9 @@ impl<'a> Ring<'a> {
                     for (entry, &idx) in header.table.iter().zip(indices.iter()) {
                         entry.store(idx, Ordering::Relaxed);
                     }
+                    // The producer starts holding segment 0, so its
+                    // checkpoint does too.
+                    header.claims.prod_taken.store(1, Ordering::Relaxed);
                 }
                 let seg_slots = seg_base.add(size_of::<SegmentHeader>());
                 for i in 0..seg_capacity {
@@ -667,6 +780,26 @@ mod tests {
         }
     }
 
+    /// The region's checkpoint agrees with both endpoints' private
+    /// state, every part a switch writes, and no switch is in
+    /// flight.
+    fn assert_checkpoint(prod: &Producer<'_>, cons: &Consumer<'_>) {
+        let (p, c) = (&prod.st, &cons.st);
+        let claims = p.segs.claims();
+        let load = |w: &AtomicU32| w.load(Ordering::Acquire);
+        assert_eq!(load(&claims.prod_switch), 0);
+        assert_eq!(load(&claims.cons_switch), 0);
+        assert_eq!(load(&claims.prod_cur), p.cur);
+        assert_eq!(load(&claims.prod_taken), p.taken);
+        assert_eq!(load(&claims.cons_cur), c.cur);
+        assert_eq!(load(p.segs.given()), c.given);
+        for seg in 0..p.segs.seg_count {
+            let info = p.segs.info(seg);
+            assert_eq!(load(&info.prod_resume), p.resume[seg as usize]);
+            assert_eq!(load(&info.cons_resume), c.resume[seg as usize]);
+        }
+    }
+
     /// Segments free by the producer's reckoning.
     fn free_segments(prod: &Producer<'_>) -> u32 {
         let st = &prod.st;
@@ -724,20 +857,22 @@ mod tests {
             ring.first_segment(),
             header0.table[0].load(Ordering::Relaxed)
         );
-        // Both roles free and every checkpoint word zero.
+        // Both roles free, no switch in flight, and the checkpoint
+        // the start state: segment 0 at position 0, held as taken.
         let c = &header0.claims;
         for word in [
             &c.producer,
             &c.consumer,
             &c.prod_cur,
             &c.prod_pos,
-            &c.prod_taken,
-            &c.prod_claimable,
+            &c.prod_switch,
             &c.cons_cur,
             &c.cons_pos,
+            &c.cons_switch,
         ] {
             assert_eq!(word.load(Ordering::Relaxed), 0);
         }
+        assert_eq!(c.prod_taken.load(Ordering::Relaxed), 1);
         for (i, entry) in header0.table.iter().enumerate() {
             let idx = entry.load(Ordering::Relaxed);
             assert_eq!(idx == NO_SEGMENT, i >= 3, "table entry {i}");
@@ -822,7 +957,9 @@ mod tests {
                 // Vary the burst so segments are left mid-lap.
                 let n = 1 + (round * 7) % burst;
                 send(&mut prod, next, next + n);
+                assert_checkpoint(&prod, &cons);
                 recv(&mut cons, next, next + n);
+                assert_checkpoint(&prod, &cons);
                 next += n;
                 assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
                 assert_eq!(free_segments(&prod).count_ones(), count - 1);
@@ -991,6 +1128,25 @@ mod tests {
         cons.release();
         assert_eq!(roles(&ring), (PROD_ID, ROLE_RELEASED));
         assert_eq!(ring.claim_consumer(7).err(), Some(Error::RoleTaken));
+    }
+
+    #[test]
+    fn release_checkpoints_the_position() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = Ring::init(&mut pool, 64, 4, 3).unwrap();
+        let (mut prod, mut cons) = endpoints(&ring);
+        // Past two switches, the consumer a message behind.
+        send(&mut prod, 0, 10);
+        recv(&mut cons, 0, 9);
+        assert_checkpoint(&prod, &cons);
+        let (p_pos, c_pos) = (prod.st.pos, cons.st.pos);
+        assert_ne!(p_pos, c_pos);
+        prod.release();
+        cons.release();
+        let claims = ring.segs.claims();
+        assert_eq!(claims.prod_pos.load(Ordering::Acquire), p_pos);
+        assert_eq!(claims.cons_pos.load(Ordering::Acquire), c_pos);
     }
 
     #[test]
@@ -1226,6 +1382,7 @@ mod tests {
                         let n = 1 + (round * 7919) % capacity;
                         send(&mut prod, next, next + n);
                         recv(&mut cons, next, next + n);
+                        assert_checkpoint(&prod, &cons);
                         next += n;
                         assert_eq!(cons.switches(), prod.switches());
                         assert_eq!(free_segments(&prod).count_ones(), count - 1);

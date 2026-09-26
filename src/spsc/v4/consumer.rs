@@ -69,9 +69,12 @@ impl<'a> Consumer<'a> {
     }
 
     /// Give the consumer role back as released, the counterpart
-    /// of [`Producer::release`](super::Producer::release).
+    /// of [`Producer::release`](super::Producer::release),
+    /// writing its position first.
     pub fn release(self) {
-        Segments::release_role(self.st.segs.consumer_role(), self.st.holder);
+        let segs = &self.st.segs;
+        segs.claims().cons_pos.store(self.st.pos, Ordering::Release);
+        Segments::release_role(segs.consumer_role(), self.st.holder);
     }
 
     /// Segment switches this consumer has made: how many MOVED
@@ -167,22 +170,29 @@ impl<T> ReadSlot<'_, T> {
     /// - The released seq store comes first (`Release`), clearing
     ///   any MOVED bits, so a segment given back holds only
     ///   claimable seqs.
-    /// - After a MOVED message: give the old segment back by
-    ///   flipping its bit in the give-back word (`Release`), then
-    ///   continue in the named segment where it was left.
+    /// - After a MOVED message: checkpoint the switch under its
+    ///   intent word before the release, give the old segment back
+    ///   by flipping its bit in the give-back word (`Release`),
+    ///   clear the intent, then continue in the named segment
+    ///   where it was left.
     pub fn release(self) {
         let st = self.st;
-        let segs = st.segs;
+        let segs = &st.segs;
         let c = st.pos;
         let next = c.wrapping_add(1);
+        let moved = self.word & MOVED != 0;
+        let k = (self.word >> SEG_SHIFT) & SEG_MASK;
+        if moved {
+            st.given ^= 1 << st.cur;
+            st.resume[st.cur as usize] = next;
+            segs.consumer_switch(st.cur, k, next, st.given);
+        }
         segs.seq(st.cur, c)
             .store(seq_of(c.wrapping_add(segs.capacity)), Ordering::Release);
         st.pos = next;
-        if self.word & MOVED != 0 {
-            let k = (self.word >> SEG_SHIFT) & SEG_MASK;
-            st.given ^= 1 << st.cur;
-            st.resume[st.cur as usize] = next;
+        if moved {
             segs.given().store(st.given, Ordering::Release);
+            Segments::switch_done(&segs.claims().cons_switch);
             st.cur = k;
             st.pos = st.resume[k as usize];
             st.switches += 1;

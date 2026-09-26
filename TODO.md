@@ -124,6 +124,13 @@ from the checkpoint and a scan of one segment, and a destructor never touches sh
   `Region` wrapper is the answer and a follow-up, the piece the inter-application test wants.
 - Ahead of `### Test an inter-application message`: that test is the API's first consumer, so
   the API settles first.
+- Waiver, the user's on 2026-09-26: "complete this cycle up to but not including the closing and
+  I'll review after breakfast". It covers the work reviews, the description reviews, and the
+  pushes of `feat: spsc v4 endpoints checkpoint at each switch`, `feat: spsc v4 claim resumes and
+  takeover replaces`, and `docs: destructors never touch shared memory`, each pushed to the cycle's
+  bookmark, which stays a draft. It does not cover the closing, the close-out shape, or Land, and
+  every other rule holds: validation before each push, the stops on a deviation that changes what
+  the user agreed.
 - From a message, not a Todo entry: `m-7` in the messages repo is the source, so the opening
   moves no entry. The reply `m-7-1` said all three were taken with a claim for life and promised
   the landmark's sha-link at Land, and the correcting line `m-7-2` followed: `split` refused, and
@@ -133,7 +140,7 @@ from the checkpoint and a scan of one segment, and a destructor never touches sh
 
 - [fix: spsc v4 roles survive their holders opening][1] (done)
 - [feat: spsc v4 claims name their holder][2] (done)
-- [feat: spsc v4 endpoints checkpoint at each switch][3]
+- [feat: spsc v4 endpoints checkpoint at each switch][3] (done)
 - [feat: spsc v4 claim resumes and takeover replaces][4]
 - [docs: destructors never touch shared memory][5]
 - [fix: spsc v4 roles survive their holders closing][6]
@@ -183,9 +190,32 @@ checkpoint.
 
 ##### feat: spsc v4 endpoints checkpoint at each switch
 
-Every switch writes `cur`, the free-set word, and the segment's resume position into the region,
-and `release` writes the exact checkpoint, `pos` included, so a released role carries everything a
-successor needs.
+Every switch writes its side's checkpoint into the region, under an intent word that says when the
+checkpoint is whole, and `release` adds the position, so a released role carries everything a
+successor needs and a dead holder's names the one switch it may have left half done.
+
+- A switch is several stores, and a holder that dies between two leaves a checkpoint that
+  disagrees with the seq words, whichever order they take. The user proposed a mutex. A lock
+  excludes no one here, since only the holder writes and the role-word CAS already serializes
+  successors, and a dead holder's lock stays held with the state inside it half written, so the
+  lock's flag was kept and the lock was not: each side's intent word is set, naming the segment
+  left, the segment entered, and the free-set bit flipped, before the switch's first checkpoint
+  store, and cleared after its last shared store. The user's choice on 2026-09-26.
+- The producer writes the left segment's resume position, the intent, `taken`, and `cur` ahead of
+  the MOVED commit, the consumer the resume position, the intent, and `cur` ahead of the release,
+  and each clears its intent after, the consumer's after the give-back store. All Release.
+- `claimable` is not kept, a successor assuming false loads one seq word more, and init writes
+  the producer's start `taken` of 1, so the checkpoint is the start state before any switch.
+- The checkpoint made the per-message copy of the segment table certain, since the switch path
+  passes it by reference to an out-of-line call, and v4 regressed at depths where no switch
+  happens. Both endpoints now borrow `&st.segs`, as MPSC v2 does, and v4 streams under v3 at
+  depth 8 and up, the numbers in the design note and the `### SPSC v3 fast path` Todo.
+- The design note's v4 roles bullet describes the checkpoint, the intent word, and the cost. The
+  user's request for stream tests over every placement joined `### Improve stream tests` as a
+  Todo rather than a rung, since it is that entry and does not block the cycle.
+- Tests: every switch in the burst tests leaves the checkpoint equal to both endpoints' private
+  state with no intent set, and `release` writes each side's position. The repair of a set intent
+  is the next rung's.
 
 ##### feat: spsc v4 claim resumes and takeover replaces
 
@@ -337,6 +367,9 @@ But CCX on 7600:
 
 Thus aren't comparable, we should probably stream all the placement variants?
 
+- The user on 2026-09-26: the stream tests should cover the set of placements the current cpu
+  has, SMT, CCX, x-CCX where it exists, and unpinned, as `tp-stream` does.
+
 ### Unwrap lints for the library
 
 The library has no `unwrap` or `expect` outside tests, but only by discipline. The user
@@ -411,6 +444,11 @@ message against v2's 7.5.
   streams 0.6 to 2.8 ns per message slower than v3 where no switch happens while its
   single-thread loop is faster, a two-thread cost the code delta does not explain. This entry
   measures both rings and looks for that gap, the v4 rows in the design note as the mark.
+- Answered for v4 on 2026-09-26, in `feat: spsc v4 endpoints checkpoint at each switch`: the
+  switch checkpoint passes the table by reference to an out-of-line call, which made the copy
+  certain and v4 regress, and borrowing `&st.segs` in both endpoints took v4 at depth 64 from
+  14.6 to 10.0 ns on the CCX pair and from 19.1 to 12.5 on the SMT pair, under v3's 13.7 and
+  17.1 in the same run. The gap was the copy. v3 still copies, and this entry is what changes it.
 
 ### MPSC v2 as the default
 

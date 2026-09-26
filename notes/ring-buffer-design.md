@@ -1326,11 +1326,34 @@ another process](user-guide.md#joining-from-another-process).
     holders packs a generation into the high bits, 22 bits of
     pid and a 10-bit restart count. Whether a holder is alive
     is the app's judgment, never the crate's.
-  - The checkpoint words are laid out beside the role words,
-    the producer's `cur`, `pos`, `taken`, and `claimable` and
-    the consumer's `cur` and `pos`, with each segment's two
-    resume positions in its info line. The consumer's `given`
-    is already shared, so it is its own checkpoint.
+  - The checkpoint sits beside the role words: the producer's
+    `cur`, `pos`, and `taken` and the consumer's `cur` and
+    `pos`, with each segment's two resume positions in its info
+    line. The consumer's `given` is already shared, so it is its
+    own checkpoint. `claimable` is not kept: a successor that
+    assumes false loads one seq word it could have skipped.
+  - Each switch writes its side's checkpoint, all but `pos`,
+    and `release` writes `pos`, so a released role's checkpoint
+    is exact and a held one's is exact up to the position,
+    which the seq words of one segment hold. Nothing on the
+    message path writes it.
+  - A switch is several stores, and its holder can die between
+    any two, where no lock or CAS makes them one. So each side
+    keeps an intent word, the flag a robust mutex would leave: a
+    switch sets it, naming the segment left, the segment
+    entered, and the free-set bit it flips, before its first
+    checkpoint store, and clears it after its last shared store,
+    the MOVED commit or the consumer's give-back. Clear means
+    the checkpoint is whole. Set means the holder died inside
+    the switch, and a takeover finishes or undoes it by the one
+    slot the switch left: a producer's still claimable means
+    the MOVED commit never happened, a consumer's still
+    committed that the release never did.
+  - The cost is on the switch path only, four stores and the
+    clear for the producer, three and the clear for the
+    consumer, all Release so a reader that sees one sees the
+    intent. At depth 1, where every commit switches, that is
+    per message.
   - `split` stays out. The shape the crate serves is
     multi-process: each app creates the ring it reads and joins
     the other's as producer, so no process holds both roles of
@@ -1438,6 +1461,17 @@ another process](user-guide.md#joining-from-another-process).
   path` Todo measures v4 beside v3 when it runs and looks for
   the two-thread gap there, with these rows as the mark. The
   default `Ring` stays v3.
+- **The gap was the copy (2026-09-26)**: the checkpoint rung of
+  `fix: spsc v4 roles survive their holders` passes the table
+  by reference to an out-of-line call on the switch path, which
+  made the copy certain on every message and v4 regress, 14.6
+  to 19.1 ns at depth 64 on the CCX pair. Borrowing `&st.segs`
+  in `commit` and `release`, as MPSC v2 already does, took v4
+  under v3 in the same `tp-stream` run: at depths 8, 64, and
+  1024, 12.8, 10.0, and 10.3 ns on the CCX pair against v3's
+  15.5, 13.7, and 12.3, and 12.7, 12.5, and 11.9 on the SMT
+  pair against 17.1 at each. v3 keeps its copy as built, the
+  `### SPSC v3 fast path` Todo's to change.
 
 ## MPSC v1: equality-seq ring
 
