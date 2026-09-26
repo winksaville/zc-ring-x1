@@ -276,7 +276,9 @@ process](notes/user-guide.md#joining-from-another-process).
   being the natural one, and the crate never interprets it.
 - **Released, never dropped**: an endpoint has no `Drop`, since
   a destructor never touches shared memory, so dropping one
-  leaves its role held and `release()` gives it back.
+  leaves its role held and `release()` gives it back. Why, and
+  the inbox model behind it, is the design note's [Holders and
+  recovery](notes/ring-buffer-design.md#holders-and-recovery).
 - **Built to survive its holders**: the claims line carries each
   endpoint's checkpoint, so a claim on a released role resumes
   where it stopped, and `take_over_producer(id)` or

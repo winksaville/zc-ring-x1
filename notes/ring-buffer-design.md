@@ -1304,15 +1304,13 @@ another process](user-guide.md#joining-from-another-process).
   takeovers cannot both win.
   - `claim_producer(id)` and `claim_consumer(id)`, from a `Ring`
     that `init` or `attach` returned, CAS the role word from
-    free to `id`. A held role is `Err(RoleTaken)`, in this
-    process or another, and so is a released one until a claim
-    can resume it. The ids `0` and `u32::MAX` name no holder
-    and are `Err(BadHolder)`. Nothing on the message path reads
-    the word.
-  - Neither endpoint has a `Drop`: a destructor never touches
-    shared memory, since a process that dies never runs one and
-    one that runs leaves the word saying the role is free when
-    its state is lost. A dropped endpoint leaves its role held.
+    free or released to `id`. A held role is `Err(RoleTaken)`,
+    in this process or another. The ids `0` and `u32::MAX` name
+    no holder and are `Err(BadHolder)`. Nothing on the message
+    path reads the word.
+  - Neither endpoint has a `Drop`, by the rule [Destructors never
+    touch shared memory](#destructors-never-touch-shared-memory).
+    A dropped endpoint leaves its role held.
     `release(self)` CASes the role word from its own id to
     released, so an endpoint whose role was taken over releases
     nothing.
@@ -1380,13 +1378,42 @@ another process](user-guide.md#joining-from-another-process).
     prod.release();
     ```
 
-- **Join, not resume**: an endpoint taken after `attach` starts
-  in segment 0 at position 0, as one taken after `init` does, so
-  attach is for a process joining before its role has run. v2's
-  `attach` has the same limit. Resuming a released role from its
-  checkpoint and taking over a dead holder's from the checkpoint
-  and a scan of one segment's seq words are the rest of the
-  cycle `fix: spsc v4 roles survive their holders`.
+- **Resume and takeover**: a claim of a free role starts in
+  segment 0 at position 0, and of a released role loads the
+  checkpoint `release` wrote, exact, and continues.
+  `take_over_producer(id)` and `take_over_consumer(id)` replace
+  any holder by one CAS from the word as loaded, one attempt, so
+  of two racing takeovers one wins. The caller vouches the
+  holder is dead, [Holders and recovery](#holders-and-recovery)
+  says why that is the app's call.
+  - A set intent is finished or undone by the slot the switch
+    left, as the checkpoint bullet says, and the repaired
+    checkpoint is written back with the intent cleared.
+  - A clear intent leaves the segment and free-set exact, and
+    the position is the scan's. Slot `i` last held a position
+    `q = i` modulo the depth, and its seq says which and whether
+    committed: `q + M` released, `q + M + 1` committed. The `M`
+    positions end just before the producer's, and the committed
+    ones are the newest, from the consumer's on. The scan knows
+    positions modulo `2^SEQ_BITS`, which is all the protocol
+    compares, and lifts them after the segment's resume position.
+  - A live producer committing while a consumer's replacement
+    scans can make one read disagree with the rest, so the scan
+    runs again until the words form one window, and gives up as
+    `BadCheckpoint` after 1024, which only words the ring never
+    wrote cause.
+  - What a takeover loses: a consumer nothing, the message its
+    holder read and never released still committed, a producer
+    at most the one slot reserved and never committed, written
+    again.
+  - At depth 1 a slot's released and committed values coincide,
+    `q + 1` against `(q - 1) + 2`, so the seq words cannot place
+    a position, and a takeover of a held role is
+    `Err(BadCapacity)`. A released role there resumes, its
+    position exact. Placing it would take a per-message store
+    at depth 1, where every commit is already on the switch
+    path, and is not done.
+  - v2's `attach` still joins at position 0 only.
 - **Stacked Borrows shaped the tests**: the handle `init`
   returns holds pointers under the `&mut` it took, and the first
   write through an attached handle, which holds the region's
@@ -2429,6 +2456,64 @@ The tests exercise exactly what it permits. Summary:
   queues] / freed) with one permitted toucher.
 - "send" this cycle means moving the `BufSlot`.
 
+### Holders and recovery
+
+A pool shared by processes must not lose what a crashed process held: a crashed consumer is
+restarted or replaced and takes over its duties, losing its in-progress work and nothing else,
+the requirement set on 2026-09-25. The cycle `fix: spsc v4 roles survive their holders` meets it
+for the ring's roles, and names what meets it for the pool's buffers.
+
+#### Destructors never touch shared memory
+
+Shared state changes only through protocol operations, never in a `Drop`.
+
+- A process that dies runs no destructor, so a design that cleans up in one is correct only
+  when nothing crashes. One that runs leaves the region saying what the destructor wrote, which
+  for a role was "free" when the role's state had gone with the endpoint.
+- The v4 endpoints were the crate's only destructors writing shared memory, and their failure
+  was the bug of `m-7`: a role taken again after a drop started at segment 0, position 0, on a
+  ring that had run, and hung. They now have none.
+- So teardown and handoff are calls, `release`, and recovery is a call, a takeover, each one
+  deliberate. The rule holds for the next attachable ring, an MPSC, from its first design.
+- One kind of destructor breaks it, and whether it stays is open: the MPSC rings' producers,
+  v0 through v2, arm `TombstoneOnUnwind` while the fill closure runs, a `Drop` that publishes a
+  tombstoned commit into the claimed slot's seq word if a panic unwinds through `send_with`, so
+  the consumer is not left waiting on a slot no one will commit. It runs only on the unwind
+  path, in a process that survives the panic, and finishes a protocol step rather than undoing
+  one. A death it cannot see, an abort or a kill, leaves that slot claimed and the ring stuck,
+  which is the MPSC's own takeover question. Found on 2026-09-26 writing this rule, left to the
+  user at the cycle's close-out.
+
+#### The inbox model
+
+A ring belongs to the process that reads it. That process creates it in a region it owns, lives
+as long as its inbox does, and claims the consumer, and every producer is a process that joins
+it by `attach` and claims the producer. A ring's address is `(region, first_segment)`, and
+naming it is [Naming and transport](#naming-and-transport)'s. No process holds both roles of one
+ring, so there is no call that claims both, and in-process callers claim twice.
+
+#### Handoff and takeover
+
+- Handoff is `release` then a claim: the holder writes its exact state and marks the role
+  released, and the next claimant, in any process, continues from it. Nothing is lost.
+- Takeover is the replacement of a holder that did not release, because it died or hung. The
+  crate records, a holder id per role and a checkpoint per switch, and recovers, from the
+  checkpoint and one segment's seq words. It never judges liveness: a `no_std` crate has no
+  processes to ask about, so the id is the app's, and `take_over_*` is the app vouching the
+  holder is gone. A supervisor that restarts consumers is where that judgment lives.
+- The checkpoint is written on the switch path, never per message, which is what keeps the
+  message path as it was: the position within a segment is left to the seq words, and a
+  takeover scans them once.
+
+#### The pool half
+
+A crashed process also leaves buffers it allocated and never sent, or received and never freed.
+The ring's recovery does not reach them, since the pool knows no holders. What does is the same
+pattern: an owner word in the in-buffer header, beside the length and the count that header
+already owes ([Message header shape](#message-header-shape)), and a sweeper that returns the
+buffers of a holder the app declares dead. It follows shared allocation, since a pool with one
+allocator has one owner to sweep for, and it waits on the header's layout.
+
 ### Overflow FIFO (future)
 
 When a queue's ring is Full, the sender appends the message to
@@ -2704,9 +2789,10 @@ work the same.
 - **Claims are the verb on both**: `claim_producer` over
   shared memory is a CAS on a word in the ring's control block,
   and over a wire it is a request the ring's owner grants or
-  refuses, with `RoleTaken` the same answer. A claim is for
-  life, ending with the region or the connection, never by a
-  destructor.
+  refuses, with `RoleTaken` the same answer. A claim ends by
+  `release` or a takeover, never by a destructor, and over a
+  wire a dropped connection is the owner's evidence for the
+  takeover it makes.
 - **A ring is found by name, not by address.** In shared
   memory a ring's address is `(region, first_segment)`, over a
   wire it is `(host, port, ring id)`. An app asks for a name

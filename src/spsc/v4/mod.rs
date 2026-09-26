@@ -37,10 +37,15 @@
 //! - Each side keeps a private resume position per segment. Both
 //!   leave a segment at the same slot, so a reused segment's
 //!   seqs are already claimable where the producer picks up.
-//! - Attach is a join, not a resume: an endpoint taken after
-//!   `attach` starts in segment 0 at position 0, as one taken
-//!   after `init` does, so a process joins before its role has
-//!   run.
+//! - Roles survive their holders: a destructor never touches
+//!   shared memory, so an endpoint dropped or a process dead
+//!   leaves its role held. Each endpoint checkpoints its state
+//!   into the claims line at every segment switch and at
+//!   `release`, so a claim of a released role continues where it
+//!   stopped, and [`Ring::take_over_producer`] or
+//!   [`Ring::take_over_consumer`] replaces a dead holder from its
+//!   last switch and a scan of one segment's seq words. Nothing on
+//!   the message path pays for either.
 //! - How to use it, from a pool to two threads and to a second
 //!   process, is the user guide, `notes/user-guide.md`, and what
 //!   happens to the segments over a run is the design note's
@@ -761,10 +766,10 @@ impl<'a> Ring<'a> {
     ///   table entry against the pool's geometry, and every
     ///   segment's own header against the block, so a hostile
     ///   region is an `Err`, never an out-of-bounds access.
-    /// - The endpoints then taken start in segment 0 at position
-    ///   0, as after `init`, so attach is for a process joining
-    ///   before its role has run. Recovering a mid-run position is
-    ///   not done here.
+    /// - A role claimed from the attached ring starts where the
+    ///   role's state says: at the start for a role never claimed,
+    ///   where it stopped for a released one, and from the last
+    ///   switch for one taken over.
     ///
     /// # Safety
     ///

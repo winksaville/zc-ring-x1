@@ -142,7 +142,7 @@ from the checkpoint and a scan of one segment, and a destructor never touches sh
 - [feat: spsc v4 claims name their holder][2] (done)
 - [feat: spsc v4 endpoints checkpoint at each switch][3] (done)
 - [feat: spsc v4 claim resumes and takeover replaces][4] (done)
-- [docs: destructors never touch shared memory][5]
+- [docs: destructors never touch shared memory][5] (done)
 - [fix: spsc v4 roles survive their holders closing][6]
 
 ##### fix: spsc v4 roles survive their holders opening
@@ -258,6 +258,22 @@ The rule, the inbox model, the handoff, the takeover and whose judgment it is, a
 named as later cycles, in the design note, the guide's joining section and errors table following,
 and the module docs on the new names. The v4 roles bullet and the README's v4 section came
 earlier, in `feat: spsc v4 claims name their holder`, and this rung brings them up to the takeover.
+
+- The design note gains `### Holders and recovery`, beside the usage model: the rule, the inbox
+  model, handoff and takeover with whose judgment it is, and the pool half, an owner word and a
+  sweeper after shared allocation. Its v4 section's "Join, not resume" became "Resume and
+  takeover", with the scan, what a takeover loses, and the depth-1 rule, and Naming and
+  transport's "a claim is for life" became release or takeover.
+- The guide's joining section claims by id under the inbox model, and gains "Handing a role
+  over" and "Replacing a dead holder". Its errors table has the claim and takeover errors.
+- The module docs' "Attach is a join, not a resume" became "Roles survive their holders", and
+  `attach`'s doc says where a claimed role starts.
+- Finding for the closing: the rule as the acceptance check states it, no `Drop` in `src/`
+  outside tests that writes shared memory, fails on the MPSC rings, v0 through v2, whose
+  `TombstoneOnUnwind` guard publishes a tombstoned commit when a panic unwinds through
+  `send_with`. It predates the cycle, runs only on unwind in a process that survives, and
+  finishes a protocol step. The design note names it as the rule's open exception. Keeping it
+  and scoping the check, or removing it in an MPSC cycle, is the user's call at the close-out.
 
 ##### fix: spsc v4 roles survive their holders closing
 
