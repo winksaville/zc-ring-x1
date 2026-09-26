@@ -383,6 +383,210 @@ impl Segments {
         intent.store(0, Ordering::Release);
     }
 
+    /// Take a set intent word apart, refusing segments the ring
+    /// does not have.
+    fn intent(&self, word: u32) -> Result<Intent, Error> {
+        let from = word & SEG_MASK;
+        let to = (word >> SWITCH_TO_SHIFT) & SEG_MASK;
+        let bit = (word >> SWITCH_BIT_SHIFT) & 1;
+        let fits = word & SWITCH_SET != 0 && from < self.seg_count && to < self.seg_count;
+        if !fits || from == to {
+            return Err(Error::BadCheckpoint);
+        }
+        Ok(Intent { from, to, bit })
+    }
+
+    /// Every segment's resume position, one side's, from the info
+    /// lines.
+    fn resume_table(&self, side: impl Fn(&Info) -> &AtomicU32) -> [u32; MAX_SEGMENTS as usize] {
+        let mut resume = [0; MAX_SEGMENTS as usize];
+        for seg in 0..self.seg_count {
+            resume[seg as usize] = side(self.info(seg)).load(Ordering::Acquire);
+        }
+        resume
+    }
+
+    /// The producer's state from the region, for a claim of a
+    /// released role (`released`) or a takeover of a held one.
+    ///
+    /// - A set intent names the switch the holder died inside. Its
+    ///   MOVED commit never happened when the slot it left is still
+    ///   claimable: undo, and continue at that slot. Otherwise
+    ///   finish, at the start of the segment entered, where the
+    ///   holder had written nothing. Either way the repaired
+    ///   checkpoint is written back and the intent cleared.
+    /// - A clear intent leaves `cur` and `taken` exact, and the
+    ///   position is the one `release` wrote or, for a takeover,
+    ///   the scan's.
+    #[cold]
+    fn load_producer(&self, released: bool) -> Result<Checkpoint, Error> {
+        let c = self.claims();
+        let mut cur = c.prod_cur.load(Ordering::Acquire);
+        let mut taken = c.prod_taken.load(Ordering::Acquire);
+        let intent = c.prod_switch.load(Ordering::Acquire);
+        let resume = self.resume_table(|info| &info.prod_resume);
+        let pos = if intent != 0 {
+            let Intent { from, to, bit } = self.intent(intent)?;
+            let p = resume[from as usize].wrapping_sub(1);
+            let pos = if self.seq(from, p).load(Ordering::Acquire) == seq_of(p) {
+                cur = from;
+                taken = (taken & !(1 << to)) | ((bit ^ 1) << to);
+                p
+            } else {
+                cur = to;
+                taken = (taken & !(1 << to)) | (bit << to);
+                resume[to as usize]
+            };
+            c.prod_taken.store(taken, Ordering::Release);
+            c.prod_cur.store(cur, Ordering::Release);
+            Segments::switch_done(&c.prod_switch);
+            pos
+        } else if cur >= self.seg_count {
+            return Err(Error::BadCheckpoint);
+        } else if released {
+            c.prod_pos.load(Ordering::Acquire)
+        } else {
+            // The window of positions the slots last held ends just
+            // before the producer's.
+            let (oldest, _) = self.window(cur)?;
+            lift(resume[cur as usize], oldest.wrapping_add(self.capacity))
+        };
+        Ok(Checkpoint {
+            cur,
+            pos,
+            free_set: taken,
+            resume,
+        })
+    }
+
+    /// The consumer's state from the region, as
+    /// [`load_producer`](Segments::load_producer) loads the
+    /// producer's.
+    ///
+    /// - A set intent: the release never happened when the slot it
+    ///   left still holds the MOVED commit, so undo and read that
+    ///   message again. Otherwise finish: the give-back word gets
+    ///   the bit the intent names, which the holder may have died
+    ///   before storing, and the consumer starts where it enters.
+    /// - A clear intent: the position `release` wrote or, for a
+    ///   takeover, the oldest committed slot the scan finds.
+    #[cold]
+    fn load_consumer(&self, released: bool) -> Result<Checkpoint, Error> {
+        let c = self.claims();
+        let mut cur = c.cons_cur.load(Ordering::Acquire);
+        let mut given = self.given().load(Ordering::Acquire);
+        let intent = c.cons_switch.load(Ordering::Acquire);
+        let resume = self.resume_table(|info| &info.cons_resume);
+        let pos = if intent != 0 {
+            let Intent { from, to, bit } = self.intent(intent)?;
+            let m = resume[from as usize].wrapping_sub(1);
+            let moved =
+                seq_of(m.wrapping_add(self.capacity).wrapping_add(1)) | MOVED | (to << SEG_SHIFT);
+            let pos = if self.seq(from, m).load(Ordering::Acquire) == moved {
+                cur = from;
+                given = (given & !(1 << from)) | ((bit ^ 1) << from);
+                m
+            } else {
+                cur = to;
+                given = (given & !(1 << from)) | (bit << from);
+                resume[to as usize]
+            };
+            self.given().store(given, Ordering::Release);
+            c.cons_cur.store(cur, Ordering::Release);
+            Segments::switch_done(&c.cons_switch);
+            pos
+        } else if cur >= self.seg_count {
+            return Err(Error::BadCheckpoint);
+        } else if released {
+            c.cons_pos.load(Ordering::Acquire)
+        } else {
+            let (oldest, unread) = self.window(cur)?;
+            let first = oldest.wrapping_add(self.capacity).wrapping_sub(unread);
+            lift(resume[cur as usize], first)
+        };
+        Ok(Checkpoint {
+            cur,
+            pos,
+            free_set: given,
+            resume,
+        })
+    }
+
+    /// The window of positions segment `seg`'s slots last held,
+    /// from their seq words: its oldest position, modulo
+    /// `2^SEQ_BITS`, and how many of its newest are committed.
+    ///
+    /// - Slot `i` last held position `q`, `q = i` modulo the depth,
+    ///   released (seq `q + M`) or committed (seq `q + M + 1`), and
+    ///   the positions are the `M` before the producer's in the
+    ///   segment, the committed ones the newest, from the
+    ///   consumer's on. The seq's low bits tell released from
+    ///   committed, which at depth 1 they cannot.
+    /// - A live producer committing while the scan reads can make
+    ///   one read disagree with the rest, so the scan runs again,
+    ///   and a live consumer's releases change no position. With
+    ///   the other side dead the words settle, the producer's
+    ///   within a ring's capacity of commits, so a bounded number
+    ///   of disagreeing scans means words the ring never wrote.
+    #[cold]
+    fn window(&self, seg: u32) -> Result<(u32, u32), Error> {
+        if self.capacity < 2 {
+            return Err(Error::BadCapacity);
+        }
+        const SCANS: u32 = 1024;
+        for _ in 0..SCANS {
+            if let Some(found) = self.scan(seg) {
+                return Ok(found);
+            }
+        }
+        Err(Error::BadCheckpoint)
+    }
+
+    /// One scan of [`window`](Segments::window), `None` when the
+    /// words do not form one window.
+    fn scan(&self, seg: u32) -> Option<(u32, u32)> {
+        let m = self.capacity;
+        // Offsets from slot 0's position, signed over SEQ_BITS.
+        let offset = |q: u32, base: u32| {
+            let d = q.wrapping_sub(base) & SEQ_MASK;
+            if d >= 1 << (SEQ_BITS - 1) {
+                d as i64 - (1i64 << SEQ_BITS)
+            } else {
+                d as i64
+            }
+        };
+        let (mut base, mut lo, mut hi) = (0u32, i64::MAX, i64::MIN);
+        let (mut unread, mut lo_unread) = (0u32, i64::MAX);
+        for i in 0..m {
+            let v = self.seq(seg, i).load(Ordering::Acquire) & SEQ_MASK;
+            let (q, committed) = if v & self.mask == i {
+                (v.wrapping_sub(m) & SEQ_MASK, false)
+            } else if v & self.mask == (i + 1) & self.mask {
+                (v.wrapping_sub(m).wrapping_sub(1) & SEQ_MASK, true)
+            } else {
+                return None;
+            };
+            if i == 0 {
+                base = q;
+            }
+            let d = offset(q, base);
+            lo = lo.min(d);
+            hi = hi.max(d);
+            if committed {
+                unread += 1;
+                lo_unread = lo_unread.min(d);
+            }
+        }
+        // M distinct positions, one per slot, span exactly M, and
+        // the committed ones are the newest.
+        let whole = hi - lo == (m - 1) as i64;
+        let tail = unread == 0 || lo_unread == hi - unread as i64 + 1;
+        if !whole || !tail {
+            return None;
+        }
+        Some((base.wrapping_add(lo as u32) & SEQ_MASK, unread))
+    }
+
     /// The table every endpoint starts from, built the same way
     /// by `init` and `attach`: each segment's slot array as an
     /// offset from the pool's buffer array.
@@ -639,23 +843,91 @@ impl<'a> Ring<'a> {
     ///   records it and never interprets it.
     /// - One CAS on the control block's role word, so a role held
     ///   anywhere, in this process or another, is
-    ///   [`Error::RoleTaken`]. A released role is refused the
-    ///   same way for now. Nothing on the message path reads the
-    ///   word.
+    ///   [`Error::RoleTaken`]. Nothing on the message path reads
+    ///   the word.
+    /// - A role never claimed starts in segment 0 at position 0,
+    ///   which it holds as taken. A released one resumes from the
+    ///   checkpoint its [`release`](Producer::release) wrote, in
+    ///   this process or another, exactly where it stopped.
     /// - The role stays held until [`Producer::release`]:
     ///   dropping the endpoint writes nothing.
-    /// - Starts in segment 0 at position 0, which it holds as
-    ///   taken.
+    /// - A checkpoint that names no segment of the ring is
+    ///   [`Error::BadCheckpoint`], with the role left as it was.
     pub fn claim_producer(&self, id: u32) -> Result<Producer<'a>, Error> {
-        claim(self.segs.producer_role(), id)?;
-        Ok(Producer::new(self.segs, id))
+        self.producer_for(id, false)
     }
 
     /// Claim the consumer role for holder `id`, the counterpart of
     /// [`claim_producer`](Ring::claim_producer).
     pub fn claim_consumer(&self, id: u32) -> Result<Consumer<'a>, Error> {
-        claim(self.segs.consumer_role(), id)?;
-        Ok(Consumer::new(self.segs, id))
+        self.consumer_for(id, false)
+    }
+
+    /// Take the producer role over for holder `id`, replacing its
+    /// holder, whom the caller vouches is gone.
+    ///
+    /// - The crate never judges whether a holder is alive: the
+    ///   takeover is the app's call, a supervisor's, and replacing
+    ///   a live holder breaks the ring's one-producer contract.
+    /// - One CAS from the role word as loaded, so of two takeovers
+    ///   racing one wins and the other is [`Error::RoleTaken`]. A
+    ///   free or released role is taken as a claim takes it.
+    /// - A held role continues from the checkpoint of its holder's
+    ///   last switch. A switch it died inside is finished or
+    ///   undone by the one slot it left, and the position is found
+    ///   by a scan of the segment's seq words, so at most the one
+    ///   slot the dead holder reserved and never committed is
+    ///   written again.
+    /// - A ring of one-slot segments cannot place a position by
+    ///   its seq words, so a held role of one is
+    ///   [`Error::BadCapacity`], and a checkpoint or seq words the
+    ///   ring could not have written are [`Error::BadCheckpoint`],
+    ///   each with the role left as it was.
+    pub fn take_over_producer(&self, id: u32) -> Result<Producer<'a>, Error> {
+        self.producer_for(id, true)
+    }
+
+    /// Take the consumer role over for holder `id`, the
+    /// counterpart of [`take_over_producer`](Ring::take_over_producer).
+    ///
+    /// - The replacement loses nothing: a message its holder read
+    ///   and never released is still committed, and is read again.
+    pub fn take_over_consumer(&self, id: u32) -> Result<Consumer<'a>, Error> {
+        self.consumer_for(id, true)
+    }
+
+    /// Take the producer role and load its state, undoing the
+    /// take when the state cannot be loaded.
+    fn producer_for(&self, id: u32, take_over: bool) -> Result<Producer<'a>, Error> {
+        let role = self.segs.producer_role();
+        let before = take_role(role, id, take_over)?;
+        if before == ROLE_FREE {
+            return Ok(Producer::new(self.segs, id));
+        }
+        match self.segs.load_producer(before == ROLE_RELEASED) {
+            Ok(cp) => Ok(Producer::resume(self.segs, id, cp)),
+            Err(e) => {
+                untake_role(role, id, before);
+                Err(e)
+            }
+        }
+    }
+
+    /// Take the consumer role and load its state, as
+    /// [`producer_for`](Ring::producer_for) does.
+    fn consumer_for(&self, id: u32, take_over: bool) -> Result<Consumer<'a>, Error> {
+        let role = self.segs.consumer_role();
+        let before = take_role(role, id, take_over)?;
+        if before == ROLE_FREE {
+            return Ok(Consumer::new(self.segs, id));
+        }
+        match self.segs.load_consumer(before == ROLE_RELEASED) {
+            Ok(cp) => Ok(Consumer::resume(self.segs, id, cp)),
+            Err(e) => {
+                untake_role(role, id, before);
+                Err(e)
+            }
+        }
     }
 
     /// The pool buffer index of segment 0, where the ring's
@@ -666,17 +938,59 @@ impl<'a> Ring<'a> {
     }
 }
 
-/// Write holder `id` into a free `role` word.
-fn claim(role: &AtomicU32, id: u32) -> Result<(), Error> {
+/// Write holder `id` into `role`, returning the word it replaced.
+///
+/// - A claim takes a free or released role, a takeover any role.
+/// - One attempt: a CAS that fails lost to another claim or
+///   takeover, and trying again would replace that winner.
+fn take_role(role: &AtomicU32, id: u32, take_over: bool) -> Result<u32, Error> {
     if id == ROLE_FREE || id == ROLE_RELEASED {
         return Err(Error::BadHolder);
     }
-    // AcqRel: a claim that succeeds sees the state a released
-    // endpoint left, and publishes its own id. A failed CAS
+    let before = role.load(Ordering::Acquire);
+    if !take_over && before != ROLE_FREE && before != ROLE_RELEASED {
+        return Err(Error::RoleTaken);
+    }
+    // AcqRel: a take that succeeds sees the checkpoint the role's
+    // last holder wrote, and publishes its own id. A failed CAS
     // writes nothing, so it needs no undo.
-    role.compare_exchange(ROLE_FREE, id, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ())
+    role.compare_exchange(before, id, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| Error::RoleTaken)
+}
+
+/// The free-running position nearest after `reference` whose low
+/// [`SEQ_BITS`] are `seq`: the scan knows a position only modulo
+/// `2^SEQ_BITS`, and the segment's resume position is where the
+/// endpoint's stint there began.
+fn lift(reference: u32, seq: u32) -> u32 {
+    reference.wrapping_add(seq.wrapping_sub(reference) & SEQ_MASK)
+}
+
+/// Put `role` back to the word a take by `id` replaced, when the
+/// state it took could not be loaded.
+fn untake_role(role: &AtomicU32, id: u32, before: u32) {
+    let _ = role.compare_exchange(id, before, Ordering::Release, Ordering::Relaxed);
+}
+
+/// An endpoint's private state as a successor loads it from the
+/// region.
+pub(super) struct Checkpoint {
+    /// The segment the endpoint is in.
+    pub(super) cur: u32,
+    /// Its free-running position there.
+    pub(super) pos: u32,
+    /// The producer's take word or the consumer's give-back word.
+    pub(super) free_set: u32,
+    /// Where each segment was left.
+    pub(super) resume: [u32; MAX_SEGMENTS as usize],
+}
+
+/// A switch intent word taken apart: the segment left, the
+/// segment entered, and the free-set bit the switch leaves.
+struct Intent {
+    from: u32,
+    to: u32,
+    bit: u32,
 }
 
 /// Geometry checks for [`Ring::init`].
@@ -1123,11 +1437,15 @@ mod tests {
         drop(prod);
         assert_eq!(roles(&ring), (PROD_ID, CONS_ID));
         assert_eq!(ring.claim_producer(7).err(), Some(Error::RoleTaken));
-        // A released one is given back, and refused a claim until
-        // a claim can resume it.
+        // A released one is given back and claimed again, and the
+        // dropped one is taken over, both continuing the ring.
         cons.release();
         assert_eq!(roles(&ring), (PROD_ID, ROLE_RELEASED));
-        assert_eq!(ring.claim_consumer(7).err(), Some(Error::RoleTaken));
+        let mut cons = ring.claim_consumer(7).unwrap();
+        let mut prod = ring.take_over_producer(8).unwrap();
+        assert_eq!(roles(&ring), (8, 7));
+        send(&mut prod, 3, 6);
+        recv(&mut cons, 3, 6);
     }
 
     #[test]
@@ -1147,6 +1465,358 @@ mod tests {
         let claims = ring.segs.claims();
         assert_eq!(claims.prod_pos.load(Ordering::Acquire), p_pos);
         assert_eq!(claims.cons_pos.load(Ordering::Acquire), c_pos);
+    }
+
+    /// Send `*sent..to`, receiving into `*seen` whenever the ring
+    /// is full, so a stream of any length moves through a ring of
+    /// any geometry, order checked on the way.
+    fn pump(
+        prod: &mut Producer<'_>,
+        cons: &mut Consumer<'_>,
+        sent: &mut u64,
+        seen: &mut u64,
+        to: u64,
+    ) {
+        while *sent < to {
+            match prod.reserve_slot_with::<Msg>(|_| false) {
+                Ok(mut slot) => {
+                    slot.seq = *sent;
+                    slot.val = *sent * 10;
+                    slot.commit();
+                    *sent += 1;
+                }
+                Err(Full) => {
+                    recv(cons, *seen, *seen + 1);
+                    *seen += 1;
+                }
+            }
+        }
+    }
+
+    /// The geometries the takeover tests run, a few under Miri.
+    fn takeover_geometries() -> Vec<(u32, u32)> {
+        if cfg!(miri) {
+            vec![(2, 2), (4, 3)]
+        } else {
+            vec![(2, 2), (2, 5), (4, 2), (4, 3), (8, 4), (16, 2)]
+        }
+    }
+
+    /// Where the takeover tests stop the first holder: past the
+    /// first switch, at every count through two ring-fulls, or
+    /// under Miri three of them.
+    fn takeover_stops(cap: u32, count: u32) -> Vec<u64> {
+        let (cap, full) = (cap as u64, (cap * count) as u64);
+        if cfg!(miri) {
+            vec![cap + 1, cap * 2 + 1, full + 3]
+        } else {
+            (cap + 1..=2 * full + 3).collect()
+        }
+    }
+
+    /// Run `f` on two attached handles over one freshly
+    /// initialized ring, as two processes hold it.
+    fn with_attached(cap: u32, count: u32, f: impl FnOnce(&Ring<'_>, &Ring<'_>)) {
+        let mut r = Region::new();
+        let (base, len) = region(&mut r);
+        let first = with_init_pool(base, len, |pool| {
+            Ring::init(pool, 64, cap, count).unwrap().first_segment()
+        });
+        let (b1, b2) = (attach_pool(base, len), attach_pool(base, len));
+        // SAFETY: first came from first_segment of a ring over this
+        // pool, whose segments are still the ring's.
+        let ring_1 = unsafe { Ring::attach(&b1, first) }.unwrap();
+        // SAFETY: as above.
+        let ring_2 = unsafe { Ring::attach(&b2, first) }.unwrap();
+        f(&ring_1, &ring_2);
+    }
+
+    #[test]
+    fn released_roles_resume_where_they_stopped() {
+        // iiac-perf's scenario: three messages each way on two
+        // segments of four slots, both roles released and claimed
+        // again, from the same handle and from a second one, and
+        // the ring continues across a switch.
+        with_attached(4, 2, |ring_1, ring_2| {
+            let (mut prod, mut cons) = endpoints(ring_1);
+            send(&mut prod, 0, 3);
+            recv(&mut cons, 0, 3);
+            prod.release();
+            cons.release();
+            let mut prod = ring_1.claim_producer(PROD_ID).unwrap();
+            let mut cons = ring_1.claim_consumer(CONS_ID).unwrap();
+            send(&mut prod, 3, 7);
+            recv(&mut cons, 3, 7);
+            assert!(prod.switches() > 0);
+            prod.release();
+            cons.release();
+            // The producer from the second handle, the consumer from
+            // the first, a message left unread across the handoff.
+            let mut prod = ring_2.claim_producer(PROD_ID + 10).unwrap();
+            assert_eq!(ring_1.claim_producer(7).err(), Some(Error::RoleTaken));
+            send(&mut prod, 7, 12);
+            let mut cons = ring_1.claim_consumer(CONS_ID + 10).unwrap();
+            recv(&mut cons, 7, 11);
+            cons.release();
+            let mut cons = ring_2.claim_consumer(CONS_ID).unwrap();
+            recv(&mut cons, 11, 12);
+            let (mut sent, mut seen) = (12, 12);
+            pump(&mut prod, &mut cons, &mut sent, &mut seen, 40);
+            recv(&mut cons, seen, sent);
+        });
+    }
+
+    #[test]
+    // Forgetting the guards and the endpoint is the death under
+    // test: a process that dies runs no destructor. They have none
+    // by design, so forgetting is dropping, and `forget` says what
+    // the test means and stays a death if one is ever added.
+    #[allow(clippy::forget_non_drop)]
+    fn a_dead_consumer_is_taken_over() {
+        for (cap, count) in takeover_geometries() {
+            for stop in takeover_stops(cap, count) {
+                with_attached(cap, count, |ring_1, ring_2| {
+                    let (mut prod, mut cons) = endpoints(ring_1);
+                    let (mut sent, mut seen) = (0u64, 0u64);
+                    pump(&mut prod, &mut cons, &mut sent, &mut seen, stop);
+                    recv(&mut cons, seen, sent - 1);
+                    seen = sent - 1;
+                    assert!(prod.switches() > 0, "{cap}x{count} stop {stop}");
+                    // Dead holding a read of the one message left.
+                    let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+                    assert_eq!(msg.seq, seen);
+                    core::mem::forget(msg);
+                    core::mem::forget(cons);
+                    let mut cons = ring_2.take_over_consumer(CONS_ID + 1).unwrap();
+                    assert_eq!(ring_2.claim_consumer(9).err(), Some(Error::RoleTaken));
+                    pump(
+                        &mut prod,
+                        &mut cons,
+                        &mut sent,
+                        &mut seen,
+                        stop + 3 * cap as u64,
+                    );
+                    recv(&mut cons, seen, sent);
+                    assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+                });
+            }
+        }
+    }
+
+    #[test]
+    // As in `a_dead_consumer_is_taken_over`: forget is death.
+    #[allow(clippy::forget_non_drop)]
+    fn a_dead_producer_is_taken_over() {
+        for (cap, count) in takeover_geometries() {
+            for stop in takeover_stops(cap, count) {
+                with_attached(cap, count, |ring_1, ring_2| {
+                    let (mut prod, mut cons) = endpoints(ring_1);
+                    let (mut sent, mut seen) = (0u64, 0u64);
+                    pump(&mut prod, &mut cons, &mut sent, &mut seen, stop);
+                    assert!(prod.switches() > 0, "{cap}x{count} stop {stop}");
+                    // Room for one more, reserved, written, never
+                    // committed. With no segment free the producer
+                    // waits on its own next slot, so read until it
+                    // frees.
+                    while prod.reserve_slot_with::<Msg>(|_| false).is_err() {
+                        recv(&mut cons, seen, seen + 1);
+                        seen += 1;
+                    }
+                    let mut slot = prod.reserve_slot_with::<Msg>(|_| false).unwrap();
+                    slot.seq = 999_999;
+                    core::mem::forget(slot);
+                    core::mem::forget(prod);
+                    let mut prod = ring_2.take_over_producer(PROD_ID + 1).unwrap();
+                    assert_eq!(ring_2.claim_producer(9).err(), Some(Error::RoleTaken));
+                    // The stream resumes: every message in order, the
+                    // uncommitted one never seen.
+                    pump(
+                        &mut prod,
+                        &mut cons,
+                        &mut sent,
+                        &mut seen,
+                        stop + 3 * cap as u64,
+                    );
+                    recv(&mut cons, seen, sent);
+                    assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+                });
+            }
+        }
+    }
+
+    #[test]
+    // As in `a_dead_consumer_is_taken_over`: forget is death.
+    #[allow(clippy::forget_non_drop)]
+    fn a_consumer_is_taken_over_while_the_producer_streams() {
+        // The scan reads seq words a live producer is committing, on
+        // its own thread, spinning when the ring fills.
+        let total: u64 = if cfg!(miri) { 60 } else { 200_000 };
+        for (cap, count) in takeover_geometries() {
+            with_attached(cap, count, |ring_1, ring_2| {
+                let (mut prod, mut cons) = endpoints(ring_1);
+                std::thread::scope(|s| {
+                    s.spawn(move || {
+                        for i in 0..total {
+                            let mut slot =
+                                prod.reserve_slot_with::<Msg>(crate::policy::spin).unwrap();
+                            slot.seq = i;
+                            slot.commit();
+                        }
+                    });
+                    let mut next = 0u64;
+                    for round in 1..=4u64 {
+                        while next < total * round / 5 {
+                            let msg = cons.reserve_slot_with::<Msg>(crate::policy::spin).unwrap();
+                            assert_eq!(msg.seq, next);
+                            msg.release();
+                            next += 1;
+                        }
+                        core::mem::forget(cons);
+                        cons = ring_2.take_over_consumer(CONS_ID + round as u32).unwrap();
+                    }
+                    while next < total {
+                        let msg = cons.reserve_slot_with::<Msg>(crate::policy::spin).unwrap();
+                        assert_eq!(msg.seq, next, "{cap}x{count}");
+                        msg.release();
+                        next += 1;
+                    }
+                });
+            });
+        }
+    }
+
+    #[test]
+    // As in `a_dead_consumer_is_taken_over`: forget is death.
+    #[allow(clippy::forget_non_drop)]
+    fn a_producer_dead_inside_a_switch_is_undone_or_finished() {
+        // Two segments of two slots: message 1's commit switches,
+        // with message 0 unread.
+        for finished in [false, true] {
+            with_attached(2, 2, |ring_1, ring_2| {
+                let (mut prod, mut cons) = endpoints(ring_1);
+                send(&mut prod, 0, 1);
+                if finished {
+                    // The MOVED commit made, the intent not cleared.
+                    send(&mut prod, 1, 2);
+                    assert_eq!(prod.st.cur, 1);
+                    let intent = switch_intent(0, 1, (prod.st.taken >> 1) & 1);
+                    ring_1
+                        .segs
+                        .claims()
+                        .prod_switch
+                        .store(intent, Ordering::Release);
+                } else {
+                    // The checkpoint and intent written, the commit not.
+                    let mut slot = prod.reserve_slot_with::<Msg>(|_| false).unwrap();
+                    slot.seq = 1;
+                    slot.val = 10;
+                    core::mem::forget(slot);
+                    let taken = prod.st.taken ^ 2;
+                    ring_1.segs.producer_switch(0, 1, 2, taken);
+                }
+                core::mem::forget(prod);
+                let mut prod = ring_2.take_over_producer(PROD_ID + 1).unwrap();
+                assert_eq!(prod.st.cur, if finished { 1 } else { 0 });
+                let claims = ring_2.segs.claims();
+                assert_eq!(claims.prod_switch.load(Ordering::Acquire), 0);
+                assert_eq!(claims.prod_cur.load(Ordering::Acquire), prod.st.cur);
+                assert_eq!(claims.prod_taken.load(Ordering::Acquire), prod.st.taken);
+                let (mut sent, mut seen) = (if finished { 2 } else { 1 }, 0);
+                pump(&mut prod, &mut cons, &mut sent, &mut seen, 20);
+                recv(&mut cons, seen, sent);
+            });
+        }
+    }
+
+    #[test]
+    // As in `a_dead_consumer_is_taken_over`: forget is death.
+    #[allow(clippy::forget_non_drop)]
+    fn a_consumer_dead_inside_a_switch_is_undone_or_finished() {
+        // Two segments of two slots: message 1 is the MOVED one.
+        for finished in [false, true] {
+            with_attached(2, 2, |ring_1, ring_2| {
+                let (mut prod, mut cons) = endpoints(ring_1);
+                send(&mut prod, 0, 3);
+                recv(&mut cons, 0, 1);
+                let given = cons.st.given;
+                if finished {
+                    // Released, the give-back and the clear not made.
+                    recv(&mut cons, 1, 2);
+                    assert_eq!(cons.st.cur, 1);
+                    let bit = cons.st.given & 1;
+                    ring_1.segs.given().store(given, Ordering::Release);
+                    let intent = switch_intent(0, 1, bit);
+                    ring_1
+                        .segs
+                        .claims()
+                        .cons_switch
+                        .store(intent, Ordering::Release);
+                } else {
+                    // The checkpoint and intent written, the release not.
+                    let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
+                    assert_eq!(msg.seq, 1);
+                    core::mem::forget(msg);
+                    ring_1.segs.consumer_switch(0, 1, 2, given ^ 1);
+                }
+                core::mem::forget(cons);
+                let mut cons = ring_2.take_over_consumer(CONS_ID + 1).unwrap();
+                assert_eq!(cons.st.cur, if finished { 1 } else { 0 });
+                let claims = ring_2.segs.claims();
+                assert_eq!(claims.cons_switch.load(Ordering::Acquire), 0);
+                assert_eq!(ring_2.segs.given().load(Ordering::Acquire), cons.st.given);
+                // Undone, message 1 is read again. Finished, the
+                // segment given back is the producer's to reuse.
+                let (mut sent, mut seen) = (3, if finished { 2 } else { 1 });
+                pump(&mut prod, &mut cons, &mut sent, &mut seen, 20);
+                recv(&mut cons, seen, sent);
+            });
+        }
+    }
+
+    #[test]
+    // As in `a_dead_consumer_is_taken_over`: forget is death.
+    #[allow(clippy::forget_non_drop)]
+    fn depth_one_resumes_but_is_not_taken_over() {
+        with_attached(1, 3, |ring_1, ring_2| {
+            let (mut prod, mut cons) = endpoints(ring_1);
+            send(&mut prod, 0, 2);
+            recv(&mut cons, 0, 1);
+            prod.release();
+            cons.release();
+            let (mut prod, mut cons) = endpoints(ring_2);
+            let (mut sent, mut seen) = (2, 1);
+            pump(&mut prod, &mut cons, &mut sent, &mut seen, 9);
+            core::mem::forget(prod);
+            // A held role at depth 1: its position is not in the
+            // seq words, and the role is left as it was.
+            assert_eq!(ring_1.take_over_producer(5).err(), Some(Error::BadCapacity));
+            assert_eq!(ring_1.segs.producer_role().load(Ordering::Acquire), PROD_ID);
+            recv(&mut cons, seen, sent);
+        });
+    }
+
+    #[test]
+    fn a_checkpoint_naming_no_segment_is_refused() {
+        with_attached(4, 2, |ring_1, ring_2| {
+            let (prod, cons) = endpoints(ring_1);
+            prod.release();
+            cons.release();
+            let claims = ring_1.segs.claims();
+            claims.prod_cur.store(2, Ordering::Release);
+            assert_eq!(ring_2.claim_producer(5).err(), Some(Error::BadCheckpoint));
+            assert_eq!(claims.producer.load(Ordering::Acquire), ROLE_RELEASED);
+            claims.prod_cur.store(0, Ordering::Release);
+            // An intent naming a segment the ring does not have.
+            claims
+                .cons_switch
+                .store(switch_intent(0, 3, 1), Ordering::Release);
+            assert_eq!(ring_2.claim_consumer(5).err(), Some(Error::BadCheckpoint));
+            assert_eq!(claims.consumer.load(Ordering::Acquire), ROLE_RELEASED);
+            claims.cons_switch.store(0, Ordering::Release);
+            let (mut prod, mut cons) = endpoints(ring_2);
+            send(&mut prod, 0, 5);
+            recv(&mut cons, 0, 5);
+        });
     }
 
     #[test]

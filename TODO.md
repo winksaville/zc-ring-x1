@@ -141,7 +141,7 @@ from the checkpoint and a scan of one segment, and a destructor never touches sh
 - [fix: spsc v4 roles survive their holders opening][1] (done)
 - [feat: spsc v4 claims name their holder][2] (done)
 - [feat: spsc v4 endpoints checkpoint at each switch][3] (done)
-- [feat: spsc v4 claim resumes and takeover replaces][4]
+- [feat: spsc v4 claim resumes and takeover replaces][4] (done)
 - [docs: destructors never touch shared memory][5]
 - [fix: spsc v4 roles survive their holders closing][6]
 
@@ -222,6 +222,35 @@ successor needs and a dead holder's names the one switch it may have left half d
 A claim on a released role loads the checkpoint and continues, `take_over_*` replaces a held role
 from the switch-time checkpoint and a scan of the checkpointed segment, and the tests of the
 acceptance check's first two clauses.
+
+- A claim takes a free or a released role, a takeover any role, each by one CAS from the word it
+  loaded and one attempt, so of two racing takeovers one wins and the other is `RoleTaken`
+  rather than replacing the winner. A state that cannot be loaded puts the role word back.
+- The signature stays the plan's, `take_over_*(id)`. The discussion's `take_over_*(dead, id)`
+  and a holder query are left to the review, since the one-attempt CAS already makes a
+  simultaneous race safe and only a supervisor that vouches without checking is unguarded.
+- A set intent is finished or undone by the one slot the switch left: the producer's still
+  claimable means its MOVED commit never happened, the consumer's still the MOVED word that its
+  release never did. Undone, the producer rewrites that slot and the consumer reads that message
+  again. Finished, each starts where the switch entered, and the consumer stores the give-back
+  bit the intent names. The repaired checkpoint is written back and the intent cleared.
+- A clear intent leaves the segment and free-set exact, and the position is `release`'s or, for
+  a takeover, the scan's: each slot's seq names the position it last held and whether it is
+  committed, the `M` positions end just before the producer's, and the committed ones are the
+  newest, from the consumer's on. The scan runs again when a live producer's commit lands
+  mid-read, and gives up as `BadCheckpoint` after 1024 scans that do not form one window, which
+  a ring whose other side is dead cannot cause.
+- At depth 1 a slot's seq cannot tell released from committed, so a takeover of a held role
+  there is `BadCapacity`, the depth-1 gap raised at the checkpoint rung. A released role at
+  depth 1 resumes, its position exact.
+- A checkpoint or intent naming a segment the ring does not have is the new `BadCheckpoint`.
+- Tests: iiac-perf's scenario from the same handle and a second, a dead consumer holding a read
+  and a dead producer holding an uncommitted slot taken over at every stop point through two
+  ring-fulls on six geometries, a consumer taken over four times while the producer streams on
+  its own thread, both sides dead inside a switch before and after its shared store, depth 1,
+  and a bad checkpoint. Under Miri too, with fewer geometries and stop points.
+- The README's v4 section says how a role resumes and is taken over. The guide and the design
+  note are the docs rung's.
 
 ##### docs: destructors never touch shared memory
 

@@ -9,7 +9,7 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
-use super::{MAX_SEGMENTS, MOVED, SEG_SHIFT, Segments, check_body_type, seq_of};
+use super::{Checkpoint, MAX_SEGMENTS, MOVED, SEG_SHIFT, Segments, check_body_type, seq_of};
 use crate::Full;
 
 /// The producer's private state, held apart from the handle so a
@@ -64,6 +64,28 @@ impl<'a> Producer<'a> {
                 pos: 0,
                 resume: [0; MAX_SEGMENTS as usize],
                 taken: 1,
+                claimable: false,
+                switches: 0,
+            },
+            _region: PhantomData,
+        }
+    }
+
+    /// Continue from a checkpoint the region held, for holder
+    /// `holder`.
+    ///
+    /// - The slot at the position is loaded again before it is
+    ///   written, as the checkpoint does not keep what the last
+    ///   holder saw of it.
+    pub(super) fn resume(segs: Segments, holder: u32, cp: Checkpoint) -> Self {
+        Producer {
+            st: ProducerState {
+                segs,
+                holder,
+                cur: cp.cur,
+                pos: cp.pos,
+                resume: cp.resume,
+                taken: cp.free_set,
                 claimable: false,
                 switches: 0,
             },

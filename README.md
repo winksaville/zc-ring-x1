@@ -278,9 +278,11 @@ process](notes/user-guide.md#joining-from-another-process).
   a destructor never touches shared memory, so dropping one
   leaves its role held and `release()` gives it back.
 - **Built to survive its holders**: the claims line carries each
-  endpoint's checkpoint, so a released role resumes and a dead
-  holder's is taken over. That half is in progress, and until
-  it lands a released role is refused a claim.
+  endpoint's checkpoint, so a claim on a released role resumes
+  where it stopped, and `take_over_producer(id)` or
+  `take_over_consumer(id)` replaces a holder the app vouches is
+  dead, losing at most the one slot it reserved and never
+  committed.
 
 ## Workspace and tools
 

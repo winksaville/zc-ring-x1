@@ -117,7 +117,9 @@ pub enum Error {
     /// Slot size is zero or not a [`CACHE_LINE_SIZE`] multiple.
     BadSlotSize,
     /// Capacity is zero, not a power of two, over the ring's
-    /// cap, or under its floor (the MPSC v0 ring's is 2).
+    /// cap, or under its floor (the MPSC v0 ring's is 2), or a
+    /// takeover of a held role on a ring of one-slot segments,
+    /// whose seq words cannot place a position.
     BadCapacity,
     /// Pool: buffer size is zero or not a [`CACHE_LINE_SIZE`]
     /// multiple, or a multi-stack pool has two stacks of one
@@ -153,6 +155,10 @@ pub enum Error {
     /// A ring of segments: a claim's holder id is `0` or
     /// `u32::MAX`, the role word's two values that name no holder.
     BadHolder,
+    /// A ring of segments: a role's checkpoint names a segment the
+    /// ring does not have, or a takeover's scan finds seq words
+    /// the ring could not have written.
+    BadCheckpoint,
 }
 
 /// Check `T` fits a slot, called once per `reserve_slot_with`

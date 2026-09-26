@@ -10,7 +10,8 @@ use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use super::{
-    MAX_SEGMENTS, MOVED, SEG_MASK, SEG_SHIFT, SEQ_MASK, Segments, check_body_type, seq_of,
+    Checkpoint, MAX_SEGMENTS, MOVED, SEG_MASK, SEG_SHIFT, SEQ_MASK, Segments, check_body_type,
+    seq_of,
 };
 use crate::Empty;
 
@@ -62,6 +63,23 @@ impl<'a> Consumer<'a> {
                 pos: 0,
                 resume: [0; MAX_SEGMENTS as usize],
                 given: 0,
+                switches: 0,
+            },
+            _region: PhantomData,
+        }
+    }
+
+    /// Continue from a checkpoint the region held, for holder
+    /// `holder`.
+    pub(super) fn resume(segs: Segments, holder: u32, cp: Checkpoint) -> Self {
+        Consumer {
+            st: ConsumerState {
+                segs,
+                holder,
+                cur: cp.cur,
+                pos: cp.pos,
+                resume: cp.resume,
+                given: cp.free_set,
                 switches: 0,
             },
             _region: PhantomData,
