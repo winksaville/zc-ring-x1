@@ -1499,6 +1499,53 @@ another process](user-guide.md#joining-from-another-process).
   15.5, 13.7, and 12.3, and 12.7, 12.5, and 11.9 on the SMT
   pair against 17.1 at each. v3 keeps its copy as built, the
   `### SPSC v3 fast path` Todo's to change.
+  - The mark after the fix, for the next cycle that touches
+    v4's message path and for that Todo: `tp-stream -d 1
+    --depth 1,8,64,1024`, 3900X, 2026-09-26, 0.18.2-4, two
+    segments, run twice, the msgs, xfills, and switches from run
+    1. Sorted by depth, placement, and flavor, so v3 and v4 sit
+    together:
+
+  | depth | placement | flavor | ns/msg run 1 | ns/msg run 2 | msgs | xfills/msg | switches/msg |
+  |---:|---|---|---:|---:|---:|---:|---:|
+  | 1 | 11,10 CCX | spsc-v3 | 62.5 | 62.2 | 16.0M | 3.976 | 0.662 |
+  | 1 | 11,10 CCX | spsc-v4 | 69.4 | 68.3 | 14.4M | 5.801 | 0.634 |
+  | 1 | 11,8 x-CCX | spsc-v3 | 227.5 | 226.0 | 4.4M | 3.949 | 0.634 |
+  | 1 | 11,8 x-CCX | spsc-v4 | 241.4 | 239.0 | 4.1M | 5.671 | 0.584 |
+  | 1 | 11,23 SMT | spsc-v3 | 30.8 | 30.7 | 32.5M | 0.0000 | 0.500 |
+  | 1 | 11,23 SMT | spsc-v4 | 29.6 | 29.6 | 33.8M | 0.0000 | 0.502 |
+  | 1 | unpinned | spsc-v3 | 58.2 | 58.6 | 17.2M | 3.990 | 0.663 |
+  | 1 | unpinned | spsc-v4 | 66.8 | 65.7 | 15.0M | 5.963 | 0.661 |
+  | 8 | 11,10 CCX | spsc-v3 | 14.6 | 14.7 | 68.4M | 0.935 | 0.000 |
+  | 8 | 11,10 CCX | spsc-v4 | 13.1 | 12.8 | 76.5M | 1.093 | 0.030 |
+  | 8 | 11,8 x-CCX | spsc-v3 | 47.9 | 48.6 | 20.9M | 0.825 | 0.003 |
+  | 8 | 11,8 x-CCX | spsc-v4 | 48.9 | 49.3 | 20.4M | 1.188 | 0.039 |
+  | 8 | 11,23 SMT | spsc-v3 | 17.1 | 17.1 | 58.4M | 0.0000 | 0.000 |
+  | 8 | 11,23 SMT | spsc-v4 | 12.7 | 12.6 | 78.8M | 0.0000 | 0.007 |
+  | 8 | unpinned | spsc-v3 | 15.4 | 15.8 | 64.8M | 1.144 | 0.001 |
+  | 8 | unpinned | spsc-v4 | 12.2 | 12.0 | 82.3M | 1.039 | 0.028 |
+  | 64 | 11,10 CCX | spsc-v3 | 13.3 | 13.4 | 75.2M | 0.638 | 0.000 |
+  | 64 | 11,10 CCX | spsc-v4 | 10.4 | 10.1 | 95.7M | 0.545 | 0.006 |
+  | 64 | 11,8 x-CCX | spsc-v3 | 24.4 | 25.1 | 41.0M | 0.188 | 0.000 |
+  | 64 | 11,8 x-CCX | spsc-v4 | 18.4 | 18.6 | 54.5M | 0.127 | 0.000 |
+  | 64 | 11,23 SMT | spsc-v3 | 17.1 | 17.1 | 58.3M | 0.0000 | 0.000 |
+  | 64 | 11,23 SMT | spsc-v4 | 12.6 | 12.5 | 79.6M | 0.0000 | 0.003 |
+  | 64 | unpinned | spsc-v3 | 12.8 | 12.9 | 78.0M | 0.638 | 0.000 |
+  | 64 | unpinned | spsc-v4 | 10.1 | 9.8 | 99.4M | 0.596 | 0.005 |
+  | 1024 | 11,10 CCX | spsc-v3 | 12.3 | 12.6 | 81.0M | 0.511 | 0.000 |
+  | 1024 | 11,10 CCX | spsc-v4 | 10.4 | 10.2 | 96.1M | 0.783 | 0.000 |
+  | 1024 | 11,8 x-CCX | spsc-v3 | 19.9 | 19.6 | 50.3M | 0.201 | 0.000 |
+  | 1024 | 11,8 x-CCX | spsc-v4 | 15.2 | 15.4 | 65.9M | 0.183 | 0.001 |
+  | 1024 | 11,23 SMT | spsc-v3 | 17.3 | 17.2 | 57.7M | 0.0000 | 0.000 |
+  | 1024 | 11,23 SMT | spsc-v4 | 12.1 | 12.0 | 82.8M | 0.0000 | 0.001 |
+  | 1024 | unpinned | spsc-v3 | 11.8 | 12.0 | 84.5M | 0.497 | 0.000 |
+  | 1024 | unpinned | spsc-v4 | 10.0 | 9.7 | 99.9M | 0.747 | 0.000 |
+
+  - Readings: at depth 1, where every commit switches, v4 is 6
+    to 11 percent slower off the SMT pair, the checkpoint the
+    switch now writes. At depth 8 the two are level across the
+    CCX and v4 is faster elsewhere, and at 64 and 1024 v4 is
+    faster everywhere, by 2 to 6 ns.
 
 ## MPSC v1: equality-seq ring
 
@@ -2481,8 +2528,9 @@ Shared state changes only through protocol operations, never in a `Drop`.
   the consumer is not left waiting on a slot no one will commit. It runs only on the unwind
   path, in a process that survives the panic, and finishes a protocol step rather than undoing
   one. A death it cannot see, an abort or a kill, leaves that slot claimed and the ring stuck,
-  which is the MPSC's own takeover question. Found on 2026-09-26 writing this rule, left to the
-  user at the cycle's close-out.
+  which is the MPSC's own takeover question. Found on 2026-09-26 writing this rule. Narrowing
+  the rule to allow unwind-only guards, or removing the guard, is decided in the attachable
+  MPSC cycle, the Todo entry `### Attachable MPSC with claimed roles`.
 
 #### The inbox model
 
