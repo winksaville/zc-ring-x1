@@ -279,12 +279,51 @@ process](notes/user-guide.md#joining-from-another-process).
   leaves its role held and `release()` gives it back. Why, and
   the inbox model behind it, is the design note's [Holders and
   recovery](notes/ring-buffer-design.md#holders-and-recovery).
+- **Proven between processes**: `zcr-test-ipm` sends one random
+  value with its checksum from one process to another through a
+  v4 ring in `/dev/shm/zcr-test-ipm-ring`, by hand as below, and
+  `cargo test --test ipm` runs the pair twenty times, each
+  round's two lines shown with `-- --show-output`.
 - **Built to survive its holders**: the claims line carries each
   endpoint's checkpoint, so a claim on a released role resumes
   where it stopped, and `take_over_producer(id)` or
   `take_over_consumer(id)` replaces a holder the app vouches is
   dead, losing at most the one slot it reserved and never
   committed.
+
+### Two processes by hand
+
+`zcr-test-ipm` is installed with the crate (`cargo install --path .`), or run it from the
+workspace with `cargo run --release --bin zcr-test-ipm -- <role>`. Linux only.
+
+In one terminal, start the consumer. It builds the ring, prints `ready`, and waits ten seconds for
+one message:
+
+```sh
+$ zcr-test-ipm consumer
+ready
+```
+
+In a second terminal, within those ten seconds, start the producer. It sends a random value with
+its checksum and exits:
+
+```sh
+$ zcr-test-ipm producer
+sent value=0x53074c4fabcd8c41 checksum=0x46acb927225f8159
+```
+
+The consumer prints the same value, its checksum verified, and exits:
+
+```sh
+received value=0x53074c4fabcd8c41 checksum=0x46acb927225f8159 ok
+```
+
+- Both exit 0 on success. The consumer exits 1 on a bad checksum or when no message arrives in
+  time, and the producer exits 1 when the region file does not exist.
+- Start the consumer first: it recreates the region file on every run. A producer started alone
+  finds the last run's file, claims its released role there, sends into a ring no consumer
+  reads, and exits 0, which proves nothing.
+- The value differs every run. The one shown is from the first run, 2026-09-26.
 
 ## Workspace and tools
 

@@ -9,7 +9,14 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-_None._
+- `feat: test inter-process message` landed on 2026-09-26, single-step, after `fix: spsc v4 roles
+  survive their holders` the same day. 0.18.3 is installed with the tp_matrix tools:
+  `cargo install --path tp_matrix --locked` after a Land keeps them current, since Land installs
+  the crate only. Validation also leaves the `zc-ring-x1-dev` package installed, harmless.
+- In `../vc-x1-messages`, `m-7-2` and `m-7-3` to iiac-perf are written and uncommitted, committing
+  being the thread's closer's. iiac-perf may want to hear that a message now crosses processes.
+- Open for the user: `take_over_*(dead, id)` and a holder query, left as `take_over_*(id)`, with no
+  Todo entry.
 
 ## In Progress
 
@@ -34,30 +41,26 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
 
-### Test an inter-application message
+### Cycle block: the ladder last, above its rung subsections
 
-This is one of the primary initial goals of this project and we've
-never tested if it works. The minimal test I can think of is an SPSC
-between two apps with the producer sending one message to a consumer.
-The consumer will be started first and then the producer sends a
-message that is a random number and a checksum of that number to
-prove the message arrived intact.
+In a multi-step cycle's block the ladder sits between the acceptance check and the deliberation,
+and the rung subsections follow under their own `#### Ladder details` heading, so the ladder and
+the subsections it links are apart. The user's preference, 2026-09-26: problem, solution,
+acceptance check, deliberation, then `#### Ladder` directly above the rung subsections, with no
+`#### Ladder details` heading.
 
-- Decided on 2026-09-25, at the opening of `feat: attachable SPSC v4`, which this waits on:
-  - The ring is `spsc::v4`, the attachable ring of segments, once that cycle lands.
-  - The apps are one new bin, `src/bin/zc-ring-x1-ipc.rs`, with `consumer` and `producer`
-    subcommands, runnable by hand in two terminals, and an integration test in `tests/` that
-    spawns it through `CARGO_BIN_EXE`, consumer first, and checks the two outputs agree. A test
-    re-executing itself was rejected as the harder pattern to follow.
-  - The region is a file under the target directory, mapped `MAP_SHARED` through `libc`, which
-    becomes a Linux dev-dependency. The consumer creates and sizes it, the producer attaches.
+- The agent-files that state the order: `agent-data/notes.md`'s The In Progress block,
+  `agent-data/cycle-model.md`'s specimen, and anything citing `Ladder details`, as an
+  `agent-files` proposal cycle, its own commit and its own cycle.
+- A single-step cycle's block already takes the order, from `feat: test inter-process message`,
+  where the user moved it by hand.
 
 ### Attachable MPSC with claimed roles
 
 The MPSC rings are in-process only: `split` hands out the endpoints, and no control block lets a
 second process find a ring or claim a role in it. The attachable MPSC is the multi-producer
-sibling of `spsc::v4`, built on its model once `### Test an inter-application message` shows
-that model working between processes.
+sibling of `spsc::v4`, built on its model, which `feat: test inter-process message` showed
+working between processes.
 
 - Roles as v4's: `claim_consumer(id)` once, `claim_producer(id)` into one of N producer role
   slots, each with its checkpoint, `release`, and `take_over_*`, and the claims line laid out
@@ -97,8 +100,8 @@ leaves the mechanism open with the Setup plane question.
 - Suggested first: the filesystem, behind the one `find`, so replacing it changes one function.
 - Open with it: where `first_segment` lives in the region, what a name whose owner died means,
   and cross-process pool ids.
-- After `### Test an inter-application message`, whose producer needs some answer to how it
-  learns `first_segment` and which will show what `find` must do.
+- After `feat: test inter-process message`, whose app hard-codes the region's path and the ring's
+  first segment: `find` is what replaces those two constants.
 
 ### Shared allocation: a pool any process can allocate from
 
@@ -483,328 +486,65 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### fix: spsc v4 roles survive their holders
+### feat: test inter-process message
 
 #### Problem
 
-A v4 endpoint's `Drop` releases its role claim, so a role can be taken again on a ring that has
-run, and the new endpoint, starting in segment 0 at position 0, can never work: the retaken
-consumer reports `Empty` with a message committed and waiting, the retaken producer `Full` on an
-empty ring, and both hang under a spin policy. Nothing says so at the claim. Reported by iiac-perf
-in `m-7`, with two more pushbacks: `producer()` reads as a getter for what is a one-time,
-cross-process claim, and every in-process caller pays two unwraps for claims that cannot fail on a
-fresh ring, which is refused. Behind the bug is the requirement the fix must meet: a process that
-holds a role and crashes is replaced, its role taken over by another process that continues the
-ring, and a role handed over on purpose the same way.
+The crate exists to move messages between applications, and no message had ever crossed a process
+boundary: every test and tool ran its producer and consumer as threads of one process. `spsc::v4`
+can be attached from a second process and its roles claimed there, so what was missing was two
+processes and a region they share.
 
 #### Solution
 
-A claim names its holder, each endpoint checkpoints its state into the region at every segment
-switch under an intent word and at its release, a claim resumes a released role and a takeover
-replaces a dead holder's from the checkpoint and a scan of one segment, and no destructor
-touches shared memory.
+`zcr-test-ipm`, one bin with `consumer` and `producer` subcommands, sends one message from one
+process to another over a v4 ring in `/dev/shm`, and an integration test runs the pair twenty
+times.
 
-- Each role is one word in the claims line, `0` free, `u32::MAX` released, anything else the
-  holder's id, so claim, release, and takeover are each one CAS. `claim_producer(id)` and
-  `claim_consumer(id)` replace `producer()` and `consumer()`, and ids `0` and `u32::MAX` are
-  `BadHolder`. No `split`.
-- Neither endpoint has a `Drop`. `release(self)` writes the position and CASes the role word from
-  its own id to released.
-- A switch sets its side's intent word, writes the left segment's resume position, the segment
-  entered, and the producer's take word, makes its shared store, and clears the intent: four
-  stores and the clear for the producer, three and the clear for the consumer, nothing on the
-  message path. `claimable` is not kept.
-- A claim of a released role loads the exact checkpoint. `take_over_producer(id)` and
-  `take_over_consumer(id)` replace any holder by one CAS and one attempt, finish or undo a switch
-  left in flight by the one slot it left, and find the position by a scan of one segment's seq
-  words, rescanning while a live producer's commit lands mid-read. A consumer loses nothing, a
-  producer at most one uncommitted slot. At depth 1 a held role is `BadCapacity`, and a state the
-  ring could not have written is `BadCheckpoint`.
-- Both endpoints borrow the segment table instead of copying it per message, which the switch
-  path's out-of-line calls had made certain, and v4 now streams under v3 at depth 8 and up.
-- The design note's Holders and recovery holds the rule, the inbox model, handoff and takeover,
-  and the pool half. Its v4 section, the guide's joining section and errors, the README's v4
-  section, and the module docs describe the claims. `m-7-2` and `m-7-3` answered iiac-perf.
+- The consumer creates `/dev/shm/zcr-test-ipm-ring`, maps it `MAP_SHARED`, builds a pool of two
+  segment buffers and a v4 ring of two segments of eight one-line slots in it, claims the consumer
+  role, prints `ready`, and waits up to ten seconds for one message.
+- The producer maps the same file, attaches the pool and the ring, claims the producer role, sends
+  a random value with its FNV-1a checksum, and releases its role.
+- The consumer checks the checksum and prints the value it received, exiting non-zero on a bad
+  checksum or a timeout.
+- Everything is hard-coded, the path, the geometry, the ring's first segment, and the holder ids,
+  at the user's call: the aim is to prove a message crosses intact, and there are no other users.
+- `tests/ipm.rs` spawns the consumer, waits for `ready`, spawns the producer, and checks both exit
+  cleanly and agree on the value, twenty rounds in one test since the pair shares one file.
 
 #### Acceptance check
 
-- iiac-perf's scenario as a test: a ring of two segments of four slots, three messages sent and
-  received, both roles released, and each claimed again, from the same `Ring` and from a second
-  attached one, continues the ring, the next messages in order across a segment switch. A claim
-  while a role is held is `Err(RoleTaken)`, and a dropped endpoint, never released, leaves its
-  role held. Under Miri too.
-- The takeover as a test: each endpoint forgotten mid-run (`mem::forget`) after at least one
-  switch, the consumer with a message committed and unread, the producer with a slot reserved and
-  uncommitted, and `take_over_*` from a second attached handle continues: every message the dead
-  consumer had not released arrives, in order, and the producer's stream resumes with at most
-  the uncommitted slot rewritten. Under Miri too.
-- `tp_matrix` and the demo build their v4 pairs by two claims, `grep` finds no `split` in
-  `src/spsc/v4` and no `Drop` in `src/` outside tests that writes shared memory, and `tp-stream`'s
-  v4 rows at depths 8 and up read within run-to-run noise of the tables in the design note's v4
-  section, since the message path is untouched.
-- The design note names the rule, the inbox model, the handoff, and the takeover, and the guide's
-  joining section says how a role is released, reclaimed, and taken over.
+- By hand, the consumer started first: the consumer prints the value the producer sent, its
+  checksum verified, and both exit 0. Pass: the first run sent and received
+  `0x53074c4fabcd8c41`.
+- `cargo test --test ipm`: pass, twenty rounds in one run, and the test run five times over.
 
 #### Deliberation
 
-- The requirement, the user's on 2026-09-25: a pool shared by processes cannot lose what a
-  crashed process held. A crashed consumer is restarted or replaced and takes over its duties,
-  its in-progress work lost and nothing else. "A claim is for life" and then "release parks the
-  role" were proposed and found short of it, since neither answers a holder that never releases.
-- Three mechanisms, and only the crate's two are here: a claim names its holder and endpoints
-  checkpoint (this cycle), and buffers name their holder so a sweeper reclaims them (an owner
-  word in the in-buffer header, with the length and the count that header already owes, the
-  cycles after shared allocation). Judging that a holder is dead stays out of a no_std crate: the
-  id is the app's, `take_over_*` is the app vouching, and a supervisor process that restarts
-  consumers is where the judgment lives.
-- Checkpoint at the switch, not per message: `cur`, `taken`, `given`, and the resume table change
-  only on the switch path, which writes shared memory already, so recording them there costs one
-  or two stores per switch. `pos` within the segment is the one thing left unrecorded, and the
-  seq words hold it, so a takeover scans at most `seg_capacity` words once. The message path is
-  untouched, which the acceptance check measures.
-- What a takeover loses, exactly: a consumer nothing, since an unreleased slot is still committed
-  and read again, a producer at most one reserved, uncommitted slot, rewritten. The same for a
-  release, whose checkpoint is exact.
-- The claims word gains a third state per role, released, so a claim can tell "never taken" from
-  "parked" from "held", and only a takeover replaces a held one.
-- The rule, not just the fix: the v4 `Drop` was the crate's only destructor writing shared memory,
-  and its failure mode was the bug, since a process that dies never runs a destructor and one
-  that runs it leaves a lie. Written as a rule so the next attachable ring, an MPSC, starts from
-  it, and so teardown and takeover are always deliberate calls.
-- Names: `claim_*` says a role is taken, `release` that it is given back with its state,
-  `take_over_*` that a holder is being replaced. `producer()` read as a getter, iiac-perf's point,
-  taken.
-- `split` stays out: iiac-perf's point, that in-process callers cannot fail a claim on a fresh
-  ring yet pay two unwraps, was taken at first and then refused by the user on 2026-09-25 on the
-  multi-process shape: each app creates its own ring and consumes it, and joins the other's as
-  producer, so no process holds both roles of one ring and a call that claims both is for a
-  program nobody writes. Two claims, each a `Result`, is the API everywhere.
-- The model this settles, from the same discussion: a pool is a shared allocator with no roles,
-  any process allocates from any pool it maps (the shared-allocation Todo, behind the
-  inter-application test), rings have the roles, and the shapes are meant to survive a network
-  transport, recorded in the design note's open questions at this opening.
-- The bench's leak, raised beside the pushbacks, is out of scope: the endpoints borrow the region
-  and a detached `spawn` needs `'static`, which only a leaked region gives. A std-only owning
-  `Region` wrapper is the answer and a follow-up, the piece the inter-application test wants.
-- Ahead of `### Test an inter-application message`: that test is the API's first consumer, so
-  the API settles first.
-- Waiver, the user's on 2026-09-26: "complete this cycle up to but not including the closing and
-  I'll review after breakfast". It covers the work reviews, the description reviews, and the
-  pushes of `feat: spsc v4 endpoints checkpoint at each switch`, `feat: spsc v4 claim resumes and
-  takeover replaces`, and `docs: destructors never touch shared memory`, each pushed to the cycle's
-  bookmark, which stays a draft. It does not cover the closing, the close-out shape, or Land, and
-  every other rule holds: validation before each push, the stops on a deviation that changes what
-  the user agreed.
-- From a message, not a Todo entry: `m-7` in the messages repo is the source, so the opening
-  moves no entry. The reply `m-7-1` said all three were taken with a claim for life and promised
-  the landmark's sha-link at Land, and the correcting line `m-7-2` followed: `split` refused, and
-  the fix now a named, checkpointed claim with release and takeover.
+- Hard-coded: the path, the geometry, the first segment, and the holder ids are constants, the
+  user's call on 2026-09-26.
+  - The first plan put an app header in the region's first line, the first segment and a ready
+    flag, and a `find(path)` standing in for `### Find a ring by name`. The user asked for the
+    simplest proof, and a fresh pool hands out its buffers in a fixed order, so the first segment
+    is a constant the consumer asserts and `Ring::attach` validates.
+  - The consumer's `ready` line replaces a ready flag: by hand the consumer starts first, and the
+    test waits for the line.
+- Names: the Todo entry `Test an inter-application message` became this cycle, and the app is
+  `zcr-test-ipm` and its region `/dev/shm/zcr-test-ipm-ring`, the user's names.
+- The app is `zcr-test-ipm-dev` while the cycle runs, as the demo is, since `cargo install`
+  refuses a binary another installed package owns, and the test finds it under either name, so
+  Land's rename leaves the test alone.
+- Single-step: the bin, the test, and the record are one commit, the lightest shape for a proof.
+- No new dependency: `libc`, already the demo's for pinning on Linux, maps the file, and a
+  xorshift of the time and the pid makes the value. The app is Linux-only, as the pinning is.
+- The ladder follows the deliberation in this block, the user's edit, ahead of the convention
+  change the Todo entry `### Cycle block: the ladder last, above its rung subsections` makes.
 
 #### Ladder
 
-- [fix: spsc v4 roles survive their holders opening][1] (done)
-- [feat: spsc v4 claims name their holder][2] (done)
-- [feat: spsc v4 endpoints checkpoint at each switch][3] (done)
-- [feat: spsc v4 claim resumes and takeover replaces][4] (done)
-- [docs: destructors never touch shared memory][5] (done)
-- [docs: spsc v4 stream mark and follow-up entries][7] (done)
-- [fix: spsc v4 roles survive their holders closing][6] (done)
-
-##### fix: spsc v4 roles survive their holders opening
-
-The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write
-this block from `m-7`, bump the version-of-record, and rename the artifact to `-dev`,
-`tp_matrix`'s dependency following. `## Waiting` held nothing to promote. The continuation notes
-from the previous cycle described its Land, which is done, so they are reset. The reply `m-7-1`
-was written in the messages repo under its protocol, uncommitted there, since committing is the
-closer's by default. At the user's call the design note also gained, in this commit, the
-decisions of the day's discussion beyond the fix: the shared pool as the default (under Pool
-topology and phasing), the in-buffer header's fields, MPMC's two variants, and Naming and
-transport, each as an open question so the next cycles find them.
-
-##### feat: spsc v4 claims name their holder
-
-The region's new words laid out, and the claim naming its holder. Nothing yet writes or loads a
-checkpoint.
-
-- A role is one word per role in the claims line, `0` free, `u32::MAX` released, anything else
-  the holder's id, so claim, release, and takeover are each one CAS on it and two takeovers
-  cannot both win. The user's choice on 2026-09-26 over a state word beside an id word, which
-  would let a reader see held before the id lands. The two reserved values cost the app two ids,
-  refused as the new `Error::BadHolder`.
-- The claims line also holds the checkpoint words, the producer's `cur`, `pos`, `taken`, and
-  `claimable` and the consumer's `cur` and `pos`, and each segment's info line its two resume
-  positions. The consumer's `given` needs no checkpoint word: the shared give-back word is it.
-  The layout version is 2.
-- `claim_producer(id)` and `claim_consumer(id)` replace `producer()` and `consumer()`, CAS the
-  role word from free to the id, and refuse a held role as `RoleTaken`. A released role is
-  refused the same way until the resume rung, the user's choice, so the start-at-zero bug has no
-  way back in between.
-- Neither endpoint has a `Drop`, so a dropped endpoint leaves its role held. `release(self)` CASes
-  the role word from its own id to released, so an endpoint whose role was taken over releases
-  nothing.
-- The tools and the demo claim their pairs as holders 1 and 2.
-- The design note's v4 section, at the user's call, pulled forward from the docs rung: the
-  control block's new words, the roles bullet rewritten as claims by a named holder with how ids
-  are chosen and kept unique and a short how-to, and "Join, not resume" pointing at the rest of
-  the cycle. The README gained a short v4 section, a broad overview pointing at the design note.
-  The guide, the module docs beyond the names, and the design note's stale "a claim is for life"
-  under Naming and transport stay the docs rung's.
-- A Todo entry, `### Find a ring by name`, after the inter-application test, from the discussion
-  of how a process finds a ring, at the user's call.
-
-##### feat: spsc v4 endpoints checkpoint at each switch
-
-Every switch writes its side's checkpoint into the region, under an intent word that says when the
-checkpoint is whole, and `release` adds the position, so a released role carries everything a
-successor needs and a dead holder's names the one switch it may have left half done.
-
-- A switch is several stores, and a holder that dies between two leaves a checkpoint that
-  disagrees with the seq words, whichever order they take. The user proposed a mutex. A lock
-  excludes no one here, since only the holder writes and the role-word CAS already serializes
-  successors, and a dead holder's lock stays held with the state inside it half written, so the
-  lock's flag was kept and the lock was not: each side's intent word is set, naming the segment
-  left, the segment entered, and the free-set bit flipped, before the switch's first checkpoint
-  store, and cleared after its last shared store. The user's choice on 2026-09-26.
-- The producer writes the left segment's resume position, the intent, `taken`, and `cur` ahead of
-  the MOVED commit, the consumer the resume position, the intent, and `cur` ahead of the release,
-  and each clears its intent after, the consumer's after the give-back store. All Release.
-- `claimable` is not kept, a successor assuming false loads one seq word more, and init writes
-  the producer's start `taken` of 1, so the checkpoint is the start state before any switch.
-- The checkpoint made the per-message copy of the segment table certain, since the switch path
-  passes it by reference to an out-of-line call, and v4 regressed at depths where no switch
-  happens. Both endpoints now borrow `&st.segs`, as MPSC v2 does, and v4 streams under v3 at
-  depth 8 and up, the numbers in the design note and the `### SPSC v3 fast path` Todo.
-- The design note's v4 roles bullet describes the checkpoint, the intent word, and the cost. The
-  user's request for stream tests over every placement joined `### Improve stream tests` as a
-  Todo rather than a rung, since it is that entry and does not block the cycle.
-- Tests: every switch in the burst tests leaves the checkpoint equal to both endpoints' private
-  state with no intent set, and `release` writes each side's position. The repair of a set intent
-  is the next rung's.
-
-##### feat: spsc v4 claim resumes and takeover replaces
-
-A claim on a released role loads the checkpoint and continues, `take_over_*` replaces a held role
-from the switch-time checkpoint and a scan of the checkpointed segment, and the tests of the
-acceptance check's first two clauses.
-
-- A claim takes a free or a released role, a takeover any role, each by one CAS from the word it
-  loaded and one attempt, so of two racing takeovers one wins and the other is `RoleTaken`
-  rather than replacing the winner. A state that cannot be loaded puts the role word back.
-- The signature stays the plan's, `take_over_*(id)`. The discussion's `take_over_*(dead, id)`
-  and a holder query are left to the review, since the one-attempt CAS already makes a
-  simultaneous race safe and only a supervisor that vouches without checking is unguarded.
-- A set intent is finished or undone by the one slot the switch left: the producer's still
-  claimable means its MOVED commit never happened, the consumer's still the MOVED word that its
-  release never did. Undone, the producer rewrites that slot and the consumer reads that message
-  again. Finished, each starts where the switch entered, and the consumer stores the give-back
-  bit the intent names. The repaired checkpoint is written back and the intent cleared.
-- A clear intent leaves the segment and free-set exact, and the position is `release`'s or, for
-  a takeover, the scan's: each slot's seq names the position it last held and whether it is
-  committed, the `M` positions end just before the producer's, and the committed ones are the
-  newest, from the consumer's on. The scan runs again when a live producer's commit lands
-  mid-read, and gives up as `BadCheckpoint` after 1024 scans that do not form one window, which
-  a ring whose other side is dead cannot cause.
-- At depth 1 a slot's seq cannot tell released from committed, so a takeover of a held role
-  there is `BadCapacity`, the depth-1 gap raised at the checkpoint rung. A released role at
-  depth 1 resumes, its position exact.
-- A checkpoint or intent naming a segment the ring does not have is the new `BadCheckpoint`.
-- Tests: iiac-perf's scenario from the same handle and a second, a dead consumer holding a read
-  and a dead producer holding an uncommitted slot taken over at every stop point through two
-  ring-fulls on six geometries, a consumer taken over four times while the producer streams on
-  its own thread, both sides dead inside a switch before and after its shared store, depth 1,
-  and a bad checkpoint. Under Miri too, with fewer geometries and stop points.
-- The README's v4 section says how a role resumes and is taken over. The guide and the design
-  note are the docs rung's.
-
-##### docs: destructors never touch shared memory
-
-The rule, the inbox model, the handoff, the takeover and whose judgment it is, and the pool half
-named as later cycles, in the design note, the guide's joining section and errors table following,
-and the module docs on the new names. The v4 roles bullet and the README's v4 section came
-earlier, in `feat: spsc v4 claims name their holder`, and this rung brings them up to the takeover.
-
-- The design note gains `### Holders and recovery`, beside the usage model: the rule, the inbox
-  model, handoff and takeover with whose judgment it is, and the pool half, an owner word and a
-  sweeper after shared allocation. Its v4 section's "Join, not resume" became "Resume and
-  takeover", with the scan, what a takeover loses, and the depth-1 rule, and Naming and
-  transport's "a claim is for life" became release or takeover.
-- The guide's joining section claims by id under the inbox model, and gains "Handing a role
-  over" and "Replacing a dead holder". Its errors table has the claim and takeover errors.
-- The module docs' "Attach is a join, not a resume" became "Roles survive their holders", and
-  `attach`'s doc says where a claimed role starts.
-- Finding for the closing: the rule as the acceptance check states it, no `Drop` in `src/`
-  outside tests that writes shared memory, fails on the MPSC rings, v0 through v2, whose
-  `TombstoneOnUnwind` guard publishes a tombstoned commit when a panic unwinds through
-  `send_with`. It predates the cycle, runs only on unwind in a process that survives, and
-  finishes a protocol step. The design note names it as the rule's open exception. The user's
-  call on 2026-09-26: the decision, narrow the check or remove the guard, belongs to the new Todo
-  entry `### Attachable MPSC with claimed roles`, after the inter-application test, so the
-  closing records the clause as failing on that guard alone.
-
-##### docs: spsc v4 stream mark and follow-up entries
-
-Inserted before the closing at the user's call on 2026-09-26: the stream measurement the
-acceptance check asks for, the line on `m-7` its opening promised, and the Todo entries the
-review raised, each at the user's call.
-
-- The stream measurement (3900X, `tp-stream -d 1 --depth 1,8,64,1024`, two segments, twice): v4
-  at depths 8 and up is not within noise of the design note's v4 tables but under them, 12.8 to
-  13.1 ns at depth 8 and 10.1 to 10.4 at 64 and 1024 on the CCX pair against 16.4 to 18.1, 13.6
-  to 15.1, and 13.9 to 15.4, 12.0 to 12.7 on the SMT pair against 19.9 to 20.0, and level across
-  the CCX at depth 8, 48.9 and 49.3 against 48.8 and 48.2. The message path gained nothing, and
-  the borrow of the segment table took away the copy the tables paid for. v3 in the same runs
-  read as its tables do. The design note's v4 section holds both runs as the new mark, sorted by
-  depth, placement, and flavor. The runs used `cargo run`, since the installed tools were 0.17.1:
-  validation installs the crate, never the tools.
-- `m-7-3` to iiac-perf: the API, the sha-links to the last work rung, which a trapezoid keeps,
-  and the measurement. Uncommitted in the messages repo, as `m-7-2` is.
-- `### Attachable MPSC with claimed roles`, after the inter-application test: the multi-process
-  MPSC on v4's model, carrying the unwind-guard decision, narrow the no-`Drop` check or remove
-  `TombstoneOnUnwind`, which the design note's Holders and recovery now points at.
-- `### Pool buffers survive their holders`, after `### Shared allocation`: the pool half of crash
-  recovery, an owner word and a sweeper, waiting on shared allocation and the header's layout.
-- `### Improve stream tests` gains the placements the current cpu has and a `--sort` option for
-  `tp-stream`, likely defaulting to depth, placement, flavor. `### Endpoint claims word` no longer
-  says v4's roles are released on drop.
-
-##### fix: spsc v4 roles survive their holders closing
-
-Closing out the cycle: the acceptance check, the record finalized and moved to `## Closed`, the
-version-of-record to its bare form, and `notes/README.md` naming v4's roles.
-
-- Acceptance check:
-  - iiac-perf's scenario: pass, `released_roles_resume_where_they_stopped`, from the same handle
-    and a second, with `claims_name_their_holder` for a held role refused and a dropped one left
-    held. Under Miri: pass, the 28 v4 tests as run at the takeover rung, since which the code
-    gained two lint attributes and lost a cast.
-  - The takeover: pass, `a_dead_consumer_is_taken_over` and `a_dead_producer_is_taken_over` at
-    every stop point through two ring-fulls on six geometries, the consumer holding an unreleased
-    read and the producer an uncommitted slot. Under Miri: pass, as above.
-  - The tools and the demo claim twice: pass. No `split` in `src/spsc/v4`: pass. No `Drop` in
-    `src/` outside tests that writes shared memory: fail, on the MPSC producers' unwind guard
-    `TombstoneOnUnwind`, v0 through v2, which predates the cycle. The clause was written without
-    surveying the MPSC rings. The decision is the Todo entry `### Attachable MPSC with claimed
-    roles`, at the user's call. `pool::v1`'s `Replay` is a test's.
-  - `tp-stream`'s v4 rows at depth 8 and up: not within noise of the tables but under them, the
-    measurement in the rung before this one. The clause guarded against a slower message path,
-    and it is faster.
-  - The design note names the rule, the inbox model, the handoff, and the takeover, and the guide
-    says how a role is released, reclaimed, and taken over: pass.
-- A repair: `docs: spsc v4 stream mark and follow-up entries` pushed `TODO.md` with a stretch of
-  this block duplicated, from mid-sentence in the opening's subsection through a stale copy of
-  this subsection, since its edit took the first `## Waiting` in the file, which was inside the
-  opening's text, as the end of this subsection. This commit removes the copy, which matched the
-  original byte for byte, so nothing else changed.
-- Close-out shape: trapezoid, the default, taken on the user's go.
+- feat: test inter-process message (done)
 
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[1]: #fix-spsc-v4-roles-survive-their-holders-opening
-[2]: #feat-spsc-v4-claims-name-their-holder
-[3]: #feat-spsc-v4-endpoints-checkpoint-at-each-switch
-[4]: #feat-spsc-v4-claim-resumes-and-takeover-replaces
-[5]: #docs-destructors-never-touch-shared-memory
-[6]: #fix-spsc-v4-roles-survive-their-holders-closing
-[7]: #docs-spsc-v4-stream-mark-and-follow-up-entries

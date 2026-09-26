@@ -2847,9 +2847,12 @@ work the same.
   through one `find` and gets an endpoint, so the resolver is
   the only thing a transport replaces. The setup-plane
   question above becomes "a name resolves to a transport and
-  an address", and the first inter-application program
-  resolves its name in one function even while that function
-  is two lines.
+  an address". The first inter-process program,
+  `zcr-test-ipm` (`feat: test inter-process message`),
+  hard-codes its path and the ring's first segment to prove a
+  message crosses, so the first program to replace those
+  constants resolves its name in one function, even while
+  that function is two lines.
 - **Zero-copy ends at the wire.** Descriptors never cross
   hosts, a bridge copies payloads, so a message must be
   self-describing: the type-tag it has and the length the
