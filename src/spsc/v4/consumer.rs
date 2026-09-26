@@ -10,7 +10,7 @@ use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use super::{
-    CONSUMER_CLAIM, MAX_SEGMENTS, MOVED, SEG_MASK, SEG_SHIFT, SEQ_MASK, Segments, check_body_type,
+    Checkpoint, MAX_SEGMENTS, MOVED, SEG_MASK, SEG_SHIFT, SEQ_MASK, Segments, check_body_type,
     seq_of,
 };
 use crate::Empty;
@@ -20,6 +20,8 @@ use crate::Empty;
 pub(super) struct ConsumerState {
     /// Geometry and segment addresses.
     pub(super) segs: Segments,
+    /// The id this consumer's claim wrote into the role word.
+    pub(super) holder: u32,
     /// The segment being read.
     pub(super) cur: u32,
     /// Free-running position in `cur`.
@@ -35,6 +37,10 @@ pub(super) struct ConsumerState {
 
 /// The consuming endpoint: `reserve_slot_with` the oldest
 /// committed slot, read in place, `release`.
+///
+/// - It has no `Drop`, as [`Producer`](super::Producer) has none:
+///   dropping it leaves the role held, and giving the role back is
+///   [`release`](Consumer::release).
 pub struct Consumer<'a> {
     /// Private state, borrowed by each guard.
     pub(super) st: ConsumerState,
@@ -45,19 +51,14 @@ pub struct Consumer<'a> {
 // Send rationale.
 unsafe impl Send for Consumer<'_> {}
 
-impl Drop for Consumer<'_> {
-    /// Release the role, so another endpoint may take it.
-    fn drop(&mut self) {
-        self.st.segs.release_role(CONSUMER_CLAIM);
-    }
-}
-
 impl<'a> Consumer<'a> {
-    /// Start in segment 0, where the producer starts.
-    pub(super) fn new(segs: Segments) -> Self {
+    /// Start in segment 0, where the producer starts, for holder
+    /// `holder`.
+    pub(super) fn new(segs: Segments, holder: u32) -> Self {
         Consumer {
             st: ConsumerState {
                 segs,
+                holder,
                 cur: 0,
                 pos: 0,
                 resume: [0; MAX_SEGMENTS as usize],
@@ -66,6 +67,32 @@ impl<'a> Consumer<'a> {
             },
             _region: PhantomData,
         }
+    }
+
+    /// Continue from a checkpoint the region held, for holder
+    /// `holder`.
+    pub(super) fn resume(segs: Segments, holder: u32, cp: Checkpoint) -> Self {
+        Consumer {
+            st: ConsumerState {
+                segs,
+                holder,
+                cur: cp.cur,
+                pos: cp.pos,
+                resume: cp.resume,
+                given: cp.free_set,
+                switches: 0,
+            },
+            _region: PhantomData,
+        }
+    }
+
+    /// Give the consumer role back as released, the counterpart
+    /// of [`Producer::release`](super::Producer::release),
+    /// writing its position first.
+    pub fn release(self) {
+        let segs = &self.st.segs;
+        segs.claims().cons_pos.store(self.st.pos, Ordering::Release);
+        Segments::release_role(segs.consumer_role(), self.st.holder);
     }
 
     /// Segment switches this consumer has made: how many MOVED
@@ -161,22 +188,29 @@ impl<T> ReadSlot<'_, T> {
     /// - The released seq store comes first (`Release`), clearing
     ///   any MOVED bits, so a segment given back holds only
     ///   claimable seqs.
-    /// - After a MOVED message: give the old segment back by
-    ///   flipping its bit in the give-back word (`Release`), then
-    ///   continue in the named segment where it was left.
+    /// - After a MOVED message: checkpoint the switch under its
+    ///   intent word before the release, give the old segment back
+    ///   by flipping its bit in the give-back word (`Release`),
+    ///   clear the intent, then continue in the named segment
+    ///   where it was left.
     pub fn release(self) {
         let st = self.st;
-        let segs = st.segs;
+        let segs = &st.segs;
         let c = st.pos;
         let next = c.wrapping_add(1);
+        let moved = self.word & MOVED != 0;
+        let k = (self.word >> SEG_SHIFT) & SEG_MASK;
+        if moved {
+            st.given ^= 1 << st.cur;
+            st.resume[st.cur as usize] = next;
+            segs.consumer_switch(st.cur, k, next, st.given);
+        }
         segs.seq(st.cur, c)
             .store(seq_of(c.wrapping_add(segs.capacity)), Ordering::Release);
         st.pos = next;
-        if self.word & MOVED != 0 {
-            let k = (self.word >> SEG_SHIFT) & SEG_MASK;
-            st.given ^= 1 << st.cur;
-            st.resume[st.cur as usize] = next;
+        if moved {
             segs.given().store(st.given, Ordering::Release);
+            Segments::switch_done(&segs.claims().cons_switch);
             st.cur = k;
             st.pos = st.resume[k as usize];
             st.switches += 1;

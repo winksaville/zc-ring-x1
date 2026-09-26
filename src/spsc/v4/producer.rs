@@ -9,7 +9,7 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
-use super::{MAX_SEGMENTS, MOVED, PRODUCER_CLAIM, SEG_SHIFT, Segments, check_body_type, seq_of};
+use super::{Checkpoint, MAX_SEGMENTS, MOVED, SEG_SHIFT, Segments, check_body_type, seq_of};
 use crate::Full;
 
 /// The producer's private state, held apart from the handle so a
@@ -17,6 +17,8 @@ use crate::Full;
 pub(super) struct ProducerState {
     /// Geometry and segment addresses.
     pub(super) segs: Segments,
+    /// The id this producer's claim wrote into the role word.
+    pub(super) holder: u32,
     /// The segment being written.
     pub(super) cur: u32,
     /// Free-running position in `cur`.
@@ -36,6 +38,10 @@ pub(super) struct ProducerState {
 
 /// The producing endpoint: `reserve_slot_with`, write in place,
 /// `commit`.
+///
+/// - It has no `Drop`: a destructor never touches shared memory,
+///   so dropping it leaves the role held, and giving the role back
+///   is [`release`](Producer::release).
 pub struct Producer<'a> {
     /// Private state, borrowed by each guard.
     pub(super) st: ProducerState,
@@ -47,19 +53,13 @@ pub struct Producer<'a> {
 // writes are handed off with Release/Acquire ordering.
 unsafe impl Send for Producer<'_> {}
 
-impl Drop for Producer<'_> {
-    /// Release the role, so another endpoint may take it.
-    fn drop(&mut self) {
-        self.st.segs.release_role(PRODUCER_CLAIM);
-    }
-}
-
 impl<'a> Producer<'a> {
-    /// Start in segment 0, held as taken.
-    pub(super) fn new(segs: Segments) -> Self {
+    /// Start in segment 0, held as taken, for holder `holder`.
+    pub(super) fn new(segs: Segments, holder: u32) -> Self {
         Producer {
             st: ProducerState {
                 segs,
+                holder,
                 cur: 0,
                 pos: 0,
                 resume: [0; MAX_SEGMENTS as usize],
@@ -69,6 +69,41 @@ impl<'a> Producer<'a> {
             },
             _region: PhantomData,
         }
+    }
+
+    /// Continue from a checkpoint the region held, for holder
+    /// `holder`.
+    ///
+    /// - The slot at the position is loaded again before it is
+    ///   written, as the checkpoint does not keep what the last
+    ///   holder saw of it.
+    pub(super) fn resume(segs: Segments, holder: u32, cp: Checkpoint) -> Self {
+        Producer {
+            st: ProducerState {
+                segs,
+                holder,
+                cur: cp.cur,
+                pos: cp.pos,
+                resume: cp.resume,
+                taken: cp.free_set,
+                claimable: false,
+                switches: 0,
+            },
+            _region: PhantomData,
+        }
+    }
+
+    /// Give the producer role back as released, so a later claim
+    /// may take it.
+    ///
+    /// - Writes the one part of the checkpoint a switch does not,
+    ///   the position, so the checkpoint is exact.
+    /// - One CAS on the role word from this producer's id, so a
+    ///   producer whose role was taken over releases nothing.
+    pub fn release(self) {
+        let segs = &self.st.segs;
+        segs.claims().prod_pos.store(self.st.pos, Ordering::Release);
+        Segments::release_role(segs.producer_role(), self.st.holder);
     }
 
     /// Segment switches this producer has made: how many of its
@@ -175,11 +210,14 @@ impl<T> WriteSlot<'_, T> {
     ///   segment, take it and commit with MOVED and its number,
     ///   so this message is the last in the old segment. With
     ///   none, commit plainly and let the next reserve wait.
-    /// - The seq store is last (`Release`), after every private
-    ///   update, the protocol-visible handoff.
+    /// - A switch checkpoints ahead of the commit, under its
+    ///   intent word, and clears the word after it.
+    /// - The seq store is the last protocol store (`Release`),
+    ///   after every private update, the protocol-visible
+    ///   handoff.
     pub fn commit(self) {
         let st = self.st;
-        let segs = st.segs;
+        let segs = &st.segs;
         let p = st.pos;
         let next = p.wrapping_add(1);
         let slot = segs.seq(st.cur, p);
@@ -188,6 +226,7 @@ impl<T> WriteSlot<'_, T> {
         // at `p`, so it never reads as claimable at `next`.
         st.claimable = segs.seq(st.cur, next).load(Ordering::Acquire) == seq_of(next);
         st.pos = next;
+        let mut switched = false;
         if !st.claimable {
             let free = !(st.taken ^ segs.given().load(Ordering::Acquire)) & segs.all();
             if free != 0 {
@@ -195,11 +234,16 @@ impl<T> WriteSlot<'_, T> {
                 st.taken ^= 1 << k;
                 word |= MOVED | (k << SEG_SHIFT);
                 st.resume[st.cur as usize] = next;
+                segs.producer_switch(st.cur, k, next, st.taken);
                 st.cur = k;
                 st.pos = st.resume[k as usize];
                 st.switches += 1;
+                switched = true;
             }
         }
         slot.store(word, Ordering::Release);
+        if switched {
+            Segments::switch_done(&segs.claims().prod_switch);
+        }
     }
 }

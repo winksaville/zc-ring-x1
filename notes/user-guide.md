@@ -231,33 +231,76 @@ of zero says one segment would have done.
 ## Joining from another process
 
 `spsc::v4::Ring` is SPSC v3 with a control block at the front of its segment 0, so a process
-that maps the same pool region can find the ring and take a role in it.
+that maps the same pool region can find the ring and claim a role in it. The shape it serves is
+the inbox: a ring belongs to the process that reads it, which builds it and claims its consumer,
+and every producer joins it.
 
 ```rust
-// The process that builds the ring, over a pool it initialized.
+// The process that reads: it builds the ring over a pool it initialized.
 let ring = spsc::v4::Ring::init(&mut pool, SLOT, DEPTH, SEGMENTS)?;
-let mut consumer = ring.consumer()?;
-let first = ring.first_segment(); // hand this to the other process
+let mut consumer = ring.claim_consumer(std::process::id())?;
+let first = ring.first_segment(); // hand this to the producer's process
 
-// The other process, over the same region mapped as it maps it.
+// The producer's process, over the same region mapped as it maps it.
 let pool = unsafe { Pool::attach(base, len) }?;
 let ring = unsafe { spsc::v4::Ring::attach(&pool, first) }?;
-let mut producer = ring.producer()?;
+let mut producer = ring.claim_producer(std::process::id())?;
 ```
 
-- There is no `split`: `producer()` and `consumer()` each take their role by a compare-and-swap
-  on the control block, from a `Ring` that `init` or `attach` returned, and the second taker of a
-  role anywhere, in this process or another, gets `Error::RoleTaken`. Dropping the endpoint
-  releases the role. A process that ends without dropping leaves its role held.
+- There is no `split`: `claim_producer(id)` and `claim_consumer(id)` each take their role by a
+  compare-and-swap on the control block, from a `Ring` that `init` or `attach` returned, and the
+  second claimant of a held role anywhere, in this process or another, gets `Error::RoleTaken`.
+  In-process, one thread claims both and hands one to another thread.
+- `id` names the holder, any `u32` but `0` and `u32::MAX`. The crate records it and never reads
+  meaning into it. The pid is the natural one. It must name one holder for the life of the ring,
+  so an app that restarts holders under reused pids packs a restart count into the high bits.
 - `first_segment` is the pool buffer index of the ring's segment 0, a number the building process
   hands the other by whatever means it has, an argument, a file, or a message.
 - `attach` validates the control block and every segment's own header against the pool, so a
   hostile region is an `Err`, and it is `unsafe` for what validation cannot check: that the index
   came from a ring over this pool whose segments are still its own.
-- A joined endpoint starts in segment 0 at position 0, as one from `init` does, so join before
-  the role has run. A ring already run is not rejoined.
-- Everything after the join, sending, receiving, the policies, and the segment lifecycle, is
-  SPSC v3's, and the rows for both are in the measurement tools.
+
+### Handing a role over
+
+An endpoint has no destructor that touches the ring: dropping it, or a process ending without a
+word, leaves its role held. Giving a role back is a call.
+
+```rust
+producer.release(); // the role is released with its exact position
+
+// Later, here or in another process: the claim continues where the role stopped.
+let mut producer = ring.claim_producer(new_id)?;
+```
+
+- `release` writes the endpoint's position into the region and marks the role released, and a
+  claim of a released role loads that state and continues, the next message the one after the
+  last committed or read. Nothing is lost across a handoff.
+
+### Replacing a dead holder
+
+A process that dies holding a role never releases it. Replacing it is the app's call, made by
+whatever decides the holder is gone, a supervisor that restarted it or a check of its pid:
+
+```rust
+// The supervisor's judgment, not the crate's: the old holder is dead.
+let mut consumer = ring.take_over_consumer(new_id)?;
+```
+
+- `take_over_producer(id)` and `take_over_consumer(id)` replace whatever holds the role. Of two
+  racing takeovers one wins and the other gets `Error::RoleTaken`. Taking over a live holder
+  breaks the ring's one-producer, one-consumer contract, so the caller must know the holder is
+  gone.
+- A replacement consumer loses nothing: a message its holder read and never released is read
+  again. A replacement producer loses at most the one slot its holder reserved and never
+  committed, which it writes again.
+- The replacement finds its place from the checkpoint the holder wrote at its last segment switch
+  and the seq words of one segment, so a takeover costs one segment's scan, and nothing on the
+  message path pays for it.
+- A ring of one-slot segments cannot be taken over while held, `Error::BadCapacity`: its seq words
+  cannot place a position. It can still be released and claimed.
+
+Everything after the claim, sending, receiving, the policies, and the segment lifecycle, is SPSC
+v3's, and the rows for both are in the measurement tools.
 
 ## Errors and panics
 
@@ -268,7 +311,11 @@ let mut producer = ring.producer()?;
 | `Ring::init`, `MpscRing::init` | `Error::TooSmall` | the pool's buffers do not hold `segment_size` |
 | `Ring::init`, `MpscRing::init` | `Error::Exhausted` | the pool had fewer free buffers than segments, and those taken were returned |
 | `spsc::v4::Ring::attach` | `Error::BadMagic`, `BadLayoutVersion`, `BadSegment`, `TooSmall`, and the geometry errors | the index names no v4 ring, another layout, a table or a segment header that disagrees with the pool, or a segment the pool's buffers cannot hold |
-| `spsc::v4::Ring::producer`, `consumer` | `Error::RoleTaken` | the role is held, in this process or another |
+| `spsc::v4::Ring::claim_*`, `take_over_*` | `Error::BadHolder` | the id is `0` or `u32::MAX` |
+| `spsc::v4::Ring::claim_*` | `Error::RoleTaken` | the role is held, in this process or another |
+| `spsc::v4::Ring::take_over_*` | `Error::RoleTaken` | another takeover or claim won the role first |
+| `spsc::v4::Ring::take_over_*` | `Error::BadCapacity` | a held role on a ring of one-slot segments |
+| `spsc::v4::Ring::claim_*`, `take_over_*` | `Error::BadCheckpoint` | the role's saved state names no segment of the ring, or the seq words are not ones the ring wrote |
 | producer reserve or send | `Full` | the policy gave up with every segment full |
 | consumer reserve | `Empty` | the policy gave up with nothing committed |
 | first reserve or send | panic | `T` larger than the slot body or aligned beyond 16 |

@@ -1261,11 +1261,13 @@ another process](user-guide.md#joining-from-another-process).
 - **The control block**: every segment's header grows from v3's
   one line to four, so `segment_size` is v3's plus 192 bytes and
   every segment's slots start at one offset. Line 0 names the
-  ring, seven `AtomicU32`s: magic (`"ZCR4"`), layout version,
+  ring, nine `AtomicU32`s: magic (`"ZCR4"`), layout version,
   `slot_size`, `seg_capacity`, `seg_count`, the segment's own
-  number, and `given`, the consumer's give-back word. Line 1 is
-  the role claims word, alone so the CAS that takes a role never
-  shares a line with `given`. Lines 2 and 3 are the table, the
+  number, `given`, the consumer's give-back word, and the
+  producer's and consumer's resume positions in this segment.
+  Line 1 is the claims line, the two role words and the
+  endpoints' checkpoints, alone so the CAS that takes a role
+  never shares a line with `given`. Lines 2 and 3 are the table, the
   pool buffer index of segment `i` at entry `i`, `u32::MAX` past
   `seg_count`. Every segment writes line 0, and lines 1 to 3 are
   meaningful in segment 0. `init` stores the magic last, with
@@ -1294,25 +1296,124 @@ another process](user-guide.md#joining-from-another-process).
   a ring's segment and a buffer freed and reused since look the
   same, and the ring writes seq words into every segment it is
   told it has.
-- **Roles by name, no `split`**: `ring.producer()` and
-  `ring.consumer()` each take their role by one `fetch_or` on
-  the claims word, from a `Ring` that `init` or `attach`
-  returned, `Err(RoleTaken)` when the bit was set anywhere, in
-  this process or another, and a set bit needs no undo since the
-  or changed nothing. `Drop` on the endpoint clears its bit.
-  Nothing on the message path reads the word. `split` handed
-  every attacher both endpoints and left the SPSC contract to
-  the caller's discipline, and the `### Endpoint claims word`
-  Todo asked for this in the single-region rings at the cost of
-  a layout bump, which v4's new block does not pay.
-  - A crashed process leaves its role claimed. Recovery, a forced
-    claim or a reset, is not built: a fresh region per run is the
-    inter-application test's case.
-- **Join, not resume**: an endpoint taken after `attach` starts
-  in segment 0 at position 0, as one taken after `init` does, so
-  attach is for a process joining before its role has run. v2's
-  `attach` has the same limit. Recovering a mid-run position
-  from the slots' seq words is a design of its own, not started.
+- **Roles claimed by a named holder** (layout version 2, the
+  cycle `fix: spsc v4 roles survive their holders`): each role
+  is one `AtomicU32` in the claims line, `0` free, `u32::MAX`
+  released, and anything else the id of its holder, so claim,
+  release, and takeover are each one CAS on it and two
+  takeovers cannot both win.
+  - `claim_producer(id)` and `claim_consumer(id)`, from a `Ring`
+    that `init` or `attach` returned, CAS the role word from
+    free or released to `id`. A held role is `Err(RoleTaken)`,
+    in this process or another. The ids `0` and `u32::MAX` name
+    no holder and are `Err(BadHolder)`. Nothing on the message
+    path reads the word.
+  - Neither endpoint has a `Drop`, by the rule [Destructors never
+    touch shared memory](#destructors-never-touch-shared-memory).
+    A dropped endpoint leaves its role held.
+    `release(self)` CASes the role word from its own id to
+    released, so an endpoint whose role was taken over releases
+    nothing.
+  - The id is the app's, recorded and never interpreted by the
+    crate. On Linux the pid is the natural one, never `0` and
+    below `pid_max`, at most `2^22`, so never `u32::MAX`, and a
+    supervisor may hand out ids from a counter instead. An id
+    must name one holder for the life of the ring, since the
+    release CAS is what keeps a stale holder from releasing its
+    successor's role. Pids are reused, so an app that restarts
+    holders packs a generation into the high bits, 22 bits of
+    pid and a 10-bit restart count. Whether a holder is alive
+    is the app's judgment, never the crate's.
+  - The checkpoint sits beside the role words: the producer's
+    `cur`, `pos`, and `taken` and the consumer's `cur` and
+    `pos`, with each segment's two resume positions in its info
+    line. The consumer's `given` is already shared, so it is its
+    own checkpoint. `claimable` is not kept: a successor that
+    assumes false loads one seq word it could have skipped.
+  - Each switch writes its side's checkpoint, all but `pos`,
+    and `release` writes `pos`, so a released role's checkpoint
+    is exact and a held one's is exact up to the position,
+    which the seq words of one segment hold. Nothing on the
+    message path writes it.
+  - A switch is several stores, and its holder can die between
+    any two, where no lock or CAS makes them one. So each side
+    keeps an intent word, the flag a robust mutex would leave: a
+    switch sets it, naming the segment left, the segment
+    entered, and the free-set bit it flips, before its first
+    checkpoint store, and clears it after its last shared store,
+    the MOVED commit or the consumer's give-back. Clear means
+    the checkpoint is whole. Set means the holder died inside
+    the switch, and a takeover finishes or undoes it by the one
+    slot the switch left: a producer's still claimable means
+    the MOVED commit never happened, a consumer's still
+    committed that the release never did.
+  - The cost is on the switch path only, four stores and the
+    clear for the producer, three and the clear for the
+    consumer, all Release so a reader that sees one sees the
+    intent. At depth 1, where every commit switches, that is
+    per message.
+  - `split` stays out. The shape the crate serves is
+    multi-process: each app creates the ring it reads and joins
+    the other's as producer, so no process holds both roles of
+    one ring, and in-process callers claim twice.
+  - How to, in brief:
+
+    ```rust
+    // In-process, as the tools and the demo do: both claims
+    // on a fresh ring, so neither can fail.
+    let ring = spsc::v4::Ring::init(&mut pool, 64, 8, 4)?;
+    let mut prod = ring.claim_producer(1)?;
+    let mut cons = ring.claim_consumer(2)?;
+
+    // Across processes: the reader inits the ring, claims its
+    // consumer, and hands `ring.first_segment()` to the
+    // producer's process, which attaches its own pool handle
+    // over the same region and claims.
+    // SAFETY: first_segment came from the reader's ring over
+    // this pool's region, whose segments are still the ring's.
+    let ring = unsafe { spsc::v4::Ring::attach(&pool, first_segment) }?;
+    let mut prod = ring.claim_producer(std::process::id())?;
+
+    // Giving the role back: release, since dropping keeps it.
+    prod.release();
+    ```
+
+- **Resume and takeover**: a claim of a free role starts in
+  segment 0 at position 0, and of a released role loads the
+  checkpoint `release` wrote, exact, and continues.
+  `take_over_producer(id)` and `take_over_consumer(id)` replace
+  any holder by one CAS from the word as loaded, one attempt, so
+  of two racing takeovers one wins. The caller vouches the
+  holder is dead, [Holders and recovery](#holders-and-recovery)
+  says why that is the app's call.
+  - A set intent is finished or undone by the slot the switch
+    left, as the checkpoint bullet says, and the repaired
+    checkpoint is written back with the intent cleared.
+  - A clear intent leaves the segment and free-set exact, and
+    the position is the scan's. Slot `i` last held a position
+    `q = i` modulo the depth, and its seq says which and whether
+    committed: `q + M` released, `q + M + 1` committed. The `M`
+    positions end just before the producer's, and the committed
+    ones are the newest, from the consumer's on. The scan knows
+    positions modulo `2^SEQ_BITS`, which is all the protocol
+    compares, and lifts them after the segment's resume position.
+  - A live producer committing while a consumer's replacement
+    scans can make one read disagree with the rest, so the scan
+    runs again until the words form one window, and gives up as
+    `BadCheckpoint` after 1024, which only words the ring never
+    wrote cause.
+  - What a takeover loses: a consumer nothing, the message its
+    holder read and never released still committed, a producer
+    at most the one slot reserved and never committed, written
+    again.
+  - At depth 1 a slot's released and committed values coincide,
+    `q + 1` against `(q - 1) + 2`, so the seq words cannot place
+    a position, and a takeover of a held role is
+    `Err(BadCapacity)`. A released role there resumes, its
+    position exact. Placing it would take a per-message store
+    at depth 1, where every commit is already on the switch
+    path, and is not done.
+  - v2's `attach` still joins at position 0 only.
 - **Stacked Borrows shaped the tests**: the handle `init`
   returns holds pointers under the `&mut` it took, and the first
   write through an attached handle, which holds the region's
@@ -1387,6 +1488,64 @@ another process](user-guide.md#joining-from-another-process).
   path` Todo measures v4 beside v3 when it runs and looks for
   the two-thread gap there, with these rows as the mark. The
   default `Ring` stays v3.
+- **The gap was the copy (2026-09-26)**: the checkpoint rung of
+  `fix: spsc v4 roles survive their holders` passes the table
+  by reference to an out-of-line call on the switch path, which
+  made the copy certain on every message and v4 regress, 14.6
+  to 19.1 ns at depth 64 on the CCX pair. Borrowing `&st.segs`
+  in `commit` and `release`, as MPSC v2 already does, took v4
+  under v3 in the same `tp-stream` run: at depths 8, 64, and
+  1024, 12.8, 10.0, and 10.3 ns on the CCX pair against v3's
+  15.5, 13.7, and 12.3, and 12.7, 12.5, and 11.9 on the SMT
+  pair against 17.1 at each. v3 keeps its copy as built, the
+  `### SPSC v3 fast path` Todo's to change.
+  - The mark after the fix, for the next cycle that touches
+    v4's message path and for that Todo: `tp-stream -d 1
+    --depth 1,8,64,1024`, 3900X, 2026-09-26, 0.18.2-4, two
+    segments, run twice, the msgs, xfills, and switches from run
+    1. Sorted by depth, placement, and flavor, so v3 and v4 sit
+    together:
+
+  | depth | placement | flavor | ns/msg run 1 | ns/msg run 2 | msgs | xfills/msg | switches/msg |
+  |---:|---|---|---:|---:|---:|---:|---:|
+  | 1 | 11,10 CCX | spsc-v3 | 62.5 | 62.2 | 16.0M | 3.976 | 0.662 |
+  | 1 | 11,10 CCX | spsc-v4 | 69.4 | 68.3 | 14.4M | 5.801 | 0.634 |
+  | 1 | 11,8 x-CCX | spsc-v3 | 227.5 | 226.0 | 4.4M | 3.949 | 0.634 |
+  | 1 | 11,8 x-CCX | spsc-v4 | 241.4 | 239.0 | 4.1M | 5.671 | 0.584 |
+  | 1 | 11,23 SMT | spsc-v3 | 30.8 | 30.7 | 32.5M | 0.0000 | 0.500 |
+  | 1 | 11,23 SMT | spsc-v4 | 29.6 | 29.6 | 33.8M | 0.0000 | 0.502 |
+  | 1 | unpinned | spsc-v3 | 58.2 | 58.6 | 17.2M | 3.990 | 0.663 |
+  | 1 | unpinned | spsc-v4 | 66.8 | 65.7 | 15.0M | 5.963 | 0.661 |
+  | 8 | 11,10 CCX | spsc-v3 | 14.6 | 14.7 | 68.4M | 0.935 | 0.000 |
+  | 8 | 11,10 CCX | spsc-v4 | 13.1 | 12.8 | 76.5M | 1.093 | 0.030 |
+  | 8 | 11,8 x-CCX | spsc-v3 | 47.9 | 48.6 | 20.9M | 0.825 | 0.003 |
+  | 8 | 11,8 x-CCX | spsc-v4 | 48.9 | 49.3 | 20.4M | 1.188 | 0.039 |
+  | 8 | 11,23 SMT | spsc-v3 | 17.1 | 17.1 | 58.4M | 0.0000 | 0.000 |
+  | 8 | 11,23 SMT | spsc-v4 | 12.7 | 12.6 | 78.8M | 0.0000 | 0.007 |
+  | 8 | unpinned | spsc-v3 | 15.4 | 15.8 | 64.8M | 1.144 | 0.001 |
+  | 8 | unpinned | spsc-v4 | 12.2 | 12.0 | 82.3M | 1.039 | 0.028 |
+  | 64 | 11,10 CCX | spsc-v3 | 13.3 | 13.4 | 75.2M | 0.638 | 0.000 |
+  | 64 | 11,10 CCX | spsc-v4 | 10.4 | 10.1 | 95.7M | 0.545 | 0.006 |
+  | 64 | 11,8 x-CCX | spsc-v3 | 24.4 | 25.1 | 41.0M | 0.188 | 0.000 |
+  | 64 | 11,8 x-CCX | spsc-v4 | 18.4 | 18.6 | 54.5M | 0.127 | 0.000 |
+  | 64 | 11,23 SMT | spsc-v3 | 17.1 | 17.1 | 58.3M | 0.0000 | 0.000 |
+  | 64 | 11,23 SMT | spsc-v4 | 12.6 | 12.5 | 79.6M | 0.0000 | 0.003 |
+  | 64 | unpinned | spsc-v3 | 12.8 | 12.9 | 78.0M | 0.638 | 0.000 |
+  | 64 | unpinned | spsc-v4 | 10.1 | 9.8 | 99.4M | 0.596 | 0.005 |
+  | 1024 | 11,10 CCX | spsc-v3 | 12.3 | 12.6 | 81.0M | 0.511 | 0.000 |
+  | 1024 | 11,10 CCX | spsc-v4 | 10.4 | 10.2 | 96.1M | 0.783 | 0.000 |
+  | 1024 | 11,8 x-CCX | spsc-v3 | 19.9 | 19.6 | 50.3M | 0.201 | 0.000 |
+  | 1024 | 11,8 x-CCX | spsc-v4 | 15.2 | 15.4 | 65.9M | 0.183 | 0.001 |
+  | 1024 | 11,23 SMT | spsc-v3 | 17.3 | 17.2 | 57.7M | 0.0000 | 0.000 |
+  | 1024 | 11,23 SMT | spsc-v4 | 12.1 | 12.0 | 82.8M | 0.0000 | 0.001 |
+  | 1024 | unpinned | spsc-v3 | 11.8 | 12.0 | 84.5M | 0.497 | 0.000 |
+  | 1024 | unpinned | spsc-v4 | 10.0 | 9.7 | 99.9M | 0.747 | 0.000 |
+
+  - Readings: at depth 1, where every commit switches, v4 is 6
+    to 11 percent slower off the SMT pair, the checkpoint the
+    switch now writes. At depth 8 the two are level across the
+    CCX and v4 is faster elsewhere, and at 64 and 1024 v4 is
+    faster everywhere, by 2 to 6 ns.
 
 ## MPSC v1: equality-seq ring
 
@@ -2234,6 +2393,16 @@ marking: push the buffer onto the pool's free-stack.
   not a redesign, since hot paths keep the cheap single-popper
   version. Heterogeneity mitigates meanwhile: a small private
   hot-path pool plus a big shared fallback pool.
+  - Decided 2026-09-25: the shared pool becomes the default,
+    not an option. A pool is a shared-memory allocator with no
+    roles, any process allocates from any pool it maps, and
+    `Ring::init` takes `&Pool`, so a process builds its ring
+    in whichever pool it likes. The single-popper pools stay
+    as the baselines and for the 32-bit targets. The Todo
+    entry `Shared allocation: a pool any process can allocate
+    from` holds the plan, behind the inter-application test,
+    which needs only one allocator, and ahead of any
+    multi-process MPSC, whose every producer allocates.
 - MPSC ring (future sibling): multi-producer queues need
   a different ring protocol (CAS-claimed producer index,
   per-slot sequence state), and it slots in as a sibling
@@ -2333,6 +2502,65 @@ The tests exercise exactly what it permits. Summary:
   (free / allocated / in-flight [vacant until descriptor
   queues] / freed) with one permitted toucher.
 - "send" this cycle means moving the `BufSlot`.
+
+### Holders and recovery
+
+A pool shared by processes must not lose what a crashed process held: a crashed consumer is
+restarted or replaced and takes over its duties, losing its in-progress work and nothing else,
+the requirement set on 2026-09-25. The cycle `fix: spsc v4 roles survive their holders` meets it
+for the ring's roles, and names what meets it for the pool's buffers.
+
+#### Destructors never touch shared memory
+
+Shared state changes only through protocol operations, never in a `Drop`.
+
+- A process that dies runs no destructor, so a design that cleans up in one is correct only
+  when nothing crashes. One that runs leaves the region saying what the destructor wrote, which
+  for a role was "free" when the role's state had gone with the endpoint.
+- The v4 endpoints were the crate's only destructors writing shared memory, and their failure
+  was the bug of `m-7`: a role taken again after a drop started at segment 0, position 0, on a
+  ring that had run, and hung. They now have none.
+- So teardown and handoff are calls, `release`, and recovery is a call, a takeover, each one
+  deliberate. The rule holds for the next attachable ring, an MPSC, from its first design.
+- One kind of destructor breaks it, and whether it stays is open: the MPSC rings' producers,
+  v0 through v2, arm `TombstoneOnUnwind` while the fill closure runs, a `Drop` that publishes a
+  tombstoned commit into the claimed slot's seq word if a panic unwinds through `send_with`, so
+  the consumer is not left waiting on a slot no one will commit. It runs only on the unwind
+  path, in a process that survives the panic, and finishes a protocol step rather than undoing
+  one. A death it cannot see, an abort or a kill, leaves that slot claimed and the ring stuck,
+  which is the MPSC's own takeover question. Found on 2026-09-26 writing this rule. Narrowing
+  the rule to allow unwind-only guards, or removing the guard, is decided in the attachable
+  MPSC cycle, the Todo entry `### Attachable MPSC with claimed roles`.
+
+#### The inbox model
+
+A ring belongs to the process that reads it. That process creates it in a region it owns, lives
+as long as its inbox does, and claims the consumer, and every producer is a process that joins
+it by `attach` and claims the producer. A ring's address is `(region, first_segment)`, and
+naming it is [Naming and transport](#naming-and-transport)'s. No process holds both roles of one
+ring, so there is no call that claims both, and in-process callers claim twice.
+
+#### Handoff and takeover
+
+- Handoff is `release` then a claim: the holder writes its exact state and marks the role
+  released, and the next claimant, in any process, continues from it. Nothing is lost.
+- Takeover is the replacement of a holder that did not release, because it died or hung. The
+  crate records, a holder id per role and a checkpoint per switch, and recovers, from the
+  checkpoint and one segment's seq words. It never judges liveness: a `no_std` crate has no
+  processes to ask about, so the id is the app's, and `take_over_*` is the app vouching the
+  holder is gone. A supervisor that restarts consumers is where that judgment lives.
+- The checkpoint is written on the switch path, never per message, which is what keeps the
+  message path as it was: the position within a segment is left to the seq words, and a
+  takeover scans them once.
+
+#### The pool half
+
+A crashed process also leaves buffers it allocated and never sent, or received and never freed.
+The ring's recovery does not reach them, since the pool knows no holders. What does is the same
+pattern: an owner word in the in-buffer header, beside the length and the count that header
+already owes ([Message header shape](#message-header-shape)), and a sweeper that returns the
+buffers of a holder the app declares dead. It follows shared allocation, since a pool with one
+allocator has one owner to sweep for, and it waits on the header's layout.
 
 ### Overflow FIFO (future)
 
@@ -2563,6 +2791,84 @@ future in-buffer header, and its layout against the
 embedded next-link, the link is load-bearing for three
 states (free-stack, pending FIFO, future lists), so they
 must be laid out together when that header lands.
+
+- Two consumers of the header named on 2026-09-25, so its
+  fields are now known even though its layout is not: a
+  **length**, since a message that crosses a wire must say how
+  many bytes it is ([Naming and transport](#naming-and-transport)),
+  and a **count**, the readers still holding a buffer that
+  several consumers share, freed by the last ([MPMC: shared
+  and copied](#mpmc-shared-and-copied)). The type-tag stays
+  the payload's first word, by the sender's convention, so the
+  header holds what the sender's type cannot: length, count,
+  and the next-link.
+
+#### MPMC: shared and copied
+
+Off the table on 2026-09-25, and coming back, so its two
+variants are named now, since they are two mechanisms and
+only one is a ring's:
+
+- **Shared**: one buffer, N consumers. A descriptor delivered
+  to each, the buffer freed by the last reader, which is the
+  count in the in-buffer header ([Message header
+  shape](#message-header-shape)). The ring changes little,
+  and the pool's buffer gains a header.
+- **Copied**: N buffers, one per consumer. Something reads
+  the message once and writes N copies into N inboxes. That
+  is not a ring at all, it is a bridge, the same component a
+  network transport needs, so the copied variant arrives with
+  the transport work rather than with a ring.
+
+#### Naming and transport
+
+The design is meant to work over a LAN or the Internet as well
+as shared memory, off the table on 2026-09-25 and expected to
+be the next large change, so the shapes settled now are the
+ones a transport would keep. Performance over a wire is a
+different order, and finding a ring and taking a role must
+work the same.
+
+- **The inbox model is the socket model**: a ring belongs to
+  the process that reads it, which creates it in a region it
+  owns and lives as long as its inbox does, and every producer
+  joins it. Over a wire that is a listener and its connections,
+  so the ownership story does not change, only the transport.
+- **Claims are the verb on both**: `claim_producer` over
+  shared memory is a CAS on a word in the ring's control block,
+  and over a wire it is a request the ring's owner grants or
+  refuses, with `RoleTaken` the same answer. A claim ends by
+  `release` or a takeover, never by a destructor, and over a
+  wire a dropped connection is the owner's evidence for the
+  takeover it makes.
+- **A ring is found by name, not by address.** In shared
+  memory a ring's address is `(region, first_segment)`, over a
+  wire it is `(host, port, ring id)`. An app asks for a name
+  through one `find` and gets an endpoint, so the resolver is
+  the only thing a transport replaces. The setup-plane
+  question above becomes "a name resolves to a transport and
+  an address", and the first inter-application program
+  resolves its name in one function even while that function
+  is two lines.
+- **Zero-copy ends at the wire.** Descriptors never cross
+  hosts, a bridge copies payloads, so a message must be
+  self-describing: the type-tag it has and the length the
+  header gains. `zerocopy` `repr(C)` messages are already
+  wire-shaped bytes, and endianness is the one open decision,
+  native today and fixed at the bridge when hosts differ.
+- **Pools stay local by design**: a pool is a region's
+  memory, so it never spans hosts, "any pool from anywhere"
+  means anywhere in the shared-memory domain, and a bridge is
+  a process with a pool on each side. The network's unit is
+  the message copy, never the buffer.
+- **Endpoints as a trait**: the ring test over every ring
+  drives seven rings through one `DescTx` / `DescRx` pair, and
+  the `Message` trait idea carries a transport seam. An app
+  written against a producer / consumer trait with the
+  wait-policy closure is one a socket-backed endpoint can
+  implement, "the policy gave up" meaning the same thing, so
+  the inter-application program is where that trait first
+  earns its place.
 
 ## Measurement placements: the base cpu and its partners
 

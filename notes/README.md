@@ -14,8 +14,9 @@ Project design docs:
   zero-copy ring buffer, its MPSC sibling, the seam-word
   SPSC v1, the in-slot seq SPSC v2, the ring of segments
   SPSC v3, the equality-seq MPSC v1, the ring of
-  segments MPSC v2, and the attachable SPSC v4 with their
-  measurements at four depths,
+  segments MPSC v2, and the attachable SPSC v4, whose roles
+  survive their holders, with their measurements at four
+  depths, the holders-and-recovery design,
   the pool-message sweep against cordyceps's intrusive MPSC, and
   the multi-stack pool with the type-tag a receiver dispatches
   on (terminology, requirements, layout, API, validation), kept
@@ -24,7 +25,9 @@ Project design docs:
   v2 from a pool to two threads, sizing, init and split,
   sending, receiving, wait policies, the segment lifecycle,
   the counters, limits, and errors, with two complete
-  programs in `examples/`.
+  programs in `examples/`, and joining SPSC v4 from another
+  process: claiming a role, handing it over, and replacing a
+  dead holder.
 - [../tp_matrix/README.md](../tp_matrix/README.md): the
   measurement tools, `tp-cell`, `tp-matrix`, the streaming
   `tp-stream`, and the pool-message sweep `tp-pool`, and what
