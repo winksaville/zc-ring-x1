@@ -51,3 +51,96 @@ fn one_message_crosses_between_processes() {
         println!("round {round:2}: {} | {received}", sent.trim_end());
     }
 }
+
+/// Spawn the app with `args`, its stdout piped.
+fn spawn(args: &[&str]) -> std::process::Child {
+    Command::new(app())
+        .args(args)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// Wait for a child and return its stdout, asserting it succeeded.
+fn finish(child: std::process::Child, what: &str) -> String {
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{what}: {out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// Spawn an MPSC consumer and wait for its `ready` line, returning
+/// the child and the rest of its output to come.
+fn mpsc_consumer(how: &str, messages: u64) -> std::process::Child {
+    let mut child = spawn(&["mpsc-consumer", how, &messages.to_string()]);
+    let mut ready = String::new();
+    BufReader::new(child.stdout.as_mut().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready.trim_end(), "ready", "{how} consumer");
+    child
+}
+
+/// Each producer's first and last number from a consumer's output.
+fn ranges(out: &str) -> std::collections::BTreeMap<u64, (u64, u64)> {
+    out.lines()
+        .filter(|l| l.starts_with("received producer="))
+        .map(|l| {
+            let field = |name: &str| -> u64 {
+                l.split_whitespace()
+                    .find_map(|w| w.strip_prefix(name))
+                    .unwrap()
+                    .parse()
+                    .unwrap()
+            };
+            (field("producer="), (field("first="), field("last=")))
+        })
+        .collect()
+}
+
+#[test]
+fn mpsc_producers_and_consumers_come_and_go_between_processes() {
+    const EACH: u64 = 20_000;
+    // A consumer makes the ring, and a release while it holds the
+    // consumer role is refused.
+    let first = mpsc_consumer("new", EACH);
+    let refused = Command::new(app()).arg("mpsc-release").output().unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("RingInUse"));
+
+    // Two producer processes at once, and the first consumer reads
+    // half of what they send, releases, and exits, while they wait
+    // on the full ring for the next.
+    let p0 = spawn(&["mpsc-producer", "0", &EACH.to_string()]);
+    let p1 = spawn(&["mpsc-producer", "1", &EACH.to_string()]);
+    let first = finish(first, "first consumer");
+    let second = mpsc_consumer("join", EACH);
+    finish(p0, "producer 0");
+    finish(p1, "producer 1");
+    let second = finish(second, "second consumer");
+
+    // The second consumer continued each producer's stream exactly
+    // where the first stopped, and together they read everything.
+    let (a, b) = (ranges(&first), ranges(&second));
+    for p in 0..2u64 {
+        let (a_first, a_last) = a.get(&p).copied().unwrap_or((0, u64::MAX));
+        let (b_first, b_last) = b[&p];
+        assert_eq!(a_first, 0, "producer {p}");
+        assert_eq!(b_first, a_last.wrapping_add(1), "producer {p}");
+        assert_eq!(b_last, EACH - 1, "producer {p}");
+    }
+
+    // A producer that comes after the others have gone, to a third
+    // consumer, and then the ring, no role held, is released, and
+    // a producer can no longer join it.
+    let third = mpsc_consumer("join", 100);
+    finish(spawn(&["mpsc-producer", "2", "100"]), "producer 2");
+    let third = finish(third, "third consumer");
+    assert_eq!(ranges(&third)[&2], (0, 99));
+    finish(spawn(&["mpsc-release"]), "release");
+    let late = Command::new(app())
+        .args(["mpsc-producer", "3", "1"])
+        .output()
+        .unwrap();
+    assert!(!late.status.success());
+    assert!(String::from_utf8_lossy(&late.stderr).contains("BadMagic"));
+}

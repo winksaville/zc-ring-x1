@@ -74,7 +74,7 @@ no side can sleep until the other acts.
 - [feat: mpsc v3 ring release][26] (done)
 - [feat: mpsc v3 single and multi segment paths][27] (done)
 - [feat: mpsc v3 wait and wake][28] (done)
-- [feat: mpsc v3 inter-process test][29]
+- [feat: mpsc v3 inter-process test][29] (done)
 - [perf: mpsc v3 in the measurement tools][30]
 - [docs: mpsc v3 in the design note and guide][31]
 - [feat: attachable MPSC v3 closing][32]
@@ -225,6 +225,21 @@ implementation on Linux.
 ##### feat: mpsc v3 inter-process test
 
 `zcr-test-ipm` gains an MPSC mode, two producer processes into one consumer process.
+
+- Three subcommands over an `mpsc::v3` ring of `Multi` segments sleeping on `Futex<10>`, in its
+  own region file, `/dev/shm/zcr-test-ipm-mpsc`, so the SPSC round and this one never share a
+  file: `mpsc-consumer new|join <messages>`, `mpsc-producer <id> <count>`, and `mpsc-release`.
+- Each message carries its producer, its number in that producer's stream, a value, and a checksum
+  over the three, and the consumer checks every checksum and every producer's order, and prints
+  each producer's first and last number, so a test can check a second consumer continued where the
+  first stopped.
+- `tests/ipm.rs` runs the acceptance check's cross-process half in one test: a release refused
+  while the consumer holds its role, two producer processes of 20,000 messages each, the first
+  consumer reading half and releasing while they wait on the full ring, a second consumer process
+  continuing each stream exactly, a third producer after the others have gone, the ring released
+  with no role held, and a late producer refused with `BadMagic`. Ten runs clean.
+- By hand, a producer with no consumer to read waits out its 10 s deadline on a full ring and
+  exits 1, the timeout doing what a dead peer needs.
 
 ##### perf: mpsc v3 in the measurement tools
 
