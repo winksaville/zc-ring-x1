@@ -67,7 +67,7 @@ no side can sleep until the other acts.
 #### Ladder
 
 - [feat: attachable MPSC v3 opening][21] (done)
-- [docs: mpsc v3 design and restart domains][22]
+- [docs: mpsc v3 design and restart domains][22] (done)
 - [feat: mpsc v3 as a copy of v2][23]
 - [feat: mpsc v3 control block and attach][24]
 - [feat: mpsc v3 claims word and roles][25]
@@ -114,6 +114,21 @@ Todo entry into this block, bump the version-of-record, and rename to the dev na
 
 The design note gains an `## MPSC v3` section: the initial design this cycle builds and the
 long-term possibilities, restart domains and what crossing one costs.
+
+- The design fixed what the plan left open, each the agent's call under the waiver:
+  - Seven header lines per segment: v2's seal, claim, and in-use lines, v4's info line and table,
+    and a claims line holding the roles word, the consumer's checkpoint, and the producers' wait
+    words.
+  - The consumer checkpoints at `release` only, every segment's resume position included, since
+    without a takeover nothing reads it between.
+  - Waiting keeps the policy closures: `send_wait` and `reserve_slot_wait` sleep between attempts
+    and call the same policy after each wake, so a caller bounds a wait as it bounds a spin.
+  - The consumer sleeps on the claim word, bit 31 its waiting flag, so a producer learns of it from
+    the claim CAS it already makes. Producers sleep on a sequence word, and the consumer checks
+    their count behind a fence every half segment of releases and when it first finds the ring
+    empty, not at every release, where the fence would cost every message.
+  - `Futex` goes through `libc`, already the package's Linux dependency.
+- The design note's Holders and recovery records the unwind guard's decision.
 
 ##### feat: mpsc v3 as a copy of v2
 

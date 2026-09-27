@@ -2060,6 +2060,130 @@ The two rings differ in three mechanics, none of which changes the lifecycle abo
 | When the segment is given back | at the release of the MOVED message, one poll earlier | at the reserve after the last release, when the consumer reads the seal |
 | The free set | two words, the producer's taken bits and the consumer's given bits, free where they agree, no CAS | one in-use word, `fetch_or` to take and a clear to give back, since the parity trick is unsound for several producers |
 
+## MPSC v3: attachable segments with counted roles
+
+The fourth MPSC protocol, `mpsc::v3`, a sibling of v0 through v2 built in the cycle `feat:
+attachable MPSC v3`: v2's claim and seq protocol, unchanged as a protocol, over a ring that
+describes itself in the region, as [SPSC v4](#spsc-v4-attachable-segments) does for SPSC v3. The
+MPSC rings were in-process only, `split` handing out the endpoints, so no second process could join
+one, producers could not come and go, and a full or empty ring could only be polled. v3 is the
+multi-producer ring a process can join, with a simpler role model than v4's, chosen after [What
+recovery does not guarantee](#spsc-v4-attachable-segments) found v4's takeover uncertain: a holder
+that dies is recovered by a restart, not a takeover.
+
+### MPSC v3 design
+
+The design the cycle builds, provisional until its measurements and closing.
+
+- The control block: every segment opens with seven header lines, so every segment's slots start
+  at one offset.
+  - Line 0, the info line: magic (`"ZCM3"`), layout version, `slot_size`, `seg_capacity`,
+    `seg_count`, the segment's own number, the mode, the most producers, and the consumer's resume
+    position in this segment, written by the consumer's `release`.
+  - Line 1, the seal, v2's, alone as v2 has it.
+  - Line 2, segment 0's claim word, the contended line, alone.
+  - Line 3, segment 0's in-use word and switch count, v2's.
+  - Line 4, segment 0's claims line: the roles word, the consumer's checkpoint, segment and
+    position, and the producers' wait words.
+  - Lines 5 and 6, segment 0's table: the pool buffer index of segment `i` at entry `i`,
+    `u32::MAX` past `seg_count`, v4's table.
+  - `init` stores the magic last, with Release, and `attach` validates as v4's does, every table
+    entry against the pool and every segment's own header against the block, the mode included.
+- The roles word: bit 31 closed, bit 30 the consumer held, and the low 16 bits the count of
+  producers held. The most producers is set at `init`, `u16::MAX` by default.
+  - `claim_consumer()` CASes the consumer bit on, `claim_producer()` the count up by one while it
+    is under the most, and both fail on a closed ring. Each is one CAS on one word, so no claim can
+    land in a ring being released.
+  - No holder ids: without a takeover nothing replaces a live holder, and `release(self)` consumes
+    the endpoint, so no stale holder can release a role it no longer holds.
+  - A producer keeps no state of its own: each send claims its slot by CAS on the shared claim
+    word, as v2's does. So a producer's claim is only a count, and producers come and go freely.
+  - The consumer's state is its segment, its position, and its resume position per segment.
+    `release` writes them, and a claim loads them, so the next consumer continues exactly where
+    the last one stopped. A ring never consumed has them all at zero, which is where a new ring
+    starts, so every claim loads.
+  - Neither endpoint has a `Drop`, by [Destructors never touch shared
+    memory](#destructors-never-touch-shared-memory): a dropped endpoint leaves its role held.
+  - The producer is not `Clone`. Each producer is a counted claim, and one handle may still be
+    shared by reference, `send_with` taking `&self`.
+- The ring's release: `release_ring(self, &pool)` CASes the roles word from no role held to
+  closed, else `Err(RingInUse)`. It then clears every segment's magic, so a later `attach` is
+  `Err(BadMagic)`, and frees the segments to the pool. Anyone holding the ring may call it, and
+  when is the creator's call. Any process may free to a pool ([Pool topology and
+  phasing](#pool-topology-and-phasing)), so it needs no shared allocation.
+- Two hot paths chosen at compile time: the ring and its endpoints take a mode type, `Single` or
+  `Multi`.
+  - `Single`: one segment. A full segment goes straight to the policy, and the consumer never
+    loads a seal, so the ring is v1's protocol in v3's layout.
+  - `Multi`: v2's switching, up to 32 segments.
+  - The mode is in the control block, and `attach` of the other mode is an error, so a process
+    cannot join a ring with the wrong code.
+- Waiting: a full producer or an empty consumer can sleep until the other side acts. Error and
+  spin stay the `_with` policies they are, and waiting is `send_wait` and `reserve_slot_wait`,
+  which sleep between attempts and call the same policy after each wake.
+  - The sleep and the wake are a trait the crate calls, `Wake`, with `NoWake`, which spins and
+    wakes nothing, and `Futex` on Linux, whose sleep carries a timeout, since a peer can die while
+    another sleeps. The crate stays `no_std`, and the futex is a syscall through `libc`.
+  - The consumer sleeps on the claim word itself, bit 31 of which is a waiting flag. It sets the
+    flag with a `fetch_or` and sleeps only if the word, flag aside, still names its own segment and
+    position, so nothing has been claimed past what it read. A producer's claim CAS returns the
+    word with the flag, so a producer learns the consumer waits at no cost, and wakes it after its
+    commit. The consumer clears the flag when it wakes.
+  - A producer that finds the ring full counts itself into the producers' waiting word, looks
+    again, and sleeps on a wake sequence word. The consumer checks the waiting count behind a
+    SeqCst fence at every half segment of releases and when it first finds the ring empty, and
+    bumps the sequence and wakes them all. So a sleeping producer is woken within half a segment
+    of releases, not at the first, a fence paid every half segment rather than every message.
+  - Every process attached to one ring uses the same `Wake`. A mismatch is not detected, and costs
+    only latency, since the futex sleep times out.
+- No unwind guard: v2's `TombstoneOnUnwind` does not carry over. A panic inside the fill closure
+  leaves its slot claimed and never committed, the same as a producer killed there, and both are
+  recovered by a restart. v0 through v2 keep theirs, in-process baselines left as built.
+- What a dead holder costs, the accepted price:
+  - A dead consumer leaves its bit set, so the ring cannot be released and nothing reads it. The
+    creator's set restarts, and the producers, whose waits time out, find the ring gone and join
+    the replacement's.
+  - A dead producer leaves its count, so the ring cannot be released. One that died between claim
+    and commit leaves its slot claimed, the consumer waits there, and the ring jams, so the
+    consumer's set restarts too.
+
+### MPSC v3 long-term possibilities
+
+Where the restart contract leads, recorded 2026-09-27 as possibilities, none of them built.
+
+- Restart domains: a robust system is distributed and redundant, and each unit that restarts as a
+  whole is a restart domain. The granularity varies, each restartable, each possibly redundant:
+  - a defined set of actors, with a known set of pools and rings, restarted together
+  - a set on one thread
+  - a set of threads
+  - a process
+  - a set of processes
+  - a computer
+  - a set of computers
+- A ring inside one domain costs nothing on a restart: it is recreated with the domain.
+- A ring crossing a domain boundary couples the two. A producer that dies mid-send jams the
+  consumer's ring, so the producer's failure restarts the consumer's domain, and two domains
+  joined by such a ring are one for failure. Containment would take a `Contained` ring: a consumer
+  that has waited past a timeout on a claimed, uncommitted position CASes it to a tombstone and
+  moves on, and a producer's commit becomes a CAS that fails if its slot was tombstoned, so a slow
+  producer learns it lost rather than corrupting the ring. The cost is a CAS in place of a store
+  per commit.
+- A pool per domain: a pool shared across domains leaks what a dead holder held, the Todo `Pool
+  buffers survive their holders`, where a pool that restarts with its domain leaks nothing. So
+  zero-copy is within a domain, and a message crossing a boundary is copied into a slot or into a
+  buffer of the receiver's pool.
+- Incarnations: after a restart the domain's rings are new, and a peer still pointing at an old
+  one must notice and look again. An epoch in the control block, the closed state, and the waits'
+  timeouts let a peer see a dead incarnation, and naming, the Todo `Find a ring by name`, resolves
+  a name to the current one.
+- One machine: the crate reaches as far as shared memory, threads and processes on one computer.
+  A computer or a set of them is the same model over a transport, a bridge actor that drains a
+  ring and forwards, the ring on each end the crate's.
+- Delivery: a restart loses what was in flight, and redundant receivers or retries duplicate it,
+  so exactly-once is the application protocol's, sender sequence numbers or idempotent handling,
+  above the crate. The crate states at-most-once and at-least-once where they hold and promises
+  no more.
+
 ## Generic Queue (idea)
 
 SPSC v3 and MPSC v2 share their setup, `init(pool, slot_size, seg_capacity, seg_count)` and
@@ -2552,15 +2676,16 @@ Shared state changes only through protocol operations, never in a `Drop`.
   ring that had run, and hung. They now have none.
 - So teardown and handoff are calls, `release`, and recovery is a call, a takeover, each one
   deliberate. The rule holds for the next attachable ring, an MPSC, from its first design.
-- One kind of destructor breaks it, and whether it stays is open: the MPSC rings' producers,
+- One kind of destructor breaks it, in the in-process rings only: the MPSC rings' producers,
   v0 through v2, arm `TombstoneOnUnwind` while the fill closure runs, a `Drop` that publishes a
   tombstoned commit into the claimed slot's seq word if a panic unwinds through `send_with`, so
   the consumer is not left waiting on a slot no one will commit. It runs only on the unwind
   path, in a process that survives the panic, and finishes a protocol step rather than undoing
   one. A death it cannot see, an abort or a kill, leaves that slot claimed and the ring stuck,
-  which is the MPSC's own takeover question. Found on 2026-09-26 writing this rule. Narrowing
-  the rule to allow unwind-only guards, or removing the guard, is decided in the attachable
-  MPSC cycle, the Todo entry `### Attachable MPSC with claimed roles`.
+  which is the MPSC's own takeover question. Found on 2026-09-26 writing this rule, and decided
+  in `feat: attachable MPSC v3` on 2026-09-27: the attachable ring has no guard, a panic
+  mid-send being a failure recovered by a restart as a kill is, and v0 through v2 keep theirs,
+  in-process baselines left as built ([MPSC v3 design](#mpsc-v3-design)).
 
 #### The inbox model
 
