@@ -8,7 +8,8 @@
 use clap::Parser;
 
 use tp_matrix::{
-    FLAVORS, Flavor, PLACEMENT_MEANING, StreamResult, XFILLS_MEANING, print_legend, run_stream,
+    FLAVORS, Flavor, MAX_PRODUCERS, PLACEMENT_MEANING, StreamResult, XFILLS_MEANING, print_legend,
+    run_stream,
 };
 use tp_runner::topo::{BaseCpuArg, Placement, discover_placements};
 use tp_runner::{Cfg, CommonArgs};
@@ -38,6 +39,22 @@ struct Cli {
 
     #[command(flatten)]
     base: BaseCpuArg,
+
+    /// Producer threads per MPSC cell, 1 to 64
+    ///
+    /// Above 1, only the MPSC flavors run, the SPSC ones skipped,
+    /// and the producers contend for the claim word: the first
+    /// is pinned where the placement pins the producer, the rest
+    /// are unpinned, since a placement names two cpus, and the
+    /// consumer checks each producer's order.
+    #[arg(
+        short = 'p',
+        long,
+        value_name = "N",
+        default_value_t = 1,
+        value_parser = clap::value_parser!(u32).range(1..=MAX_PRODUCERS as i64)
+    )]
+    producers: u32,
 
     /// Print a legend under the table explaining every column
     #[arg(short = 'v', long)]
@@ -114,10 +131,19 @@ fn main() {
     println!("{TOP_ABOUT}");
     let cfg: Cfg = cli.common.to_cfg(None);
     let placements = discover_placements(cli.base.base_cpu);
+    let flavors: Vec<Flavor> = FLAVORS
+        .into_iter()
+        .filter(|f| cli.producers == 1 || f.is_mpsc())
+        .collect();
     println!(
-        "{} cells, {:.1}s each, spsc-v3, spsc-v4, mpsc-v2, and mpsc-v3 with {} segments{}",
-        placements.len() * FLAVORS.len() * cfg.depths.len(),
+        "{} cells, {:.1}s each, {}, spsc-v3, spsc-v4, mpsc-v2, and mpsc-v3 with {} segments{}",
+        placements.len() * flavors.len() * cfg.depths.len(),
         cfg.duration.as_secs_f64(),
+        if cli.producers == 1 {
+            "1 producer".to_string()
+        } else {
+            format!("{} producers, the MPSC flavors only", cli.producers)
+        },
         cfg.segments,
         if cli.verbose {
             ""
@@ -128,7 +154,7 @@ fn main() {
 
     let mut cells: Vec<(&Placement, Flavor, u32, StreamResult)> = Vec::new();
     for placement in &placements {
-        for flavor in FLAVORS {
+        for &flavor in &flavors {
             for &depth in &cfg.depths {
                 if depth < flavor.min_depth() {
                     eprintln!(
@@ -144,7 +170,14 @@ fn main() {
                     placement.label,
                     flavor.as_str()
                 );
-                let res = run_stream(flavor, cfg.duration, placement.pin, depth, cfg.segments);
+                let res = run_stream(
+                    flavor,
+                    cfg.duration,
+                    placement.pin,
+                    depth,
+                    cfg.segments,
+                    cli.producers,
+                );
                 cells.push((placement, flavor, depth, res));
             }
         }
@@ -184,7 +217,12 @@ fn main() {
     print_legend(
         width,
         &[
-            ("placement", PLACEMENT_MEANING),
+            (
+                "placement",
+                &format!(
+                    "{PLACEMENT_MEANING}. With several producers, the first sits where the placement pins the producer and the rest are unpinned"
+                ),
+            ),
             ("flavor", "the ring the producer streams over"),
             (
                 "depth",
@@ -192,7 +230,7 @@ fn main() {
             ),
             (
                 "ns/msg",
-                "elapsed ns over messages moved, the producer streaming as fast as the ring admits for the duration and the consumer draining and checking order",
+                "elapsed ns over messages moved, the producers streaming as fast as the ring admits for the duration and the consumer draining and checking each producer's order",
             ),
             ("msgs", "messages moved in the duration, in millions"),
             ("xfills/msg", &format!("{XFILLS_MEANING}, per message")),

@@ -2151,7 +2151,7 @@ The design as the cycle built it, with its measurements in [MPSC v3 measured](#m
 
 ### MPSC v3 measured
 
-`tp-stream -d 1 --depth 1,8,64` and `tp-matrix -d 1 --depth 1,8`, 3900X, 2026-09-27,
+The first measurements, `tp-stream -d 1 --depth 1,8,64` and `tp-matrix -d 1 --depth 1,8`, 3900X, 2026-09-27,
 0.18.5-9, two segments, each run twice, after the rung `perf: mpsc v3 in the measurement tools`
 moved the consumer's first-empty wake check to its sleep. Three flavors: `mpsc-v3` (`Multi`,
 `NoWake`), `mpsc-v3-single`, and `mpsc-v3-futex` (`Multi` over `Futex<10>`, whose checks run
@@ -2249,10 +2249,61 @@ though nothing sleeps). The unpinned rows and v0 and v1 are in the runs, left ou
   futex flavor 10 to 14 ns a receive on the SMT pair. Draining a full segment crosses a
   half-segment check, so the first-empty check was redundant on the polling path and moved to
   just before the consumer sleeps.
+- The demo, `zc-ring-x1-demo`, 0.18.5-11, two runs, from the rung `perf: mpsc v3 in the demo and
+  multi-producer`, v3 beside v2 in its one-message lines, depth sweep, and segment stress, the
+  segmented rings at one segment in the lines and the sweep:
+  - Single-threaded on core 11, v3 in both modes moves a message in 13.3 to 13.4 ns against v2's
+    13.8 to 13.9, at every depth.
+  - Two threads at depth 64, ns/msg, run 1 then run 2, v3, `Single`, and v2 in that order:
+    - on the CCX pair, 14.1 and 14.5, 7.9 and 9.7, and 14.7 and 15.5
+    - across CCXs, 16.6 and 15.4, 14.6 and 15.4, and 16.7 and 17.6
+    - on the SMT pair, 12.1 and 12.1, 10.6 and 10.7, and 13.9 and 13.9
+  - The demo's own loop shows no gap between v3 and v2, where tp-stream's shows v3 behind on the
+    CCX pair, a sign the gap is in the harness's layout rather than the ring.
+  - The segment stress, v3 at four segments of 64 beside v2: the burst 13.7 ns/msg against 14.6
+    to 14.7, the lagging consumer's switches the same, 15,624, and the cost of one switch 15.2 ns
+    single-threaded against v2's 15.6, and 263.6 to 263.8 ns streaming across CCXs against 275.6
+    to 288.2. The control block moved nothing on the switch path.
+  - Two producers and one consumer, unpinned, ns/msg: v1 74.4 and 90.9, v2 48.3 and 175.3, v3
+    59.1 and 177.4, `Single` 60.5 and 166.9. The runs differ by three times, the scheduler's
+    placement of three spinning threads deciding it, so the line shows the shape runs and little
+    of its cost.
+- Depth 1024 and past, tp-stream, one producer, run 1 then run 2, ns/msg:
+
+  | placement | mpsc-v2 | mpsc-v3 | mpsc-v3-single | mpsc-v3-futex |
+  |---|---:|---:|---:|---:|
+  | 11,10 CCX | 12.5, 12.3 | 15.0, 14.8 | 10.5, 10.3 | 15.1, 15.0 |
+  | 11,8 x-CCX | 12.9, 11.5 | 39.1, 39.2 | 8.9, 8.6 | 107.5, 107.4 |
+  | 11,23 SMT | 11.8, 11.8 | 12.4, 12.5 | 9.4, 9.4 | 15.1, 15.1 |
+
+  - Across CCXs `Multi` is three times v2 at depth 1024, with 0.82 cross-core fills a message
+    against v2's 0.11, and the futex flavor eight times. A probe the same day: at one segment,
+    over a pool of one buffer as `Single`'s is, `Multi` still takes 38.0 ns where `Single` takes
+    8.7, so the gap follows `Multi`'s code, not the pool's layout, and it grows with depth, 19.6
+    at 512 and 40.5 to 41.4 at 1024 and 2048. A header reordered so the seal and the claim word
+    never share a 128-byte prefetch pair left it at 40.5 and was reverted. Unexplained, and the
+    first thing the Todo `MPSC v3 message path gaps` looks at.
+- Several producers, tp-stream's new `--producers N`, depths 8, 64, and 1024, two runs each: the
+  first producer pinned where the placement pins the producer, the rest unpinned.
+  - Unpinned, every producer free, ns/msg at depth 64, run 1 then run 2: two producers, v1 52.6
+    and 52.2, v2 48.1 and 47.3, v3 52.0 and 52.6, `Single` 48.1 and 47.3, the futex flavor 48.8 and
+    50.9. Four producers, v1 202.4 and 202.3, v2 163.0 and 157.4, v3 148.7 and 152.8, `Single`
+    154.4 and 165.3, the futex flavor 137.1 and 138.4.
+  - Under contention the claim word decides the cost: v1's shared index is worst at four
+    producers, v2 and v3 within a tenth of each other, and at four producers v3's cross-core fills
+    a message are fewer than v2's at every depth, 6.3 against 7.2 at depth 64. The futex flavor is
+    the fastest at four producers unpinned at every depth, 137 to 150 ns against v3's 149 to 161,
+    with the fewest fills, which its checks do not explain.
+  - The pinned placements run 150 to 330 ns/msg at two and four producers in most cells, 58 to
+    100 in a few, two to four times the unpinned rows, and swing by up to three times between
+    runs: the unpinned producers share cpus
+    with the two pinned threads, both spinning, so those rows measure the scheduler. A placement
+    that pins every producer is the Todo `Pinned multi-producer placements`.
 - Verdict (2026-09-27): v3 does what it is for, an MPSC ring processes join and leave, and
-  `Single` is the MPSC ring to use where one segment holds the traffic. `Multi`'s gap to v2 and
-  the futex flavor's SMT cost are the Todo `MPSC v3 message path gaps`. The default `MpscRing`
-  stays v1.
+  `Single` is the MPSC ring to use where one segment holds the traffic. `Multi`'s gap to v2 in
+  tp-stream, three times across CCXs at depth 1024, and the futex flavor's cost there and on the
+  SMT pair are the Todo `MPSC v3 message path gaps`, and until it runs `Multi` is for rings that
+  need more than one segment. The default `MpscRing` stays v1.
 
 ### MPSC v3 long-term possibilities
 

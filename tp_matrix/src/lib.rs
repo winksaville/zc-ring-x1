@@ -171,6 +171,20 @@ impl Flavor {
         }
     }
 
+    /// Whether the flavor is an MPSC ring, the flavors a stream
+    /// with several producers runs.
+    pub fn is_mpsc(self) -> bool {
+        matches!(
+            self,
+            Flavor::MpscV0
+                | Flavor::MpscV1
+                | Flavor::MpscV2
+                | Flavor::MpscV3
+                | Flavor::MpscV3Single
+                | Flavor::MpscV3Futex
+        )
+    }
+
     /// The smallest depth the flavor's protocol runs at. The
     /// MPSC v0 ring's committed and released seq values coincide
     /// at capacity 1 and its `init` rejects it, so its cells
@@ -877,13 +891,28 @@ pub(crate) const STREAM_CHECK_EVERY: u64 = 4096;
 ///   counter's order.
 /// - The elapsed time ends when the consumer has seen the stop
 ///   sentinel, so the last message's drain is inside it.
+/// - `producers` streams from that many producer threads into the
+///   one consumer, an MPSC flavor only: the first pinned to
+///   `pin.0` and the others unpinned, since a placement names two
+///   cpus, and the consumer checks each producer's order.
+///
+/// # Panics
+///
+/// - `producers` is not 1 for an SPSC flavor, or is 0 or over
+///   [`MAX_PRODUCERS`].
 pub fn run_stream(
     flavor: Flavor,
     dur: Duration,
     pin: Option<(usize, usize)>,
     depth: u32,
     segments: u32,
+    producers: u32,
 ) -> StreamResult {
+    assert!(
+        (1..=MAX_PRODUCERS).contains(&producers) && (producers == 1 || flavor.is_mpsc()),
+        "{} cannot stream from {producers} producers",
+        flavor.as_str()
+    );
     unpin_current();
     #[cfg(target_os = "linux")]
     let fills = Fills::open();
@@ -893,12 +922,12 @@ pub fn run_stream(
         Flavor::SpscV2 => stream_spsc_v2(dur, pin, depth, segments),
         Flavor::SpscV3 => stream_spsc_v3(dur, pin, depth, segments),
         Flavor::SpscV4 => stream_spsc_v4(dur, pin, depth, segments),
-        Flavor::MpscV0 => stream_mpsc_v0(dur, pin, depth, segments),
-        Flavor::MpscV1 => stream_mpsc_v1(dur, pin, depth, segments),
-        Flavor::MpscV2 => stream_mpsc_v2(dur, pin, depth, segments),
-        Flavor::MpscV3 => stream_mpsc_v3(dur, pin, depth, segments),
-        Flavor::MpscV3Single => stream_mpsc_v3_single(dur, pin, depth, segments),
-        Flavor::MpscV3Futex => stream_mpsc_v3_futex(dur, pin, depth, segments),
+        Flavor::MpscV0 => stream_mpsc_v0(dur, pin, depth, segments, producers),
+        Flavor::MpscV1 => stream_mpsc_v1(dur, pin, depth, segments, producers),
+        Flavor::MpscV2 => stream_mpsc_v2(dur, pin, depth, segments, producers),
+        Flavor::MpscV3 => stream_mpsc_v3(dur, pin, depth, segments, producers),
+        Flavor::MpscV3Single => stream_mpsc_v3_single(dur, pin, depth, segments, producers),
+        Flavor::MpscV3Futex => stream_mpsc_v3_futex(dur, pin, depth, segments, producers),
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(Fills::finish);
@@ -910,6 +939,44 @@ pub fn run_stream(
         fills,
         switches,
     }
+}
+
+/// The most producers a stream runs, the width of the producer
+/// field in a streamed value.
+pub const MAX_PRODUCERS: u32 = 64;
+
+/// Where a streamed value carries its producer, above the
+/// producer's counter.
+const PRODUCER_SHIFT: u32 = 48;
+
+/// The consumer side of a stream from `producers` producers:
+/// drain `recv` until each has sent the stop sentinel, asserting
+/// each producer's counter order, and return the count received.
+///
+/// - One producer is [`drain_stream`], so the one-producer cells
+///   run what they ran before the producer field.
+fn drain_streams(producers: u32, mut recv: impl FnMut() -> u64) -> u64 {
+    if producers == 1 {
+        return drain_stream(recv);
+    }
+    let mut next = vec![0u64; producers as usize];
+    let (mut stops, mut total) = (0, 0u64);
+    while stops < producers {
+        let v = recv();
+        if v == STOP {
+            stops += 1;
+            continue;
+        }
+        let p = (v >> PRODUCER_SHIFT) as usize;
+        assert_eq!(
+            v & ((1 << PRODUCER_SHIFT) - 1),
+            next[p],
+            "producer {p}'s order broken"
+        );
+        next[p] += 1;
+        total += 1;
+    }
+    total
 }
 
 /// The consumer side of a streaming cell: drain `recv` until
@@ -1010,10 +1077,44 @@ spsc_stream!(
     zc_ring_x1::spsc::v4::segment_size
 );
 
+/// Bind `$n` producers of one MPSC ring as `$txs` and its
+/// consumer as `$rx`, as `mpsc_pair` binds one: v0 through v2's
+/// producer cloned, v3's roles claimed.
+macro_rules! mpsc_pair_n {
+    ($txs:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr, $n:expr,
+     v3 $mode:ty, $wake:ty) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let buf = zc_ring_x1::mpsc::v3::segment_size(slot, $depth);
+        let count: u32 = if <$mode as zc_ring_x1::mpsc::v3::Mode>::MULTI {
+            $segments
+        } else {
+            1
+        };
+        let mut $store =
+            LineBuf::new(size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * count as u64);
+        let mut $pool = zc_ring_x1::Pool::init($store.as_mut_bytes(), buf as u32, count)
+            .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
+        let ring =
+            zc_ring_x1::mpsc::v3::MpscRing::<$mode, $wake>::init(&mut $pool, slot, $depth, count)
+                .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
+        let $txs: Vec<_> = (0..$n)
+            .map(|_| ring.claim_producer().unwrap()) // OK: at most MAX_PRODUCERS, under the ring's most
+            .collect();
+        let mut $rx = ring.claim_consumer().unwrap(); // OK: a fresh ring holds no consumer
+    };
+    ($txs:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr, $n:expr,
+     $($pair:tt)+) => {
+        mpsc_pair!(tx, $rx, $store, $pool, $depth, $segments, $($pair)+);
+        let $txs: Vec<_> = (0..$n).map(|_| tx.clone()).collect();
+    };
+}
+
 /// Define an MPSC streaming cell body over the ring `$pair`
-/// builds (see `mpsc_pair`): one ring at 1p/1c, the producer
-/// `send_with` spawned on `pin.0`, the consumer on `pin.1`.
-/// Returns the messages moved and the seconds.
+/// builds (see `mpsc_pair_n`): one ring, `producers` producers
+/// `send_with`, the first spawned on `pin.0` and the rest
+/// unpinned, the consumer on `pin.1`. Each producer carries its
+/// number above its counter, and sends the stop sentinel when the
+/// duration is up. Returns the messages moved and the seconds.
 macro_rules! mpsc_stream {
     ($name:ident, $($pair:tt)+) => {
         fn $name(
@@ -1021,34 +1122,41 @@ macro_rules! mpsc_stream {
             pin: Option<(usize, usize)>,
             depth: u32,
             segments: u32,
+            producers: u32,
         ) -> (u64, f64, Option<u64>) {
-            mpsc_pair!(tx, rx, store, pool, depth, segments, $($pair)+);
+            mpsc_pair_n!(txs, rx, store, pool, depth, segments, producers, $($pair)+);
             let start = Instant::now();
             let (msgs, switches) = std::thread::scope(|s| {
-                let producer = s.spawn(move || {
-                    if let Some((p, _)) = pin {
-                        pin_to_cpu(p);
-                    }
-                    let mut counter: u64 = 0;
-                    loop {
-                        for _ in 0..STREAM_CHECK_EVERY {
-                            tx.send_with::<u64>(zc_ring_x1::policy::spin, |m| *m = counter)
+                let mut handles = Vec::new();
+                for (p, tx) in txs.into_iter().enumerate() {
+                    handles.push(s.spawn(move || {
+                        if let (0, Some((cpu, _))) = (p, pin) {
+                            pin_to_cpu(cpu);
+                        }
+                        let tag = (p as u64) << PRODUCER_SHIFT;
+                        let mut counter: u64 = 0;
+                        loop {
+                            for _ in 0..STREAM_CHECK_EVERY {
+                                tx.send_with::<u64>(zc_ring_x1::policy::spin, |m| {
+                                    *m = tag | counter
+                                })
                                 .expect("spin never gives up");
-                            counter += 1;
+                                counter += 1;
+                            }
+                            if start.elapsed() >= dur {
+                                break;
+                            }
                         }
-                        if start.elapsed() >= dur {
-                            break;
-                        }
-                    }
-                    tx.send_with::<u64>(zc_ring_x1::policy::spin, |m| *m = STOP)
-                        .expect("spin never gives up");
-                    tx.segment_switches()
-                });
+                        tx.send_with::<u64>(zc_ring_x1::policy::spin, |m| *m = STOP)
+                            .expect("spin never gives up");
+                        tx.segment_switches()
+                    }));
+                }
                 let consumer = s.spawn(move || {
                     if let Some((_, c)) = pin {
                         pin_to_cpu(c);
                     }
-                    drain_stream(|| {
+                    drain_streams(producers, || {
                         let slot = rx
                             .reserve_slot_with::<u64>(zc_ring_x1::policy::spin)
                             .expect("spin never gives up");
@@ -1058,7 +1166,12 @@ macro_rules! mpsc_stream {
                     })
                 });
                 let msgs = consumer.join().expect("consumer panicked");
-                (msgs, producer.join().expect("producer panicked"))
+                let switches: Vec<_> = handles
+                    .into_iter()
+                    .map(|h| h.join().expect("producer panicked"))
+                    .collect();
+                // The count is the ring's, so any producer's says it.
+                (msgs, switches[0])
             });
             (msgs, start.elapsed().as_secs_f64(), switches)
         }

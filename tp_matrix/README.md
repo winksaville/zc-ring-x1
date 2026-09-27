@@ -17,10 +17,12 @@ SMT siblings share one core's caches, so there xfills reads
 near 0, which is expected.
 Runs vary by **flavor**, which ring (`spsc-v0`, `spsc-v1`,
 `spsc-v2`, `spsc-v3`, `spsc-v4`, `mpsc-v0`, `mpsc-v1`,
-`mpsc-v2`, named after their module paths), and by
+`mpsc-v2`, `mpsc-v3`, named after their module paths, with
+`mpsc-v3-single` for v3's one-segment mode and `mpsc-v3-futex`
+for v3 waking with a futex), and by
 **placement**, which CPUs the two threads sit on: same L3,
 different L3, SMT siblings, or unpinned. `spsc-v3`, `spsc-v4`,
-and `mpsc-v2` are rings of segments:
+`mpsc-v2`, and `mpsc-v3` are rings of segments:
 `--segments N`, 1 to 32 and default 2, sets how many per ring,
 the depth is each segment's, and their rows add how often they
 switched segments, `switches/RT` in `tp-matrix` and
@@ -166,6 +168,13 @@ tp-stream 0.1.0 - run the streaming matrix, one markdown table out
 | 11,8 x-CCX | spsc-v1 |    64 |   38.9 |  25.7M |      0.474 |
 | 11,8 x-CCX | spsc-v2 |    64 |   13.9 |  72.1M |      0.102 |
 ```
+
+`--producers N`, 1 to 64 and default 1, streams from N
+producer threads into the one consumer, the MPSC flavors only.
+The first producer sits where the placement pins the producer
+and the rest are unpinned, so the pinned rows measure the
+scheduler as much as the ring, and the unpinned rows are the
+ones to compare. The consumer checks each producer's order.
 
 Two things the streaming number is sensitive to, found while
 building the cell and worth knowing before comparing runs:

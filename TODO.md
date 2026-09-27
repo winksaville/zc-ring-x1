@@ -77,6 +77,7 @@ no side can sleep until the other acts.
 - [feat: mpsc v3 inter-process test][29] (done)
 - [perf: mpsc v3 in the measurement tools][30] (done)
 - [docs: mpsc v3 in the design note and guide][31] (done)
+- [perf: mpsc v3 in the demo and multi-producer][33] (done)
 - [feat: attachable MPSC v3 closing][32]
 
 #### Deliberation
@@ -102,6 +103,9 @@ no side can sleep until the other acts.
   - It does not cover: the closing, Land, any push to `main`, or any write to another repo.
   - Where a question would stop the cycle, the agent takes the option that keeps the plan and
     records it in the rung's subsection, and a change of scope stops the cycle.
+- `perf: mpsc v3 in the demo and multi-producer` inserted before the closing, the user's call on
+  2026-09-27 at review: the demo's depth sweep and segment stress had no v3, and the Todo entry
+  `Multi-producer measurement` joins the rung. The user's go covers the rung's push.
 
 #### Ladder details
 
@@ -269,6 +273,30 @@ The measured results in the design note, and v3 in the user guide.
   default`, whose choice of default they bear on.
 - The user guide gains a section for v3's joining, counted roles, waiting, and release, with its
   errors in the table, and the README a section with the MPSC mode's steps by hand.
+
+##### perf: mpsc v3 in the demo and multi-producer
+
+v3 in the demo's one-message lines, depth sweep, and segment stress, and a producer count for the
+streaming tool, so the claim word is measured under several producers, the Todo entry
+`Multi-producer measurement` moved here.
+
+- The demo: `mpsc3_` and `mpsc3s_` one-message lines, v3 in both modes in the depth sweep, v3
+  `Multi` in the segment stress beside v2, `Single` having no segment to switch, and two-producer
+  lines for v2 and both v3 modes beside v1's, over a shared body.
+- tp-stream's `--producers N`, 1 to 64: above 1 the SPSC flavors are skipped, each producer tags
+  its counter with its number in the high bits, the consumer checks each producer's order, and
+  one producer runs the check it ran before. v0 through v2 clone their producer, and v3 claims N
+  roles.
+- tp-stream again at depths 1, 8, 64, and 1024, the mark v4's cycle set, which found `Multi` three
+  times v2 across CCXs at depth 1024. A probe located it in `Multi`'s code, and a header reorder
+  testing a prefetch-pair theory changed nothing and was reverted. Recorded in the Todo `MPSC v3
+  message path gaps`.
+- The pinned multi-producer rows measure the scheduler, the extra producers unpinned beside two
+  spinning threads, so a placement that pins every producer is the new Todo `Pinned
+  multi-producer placements`.
+- tp_matrix's README names the v3 flavors and `--producers`, and says the unpinned rows are the
+  ones to compare.
+- A slip: the reverted header was restored with `git checkout`, where the rule is jj.
 
 ##### feat: attachable MPSC v3 closing
 
@@ -520,11 +548,30 @@ though its message paths are v2's by construction. Its futex flavor costs about 
 on the SMT pair, more than a fence every half segment explains. The design note's [MPSC v3
 measured](notes/ring-buffer-design.md#mpsc-v3-measured) has the rows.
 
-- Look for what the code delta does not show, as the table copy was for SPSC v4: the seven header
-  lines' placement of the slots, the harness's endpoint structs sharing a line across threads,
-  and the monomorphized code's layout.
+- First, depth 1024 across CCXs: `Multi` streams at 39 ns/msg against v2's 12.9 and `Single`'s
+  8.9, the futex flavor at 107, with 0.8 cross-core fills a message. It follows `Multi`'s code at
+  one segment over a one-buffer pool, grows with depth, and is not the seal sharing a prefetch
+  pair with the claim word, a reordered header having left it as it was.
+- Look for what the code delta does not show, as the table copy was for SPSC v4: the harness's
+  endpoint structs sharing a line across threads, since the demo's own loop shows no gap where
+  tp-stream does, and the monomorphized code's layout.
 - A mark to beat: the rows in the design note, `tp-stream -d 1 --depth 1,8,64`, 3900X, 2026-09-27.
 - From `perf: mpsc v3 in the measurement tools`, in the cycle `feat: attachable MPSC v3`.
+
+### Pinned multi-producer placements
+
+tp-stream's `--producers N` pins the first producer where a placement pins the producer and leaves
+the rest unpinned, since a placement names two cpus, and the pinned rows run two to four times
+the unpinned ones and swing by up to three times between runs: the unpinned producers share cpus with the two
+pinned threads, both spinning. The design note's [MPSC v3 measured](notes/ring-buffer-design.md#mpsc-v3-measured)
+has the rows.
+
+- A placement that pins every producer: N producer cpus on the base's L3, or across L3s, or the
+  base core's SMT sibling beside it, so contention on the claim word is measured without the
+  scheduler.
+- tp-matrix's round trip has one producer by its shape. Whether a multi-producer round trip
+  means anything is part of this entry.
+- From `perf: mpsc v3 in the demo and multi-producer`, which added `--producers`.
 
 ### MPSC v2 as the default
 
@@ -541,12 +588,6 @@ every path that never needs a second segment.
   unwatched and stores the seq beside it. The one-thread loop also carries 3 ns over v1 not yet
   found. Both are the fast-path work this entry waits on, and the switch's own cost is the entry
   `Cheaper segment switches`.
-
-### Multi-producer measurement
-
-The tools run every MPSC flavor at one producer and one consumer, so a claim word contended by
-several producers is never measured. A `--producers N` flag for `tp-matrix` and `tp-stream` would
-run N pinned producers into one consumer, and v2's switch would then be measured under contention.
 
 ### Cheaper segment switches
 
@@ -740,3 +781,4 @@ _None._
 [30]: #perf-mpsc-v3-in-the-measurement-tools
 [31]: #docs-mpsc-v3-in-the-design-note-and-guide
 [32]: #feat-attachable-mpsc-v3-closing
+[33]: #perf-mpsc-v3-in-the-demo-and-multi-producer
