@@ -9,8 +9,9 @@
 //!   pool buffer index), [`MpscRing::attach`] from a pool,
 //!   [`MpscRing::first_segment`], and the roles claimed by count,
 //!   [`MpscRing::claim_producer`] and [`MpscRing::claim_consumer`].
-//!   The ring's release, the compile-time segment modes, and
-//!   waiting are the rungs after it.
+//!   [`MpscRing::release_ring`] gives a ring no role holds back to
+//!   the pool. The compile-time segment modes and waiting are the
+//!   rungs after it.
 //! - Roles: one consumer and up to the ring's most producers, each
 //!   claimed and released by one CAS on the roles word. A producer
 //!   keeps no state of its own, and the consumer checkpoints its
@@ -604,6 +605,68 @@ impl<'a> MpscRing<'a> {
         self.first_segment
     }
 
+    /// Release the ring: close it and give its segments back to
+    /// `pool`, the pool it was initialized or attached over.
+    ///
+    /// - Only when no role is held: one CAS on the roles word from
+    ///   no role held to closed, so no claim can land in the ring
+    ///   while it is released. A role held is [`Error::RingInUse`],
+    ///   and a ring already released is [`Error::RingClosed`]. On
+    ///   either the ring is unchanged, and
+    ///   [`attach`](MpscRing::attach) gives a handle back.
+    /// - Every segment's magic is cleared before its buffer is
+    ///   freed, so a later `attach` is [`Error::BadMagic`].
+    /// - Anyone holding the ring may call it, in any process, since
+    ///   any process may free to a pool. When is the creator's call.
+    /// - A `pool` over another region is [`Error::BadSegment`], with
+    ///   the ring left as it was.
+    /// - Other handles to the ring, in this process or another, must
+    ///   not be used after: a claim through one reads a closed ring
+    ///   until the pool hands its segments out again, and then
+    ///   whatever they hold.
+    pub fn release_ring(self, pool: &Pool<'a>) -> Result<(), Error> {
+        let segs = &self.segs;
+        let buf_size = pool.buf_size() as usize;
+        let same = self.first_segment < pool.buf_count()
+            && core::ptr::eq(
+                pool.bufs_ptr()
+                    .wrapping_add(self.first_segment as usize * buf_size),
+                segs.headers[0] as *mut u8,
+            );
+        if !same {
+            return Err(Error::BadSegment);
+        }
+        // AcqRel: the release sees everything every role's last
+        // release left, and a claim that loses to it sees closed.
+        if let Err(r) =
+            segs.roles()
+                .compare_exchange(0, CLOSED, Ordering::AcqRel, Ordering::Acquire)
+        {
+            return Err(if r & CLOSED != 0 {
+                Error::RingClosed
+            } else {
+                Error::RingInUse
+            });
+        }
+        let mut indices = [NO_SEGMENT; MAX_SEGMENTS as usize];
+        for (seg, idx) in indices.iter_mut().enumerate().take(segs.seg_count as usize) {
+            *idx = segs.header(0).table[seg].load(Ordering::Relaxed);
+        }
+        for seg in 0..segs.seg_count {
+            segs.header(seg).info.magic.store(0, Ordering::Release);
+        }
+        let view = pool.view();
+        for &idx in indices.iter().take(segs.seg_count as usize) {
+            // SAFETY: the table's indices were handed out by the pool
+            // at init or validated against its count at attach, each
+            // once, the ring has held them since, and the closed
+            // roles word keeps any other handle from claiming, so
+            // each buffer is freed once.
+            unsafe { view.slot_from_idx::<[u8]>(idx) }.free();
+        }
+        Ok(())
+    }
+
     /// Claim a producer role.
     ///
     /// - One CAS on the roles word counts the producer in, so any
@@ -1083,6 +1146,77 @@ mod tests {
         assert_eq!(ring.segs.roles().load(Ordering::Relaxed), 0);
         ring.segs.claims().cons_cur.store(1, Ordering::Relaxed);
         assert!(ring.claim_consumer().is_ok());
+    }
+
+    #[test]
+    fn a_ring_is_released_only_with_no_role_held() {
+        let mut r = Region::new();
+        let (base, len) = region(&mut r);
+        let first = with_init_pool(base, len, |pool| {
+            MpscRing::init(pool, 64, 4, 3).unwrap().first_segment()
+        });
+        let (b1, b2) = (attach_pool(base, len), attach_pool(base, len));
+        // SAFETY: the index came from first_segment of a ring over
+        // this pool, whose segments are still the ring's, for every
+        // attach until the release below.
+        let attach = |pool| unsafe { MpscRing::attach(pool, first) };
+
+        // A producer or the consumer held: in use, and the ring is
+        // unchanged.
+        let other = attach(&b2).unwrap();
+        let prod = other.claim_producer().unwrap();
+        assert_eq!(
+            attach(&b1).unwrap().release_ring(&b1).err(),
+            Some(Error::RingInUse)
+        );
+        send(&prod, 0, 5);
+        prod.release();
+        let mut cons = other.claim_consumer().unwrap();
+        assert_eq!(
+            attach(&b1).unwrap().release_ring(&b1).err(),
+            Some(Error::RingInUse)
+        );
+        recv(&mut cons, 0, 5);
+        cons.release();
+
+        // A pool over another region is refused.
+        let mut r2 = Region::new();
+        let (base2, len2) = region(&mut r2);
+        with_init_pool(base2, len2, |_| {});
+        let stranger = attach_pool(base2, len2);
+        assert_eq!(
+            attach(&b1).unwrap().release_ring(&stranger).err(),
+            Some(Error::BadSegment)
+        );
+
+        // No role held: released, from another handle than the one
+        // that used it, and its segments are the pool's again.
+        attach(&b1).unwrap().release_ring(&b1).unwrap();
+        assert_eq!(attach(&b1).err(), Some(Error::BadMagic));
+        assert_eq!(other.claim_producer().err(), Some(Error::RingClosed));
+        assert_eq!(other.claim_consumer().err(), Some(Error::RingClosed));
+        // SAFETY: the region is live, and this is the only handle
+        // allocating from it.
+        let mut owner = unsafe { Pool::attach(base, len) }.unwrap();
+        let all: Vec<_> = (0..BUFS).map(|_| owner.alloc_bytes().unwrap()).collect();
+        assert_eq!(owner.alloc_bytes().err(), Some(Exhausted));
+        all.into_iter().for_each(crate::BufSlot::free);
+    }
+
+    #[test]
+    fn a_released_ring_is_released_once() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::init(&mut pool, 64, 4, 2).unwrap();
+        // A second handle to the same ring, as another process may
+        // hold: its release after the first finds the ring closed.
+        let stale = MpscRing {
+            segs: ring.segs,
+            first_segment: ring.first_segment(),
+            _region: PhantomData,
+        };
+        ring.release_ring(&pool).unwrap();
+        assert_eq!(stale.release_ring(&pool).err(), Some(Error::RingClosed));
     }
 
     #[test]

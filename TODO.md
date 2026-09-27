@@ -71,7 +71,7 @@ no side can sleep until the other acts.
 - [feat: mpsc v3 as a copy of v2][23] (done)
 - [feat: mpsc v3 control block and attach][24] (done)
 - [feat: mpsc v3 claims word and roles][25] (done)
-- [feat: mpsc v3 ring release][26]
+- [feat: mpsc v3 ring release][26] (done)
 - [feat: mpsc v3 single and multi segment paths][27]
 - [feat: mpsc v3 wait and wake][28]
 - [feat: mpsc v3 inter-process test][29]
@@ -173,6 +173,16 @@ unwind guard go.
 ##### feat: mpsc v3 ring release
 
 `release_ring` closes a ring no role holds and returns its segments to the pool.
+
+- `release_ring(self, &pool)` consumes the handle, and on `RingInUse` or `RingClosed` the ring is
+  unchanged, so a caller re-attaches rather than getting the handle back, since an `Err` carrying
+  the ring would be a large error type.
+- The pool is checked to be the ring's by the address of segment 0, so a release to another
+  region's pool is `BadSegment` before anything is written.
+- The segments are freed through the pool's view, one guard minted per table entry, the way the
+  registry takes buffers back.
+- A handle kept past the release, in this process or another, reads a closed ring only until the
+  pool reuses the segments, the same contract `attach`'s safety states.
 
 ##### feat: mpsc v3 single and multi segment paths
 

@@ -160,8 +160,12 @@ pub enum Error {
     /// ring does not have, or a takeover's scan finds seq words
     /// the ring could not have written.
     BadCheckpoint,
-    /// MPSC v3: a claim on a ring its release has closed.
+    /// MPSC v3: a claim on a ring its release has closed, or a
+    /// second release of it.
     RingClosed,
+    /// MPSC v3: a release of a ring whose roles are not all given
+    /// back.
+    RingInUse,
     /// MPSC v3: a ring's most producers is `0`, which no producer
     /// could claim under.
     BadMaxProducers,
