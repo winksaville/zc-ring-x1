@@ -1414,6 +1414,36 @@ another process](user-guide.md#joining-from-another-process).
     at depth 1, where every commit is already on the switch
     path, and is not done.
   - v2's `attach` still joins at position 0 only.
+- What recovery does not guarantee (reviewed 2026-09-27, the day after the roles cycle
+  landed): handoff by `release` and a claim is exact, and a takeover is not certain to succeed.
+  What a takeover does guarantee is narrow: after a holder that is truly dead, at depth 2 or more,
+  with the shared words intact, it loses at most the one message a producer never committed, or
+  repeats the one a consumer never released. Outside that it fails or recovers only part:
+  - A hung holder is not a dead one, and the crate cannot tell them apart. Nothing on the message
+    path reads the role word, so a holder taken over that wakes keeps writing slots, two producers
+    or two consumers on one ring, and the ring's state is corrupted silently. The release CAS stops
+    only its release. The app must know the holder is gone, a kill it confirmed, before
+    `take_over_*`.
+  - At depth 1 a held role cannot be taken over at all, `Err(BadCapacity)`.
+  - Delivery across a takeover is at-least-once for the consumer and at-most-once for the
+    producer, never exactly-once. The consumer's replacement reads again the message its
+    predecessor read and never released, so any effect the predecessor already caused can happen
+    twice, and a producer that dies between reserve and commit loses that message.
+  - A process that corrupts the region before it dies, the bug that crashed it writing the control
+    block or the seq words, leaves the takeover reading that corruption. The scan's
+    `BadCheckpoint` catches some of it, not all.
+  - The pool's buffers are outside it: those a dead process allocated and never sent, or received
+    and never freed, stay out of the pool. The Todo `### Pool buffers survive their holders` is
+    that half, unbuilt and waiting on shared allocation.
+  - Nothing survives the machine: the region is shared memory, not storage.
+  - So the requirement of 2026-09-25, a crashed holder losing its in-progress work and nothing
+    else ([Holders and recovery](#holders-and-recovery)), is met for a clean death of a holder
+    known dead, and only for the ring. We think it may have been set higher than the crate needs.
+    A narrower contract fits [The inbox model](#the-inbox-model): the ring belongs to its
+    consumer's process, a dead producer is replaced by a new one that attaches, and a dead
+    consumer's ring dies with it, its producers joining the replacement's new ring. That keeps
+    `release` and handoff and drops takeover, the intent words, and the scan, at the price of the
+    messages in flight and of the pool sweeper. Open, not decided.
 - **Stacked Borrows shaped the tests**: the handle `init`
   returns holds pointers under the `&mut` it took, and the first
   write through an attached handle, which holds the region's

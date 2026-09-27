@@ -9,12 +9,9 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- `feat: test inter-process message` landed on 2026-09-26, single-step, after `fix: spsc v4 roles
-  survive their holders` the same day. 0.18.3 is installed with the tp_matrix tools:
-  `cargo install --path tp_matrix --locked` after a Land keeps them current, since Land installs
-  the crate only. Validation also leaves the `zc-ring-x1-dev` package installed, harmless.
-- In `../vc-x1-messages`, `m-7-2` and `m-7-3` to iiac-perf are written and uncommitted, committing
-  being the thread's closer's. iiac-perf may want to hear that a message now crosses processes.
+- iiac-perf may want to hear that a message now crosses processes, `feat: test inter-process
+  message`. `m-7` is committed and pushed, `0aacfd9b` in `../vc-x1-messages`, and waits on its
+  reply.
 - Open for the user: `take_over_*(dead, id)` and a holder query, left as `take_over_*(id)`, with no
   Todo entry.
 
@@ -486,64 +483,55 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### feat: test inter-process message
+### docs: spsc v4 not perfect
 
 #### Problem
 
-The crate exists to move messages between applications, and no message had ever crossed a process
-boundary: every test and tool ran its producer and consumer as threads of one process. `spsc::v4`
-can be attached from a second process and its roles claimed there, so what was missing was two
-processes and a region they share.
+`spsc::v4` recovers a role whose holder crashed, by a takeover from its last checkpoint and a scan
+of one segment's seq words, and the design note stated what a takeover loses without stating when
+it fails. Reviewed the day after it landed, the recovery is not certain: it rests on the app
+knowing the holder is dead, and several cases lose more than in-progress work or cannot recover at
+all.
 
 #### Solution
 
-`zcr-test-ipm`, one bin with `consumer` and `producer` subcommands, sends one message from one
-process to another over a v4 ring in `/dev/shm`, and an integration test runs the pair twenty
-times.
+A bullet in the design note's SPSC v4 section, `What recovery does not guarantee`, after `Resume
+and takeover`, records the limits.
 
-- The consumer creates `/dev/shm/zcr-test-ipm-ring`, maps it `MAP_SHARED`, builds a pool of two
-  segment buffers and a v4 ring of two segments of eight one-line slots in it, claims the consumer
-  role, prints `ready`, and waits up to ten seconds for one message.
-- The producer maps the same file, attaches the pool and the ring, claims the producer role, sends
-  a random value with its FNV-1a checksum, and releases its role.
-- The consumer checks the checksum and prints the value it received, exiting non-zero on a bad
-  checksum or a timeout.
-- Everything is hard-coded, the path, the geometry, the ring's first segment, and the holder ids,
-  at the user's call: the aim is to prove a message crosses intact, and there are no other users.
-- `tests/ipm.rs` spawns the consumer, waits for `ready`, spawns the producer, and checks both exit
-  cleanly and agree on the value, twenty rounds in one test since the pair shares one file.
+- What a takeover guarantees: after a holder that is truly dead, at depth 2 or more, with the
+  shared words intact, it loses at most one uncommitted producer message or repeats one unreleased
+  consumer message.
+- Where it fails or recovers only part: a hung holder taken over and waking, depth 1, delivery that
+  is at-least-once or at-most-once and never exactly-once, a region corrupted before the death, the
+  pool's buffers, and the machine.
+- The requirement of 2026-09-25 is met for a clean death of a holder known dead, and for the ring
+  only. A narrower contract on the inbox model, dropping takeover and keeping handoff, is recorded
+  as open, not decided.
 
 #### Acceptance check
 
-- By hand, the consumer started first: the consumer prints the value the producer sent, its
-  checksum verified, and both exit 0. Pass: the first run sent and received
-  `0x53074c4fabcd8c41`.
-- `cargo test --test ipm`: pass, twenty rounds in one run, and the test run five times over.
+`notes/ring-buffer-design.md`'s SPSC v4 section names each limit above and what a takeover does
+guarantee, and `vc-x1 validate` passes. Pass: the bullet is at `What recovery does not guarantee`,
+and the full validation passed.
 
 #### Deliberation
 
-- Hard-coded: the path, the geometry, the first segment, and the holder ids are constants, the
-  user's call on 2026-09-26.
-  - The first plan put an app header in the region's first line, the first segment and a ready
-    flag, and a `find(path)` standing in for `### Find a ring by name`. The user asked for the
-    simplest proof, and a fresh pool hands out its buffers in a fixed order, so the first segment
-    is a constant the consumer asserts and `Ring::attach` validates.
-  - The consumer's `ready` line replaces a ready flag: by hand the consumer starts first, and the
-    test waits for the line.
-- Names: the Todo entry `Test an inter-application message` became this cycle, and the app is
-  `zcr-test-ipm` and its region `/dev/shm/zcr-test-ipm-ring`, the user's names.
-- The app is `zcr-test-ipm-dev` while the cycle runs, as the demo is, since `cargo install`
-  refuses a binary another installed package owns, and the test finds it under either name, so
-  Land's rename leaves the test alone.
-- Single-step: the bin, the test, and the record are one commit, the lightest shape for a proof.
-- No new dependency: `libc`, already the demo's for pinning on Linux, maps the file, and a
-  xorshift of the time and the pid makes the value. The app is Linux-only, as the pinning is.
-- The ladder follows the deliberation in this block, the user's edit, ahead of the convention
-  change the Todo entry `### Cycle block: the ladder last, above its rung subsections` makes.
+- A design-note bullet, not a code change: the limits are properties of the design, and whether
+  to narrow the contract is open, so the record comes first and any change is its own cycle.
+- Placed in the SPSC v4 section beside `Resume and takeover`, the user's call, rather than in
+  `Holders and recovery`, which states the requirement the bullet measures v4 against.
+- The lead is plain, the user's call at review, though the section's other leads are bold,
+  following [Leads are labels, unmarked](agent-data/prose.md#leads-are-labels-unmarked).
+- Single-step: one doc change and its record, the user's call.
+- Landed directly on `main`, no bookmark and no dev name, the user's explicit waiver at review on
+  2026-09-27 of [Cycles run on a bookmark](AGENTS.md#cycles-run-on-a-bookmark) and the opening's
+  rename.
+  - It covers this cycle's one commit and its push to `main`, which is the Land.
+  - It does not cover the per-push approval, the description review, or later cycles.
 
 #### Ladder
 
-- feat: test inter-process message (done)
+- docs: spsc v4 not perfect (done)
 
 # References
 
