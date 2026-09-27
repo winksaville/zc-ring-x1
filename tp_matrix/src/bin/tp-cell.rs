@@ -53,6 +53,9 @@ enum FlavorArg {
     MpscV3Single,
     /// The MPSC v3 ring, `Multi` mode, waking with a futex
     MpscV3Futex,
+    /// The MPSC v3 ring, `Multi` mode, backing off after a lost
+    /// claim race
+    MpscV3Backoff,
     /// All of them, in that order
     All,
 }
@@ -117,6 +120,7 @@ fn main() {
         FlavorArg::MpscV3 => &[Flavor::MpscV3],
         FlavorArg::MpscV3Single => &[Flavor::MpscV3Single],
         FlavorArg::MpscV3Futex => &[Flavor::MpscV3Futex],
+        FlavorArg::MpscV3Backoff => &[Flavor::MpscV3Backoff],
         FlavorArg::All => &FLAVORS,
     };
     for &flavor in flavors {

@@ -16,6 +16,22 @@
 //!   eventfd, async wakers) needs a peer wake over the
 //!   header's user line and is a layer above this crate.
 
+/// Back off after a lost claim race: `2^lost` spin hints, capped
+/// at 64, for an MPSC v3 producer's
+/// [`send_with_backoff`](crate::mpsc::v3::MpscProducer::send_with_backoff).
+///
+/// - Each producer that loses a claim CAS pauses before it reads the
+///   claim word again, longer after each loss in a row, so fewer
+///   cores pull the contended line at once and the winner's next
+///   CAS lands sooner.
+/// - `#[inline]` for the same reason as [`spin`].
+#[inline]
+pub fn backoff(lost: u32) {
+    for _ in 0..1u32 << lost.min(6) {
+        core::hint::spin_loop();
+    }
+}
+
 /// Spin forever: hint the CPU and keep waiting.
 ///
 /// `#[inline]`: non-generic, so without the hint a

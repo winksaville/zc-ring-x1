@@ -163,6 +163,109 @@ pub fn discover_placements(base: usize) -> Vec<Placement> {
     v
 }
 
+/// One multi-producer placement: a label, the consumer's cpu, and
+/// each producer's, `None` for a thread the scheduler places.
+pub struct MultiPlacement {
+    /// Table label, e.g. `"own cores near"`, `"shared cores"`,
+    /// `"unpinned"`.
+    pub label: String,
+    /// The consumer's cpu, or `None` for unpinned.
+    pub consumer: Option<usize>,
+    /// Each producer's cpu, or `None` for unpinned.
+    pub producers: Vec<Option<usize>>,
+}
+
+/// The cpus of `cpu`'s L3, its siblings when sysfs has no L3.
+#[cfg(target_os = "linux")]
+fn l3_of(cpu: usize) -> Vec<usize> {
+    std::fs::read_to_string(format!(
+        "/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list"
+    ))
+    .ok()
+    .map(|s| parse_cpu_list(&s))
+    .unwrap_or_else(|| siblings_of(cpu))
+}
+
+/// Discover the placements for `n` producers and one consumer on
+/// `base`, every thread on a cpu of its own, and the notes for the
+/// placements the machine cannot give `n`.
+///
+/// - own cores near: each producer on a core of its own, its
+///   primary cpu, the base's L3 first and then the others, quiet
+///   first within each, never the consumer's core.
+/// - own cores x-L3: each producer on a core of its own outside the
+///   base's L3, so every claim crosses the fabric.
+/// - shared cores: producers two to a core, on both of its cpus,
+///   the cores taken as near takes them, never the consumer's core,
+///   so pairs of producers share an L1 and an L2.
+/// - unpinned: every thread the scheduler's.
+#[cfg(target_os = "linux")]
+pub fn discover_multi_placements(base: usize, n: usize) -> (Vec<MultiPlacement>, Vec<String>) {
+    let base_core = siblings_of(base);
+    let l3 = l3_of(base);
+    let cores: Vec<usize> = quiet_first(&online_cpus())
+        .into_iter()
+        .filter(|&c| is_primary_cpu(c) && !base_core.contains(&c))
+        .collect();
+    let (inside, outside): (Vec<usize>, Vec<usize>) = cores.iter().partition(|c| l3.contains(c));
+    let near: Vec<usize> = inside.iter().chain(outside.iter()).copied().collect();
+    let mut v = Vec::new();
+    let mut skipped = Vec::new();
+    let mut own = |label: &str, cpus: &[usize]| {
+        if cpus.len() >= n {
+            v.push(MultiPlacement {
+                label: label.to_string(),
+                consumer: Some(base),
+                producers: cpus[..n].iter().map(|&c| Some(c)).collect(),
+            });
+        } else {
+            skipped.push(format!(
+                "{label}: {n} producers want {n} cores, the machine has {}",
+                cpus.len()
+            ));
+        }
+    };
+    own("own cores near", &near);
+    own("own cores x-L3", &outside);
+    let pairs: Vec<usize> = near
+        .iter()
+        .flat_map(|&c| siblings_of(c))
+        .collect::<Vec<_>>();
+    let smt = near.iter().all(|&c| siblings_of(c).len() >= 2);
+    if smt && pairs.len() >= n && n >= 2 {
+        v.push(MultiPlacement {
+            label: "shared cores".to_string(),
+            consumer: Some(base),
+            producers: pairs[..n].iter().map(|&c| Some(c)).collect(),
+        });
+    } else if n >= 2 {
+        skipped.push(format!(
+            "shared cores: {n} producers want {} cores of two cpus, the machine has {}",
+            n.div_ceil(2),
+            if smt { near.len() } else { 0 }
+        ));
+    }
+    v.push(MultiPlacement {
+        label: "unpinned".to_string(),
+        consumer: None,
+        producers: (0..n).map(|_| None).collect(),
+    });
+    (v, skipped)
+}
+
+/// Non-Linux stub: no /sys topology, unpinned only.
+#[cfg(not(target_os = "linux"))]
+pub fn discover_multi_placements(_base: usize, n: usize) -> (Vec<MultiPlacement>, Vec<String>) {
+    (
+        vec![MultiPlacement {
+            label: "unpinned".to_string(),
+            consumer: None,
+            producers: (0..n).map(|_| None).collect(),
+        }],
+        Vec::new(),
+    )
+}
+
 /// Non-Linux stub: no /sys topology, unpinned only.
 #[cfg(not(target_os = "linux"))]
 pub fn discover_placements(_base: usize) -> Vec<Placement> {

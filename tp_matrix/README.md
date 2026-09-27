@@ -170,11 +170,21 @@ tp-stream 0.1.0 - run the streaming matrix, one markdown table out
 ```
 
 `--producers N`, 1 to 64 and default 1, streams from N
-producer threads into the one consumer, the MPSC flavors only.
-The first producer sits where the placement pins the producer
-and the rest are unpinned, so the pinned rows measure the
-scheduler as much as the ring, and the unpinned rows are the
-ones to compare. The consumer checks each producer's order.
+producer threads into the one consumer, the MPSC flavors only,
+`mpsc-v3-backoff` among them, whose producers back off after a
+lost claim race. Every thread has a cpu of its own, printed
+above the table: the consumer on the base cpu, and the
+producers each on a core of their own near the base (`own cores
+near`), outside the base's L3 (`own cores x-L3`), or two to a
+core on both of its cpus (`shared cores`), or all `unpinned`. A
+placement the machine cannot give N is skipped with a note. The
+consumer checks each producer's order.
+
+The `full %` and `empty %` columns say how often each side
+waited: the sends that found the ring full, and the reads that
+found it empty, each counted once at its first failed look. With
+several producers the ring is nearly always empty and the
+consumer waits on them.
 
 Two things the streaming number is sensitive to, found while
 building the cell and worth knowing before comparing runs:

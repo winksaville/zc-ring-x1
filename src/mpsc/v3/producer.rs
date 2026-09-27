@@ -116,7 +116,30 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     where
         T: FromBytes + IntoBytes + KnownLayout,
     {
-        self.send(on_full, fill, false)
+        self.send(on_full, |_| {}, fill, false)
+    }
+
+    /// [`send_with`](MpscProducer::send_with), calling `on_lost`
+    /// after each claim race this producer loses, with the count of
+    /// losses in a row, 1 for the first. A weak CAS failing
+    /// spuriously counts as a loss.
+    ///
+    /// - A lost race is no policy call in `send_with`: the ring made
+    ///   progress, and the loser reads the claim word again at once.
+    ///   With many producers that read pulls the contended line from
+    ///   the winner on every loss, so `on_lost` is where a producer
+    ///   backs off, [`policy::backoff`](crate::policy::backoff) the
+    ///   model.
+    pub fn send_with_backoff<T>(
+        &self,
+        on_full: impl FnMut(u32) -> bool,
+        on_lost: impl FnMut(u32),
+        fill: impl FnOnce(&mut T),
+    ) -> Result<(), Full>
+    where
+        T: FromBytes + IntoBytes + KnownLayout,
+    {
+        self.send(on_full, on_lost, fill, false)
     }
 
     /// [`send_with`](MpscProducer::send_with), sleeping on a full
@@ -139,15 +162,17 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     where
         T: FromBytes + IntoBytes + KnownLayout,
     {
-        self.send(on_full, fill, true)
+        self.send(on_full, |_| {}, fill, true)
     }
 
-    /// The send both entries share, sleeping on a full ring when
-    /// `sleep` is set.
+    /// The send the entries share, calling `on_lost` after each
+    /// lost claim race and sleeping on a full ring when `sleep` is
+    /// set.
     #[inline(always)]
     fn send<T>(
         &self,
         mut on_full: impl FnMut(u32) -> bool,
+        mut on_lost: impl FnMut(u32),
         fill: impl FnOnce(&mut T),
         sleep: bool,
     ) -> Result<(), Full>
@@ -161,6 +186,7 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
         // claim is only exclusive if these are linearizable.
         let mut w = claim.load(Ordering::SeqCst);
         let mut attempt = 0u32;
+        let mut lost = 0u32;
         let (seg, pos) = loop {
             // Single: segment 0 always, whatever the word's segment
             // bits hold, so the check below folds away.
@@ -188,7 +214,11 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
                     Ordering::SeqCst,
                 ) {
                     Ok(_) => break (seg, pos),
-                    Err(actual) => w = actual,
+                    Err(actual) => {
+                        w = actual;
+                        lost = lost.saturating_add(1);
+                        on_lost(lost);
+                    }
                 }
                 continue;
             }

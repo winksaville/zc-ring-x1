@@ -1628,6 +1628,57 @@ mod tests {
     }
 
     #[test]
+    fn backoff_streams_across_threads() {
+        // Four producers backing off after each lost claim, into one
+        // consumer: every message arrives in each producer's order,
+        // and each loss is counted from 1.
+        const COUNT: u64 = if cfg!(miri) { 50 } else { 20_000 };
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::<Multi>::init(&mut pool, 64, 4, 2).unwrap();
+        let mut cons = ring.claim_consumer().unwrap();
+        let prods: Vec<_> = (0..4).map(|_| ring.claim_producer().unwrap()).collect();
+        let first_losses = std::sync::atomic::AtomicU64::new(0);
+        let first_losses = &first_losses;
+        std::thread::scope(|s| {
+            for (p, prod) in prods.into_iter().enumerate() {
+                s.spawn(move || {
+                    for i in 0..COUNT {
+                        prod.send_with_backoff::<Msg>(
+                            crate::policy::spin,
+                            |lost| {
+                                assert!(lost >= 1);
+                                if lost == 1 {
+                                    first_losses.fetch_add(1, Ordering::Relaxed);
+                                }
+                                crate::policy::backoff(lost);
+                            },
+                            |m| {
+                                m.seq = i;
+                                m.val = p as u64;
+                            },
+                        )
+                        .unwrap(); // OK: policy::spin never gives up
+                    }
+                });
+            }
+            s.spawn(move || {
+                let mut next = [0u64; 4];
+                for _ in 0..4 * COUNT {
+                    let msg = cons.reserve_slot_with::<Msg>(crate::policy::spin).unwrap(); // OK: policy::spin never gives up
+                    let p = msg.val as usize;
+                    assert_eq!(msg.seq, next[p], "per-producer order broken");
+                    next[p] += 1;
+                    msg.release();
+                }
+            });
+        });
+        // Losses are the scheduler's to make, so only their count is
+        // shown, never asserted.
+        println!("first losses: {}", first_losses.load(Ordering::Relaxed));
+    }
+
+    #[test]
     fn words_pack_segment_over_position() {
         assert_eq!(word_seg(word(31, 5)), 31);
         assert_eq!(word_pos(word(31, 5)), 5);

@@ -78,6 +78,8 @@ no side can sleep until the other acts.
 - [perf: mpsc v3 in the measurement tools][30] (done)
 - [docs: mpsc v3 in the design note and guide][31] (done)
 - [perf: mpsc v3 in the demo and multi-producer][33] (done)
+- [perf: pin every producer][34] (done)
+- [fix: mpsc v3 multi matches single without a switch][35]
 - [feat: attachable MPSC v3 closing][32]
 
 #### Deliberation
@@ -106,6 +108,15 @@ no side can sleep until the other acts.
 - `perf: mpsc v3 in the demo and multi-producer` inserted before the closing, the user's call on
   2026-09-27 at review: the demo's depth sweep and segment stress had no v3, and the Todo entry
   `Multi-producer measurement` joins the rung. The user's go covers the rung's push.
+- `perf: pin every producer` and `fix: mpsc v3 multi matches single without a switch` inserted
+  before the closing, the user's go on 2026-09-27 covering both rungs and their pushes.
+  - Every producer on its own cpu, the user's rule for a fair run, and a shared-core placement
+    beside it, read as producers paired on one core's two cpus, never the consumer's core.
+  - A backoff after a lost claim race joins the pinning rung as the first cheap measure against
+    the claim word's contention, which ten producers showed collapses throughput. The claim
+    design itself is the new Todo `MPSC claim contention`.
+  - The user's contract for the fix: a ring of several segments runs, while it does not switch,
+    no differently from a ring of one.
 
 #### Ladder details
 
@@ -297,6 +308,34 @@ streaming tool, so the claim word is measured under several producers, the Todo 
 - tp_matrix's README names the v3 flavors and `--producers`, and says the unpinned rows are the
   ones to compare.
 - A slip: the reverted header was restored with `git checkout`, where the rule is jj.
+
+##### perf: pin every producer
+
+tp-stream's multi-producer placements name every thread, each producer on a cpu of its own, a
+shared-core placement pairs producers on one core, and a producer that loses a claim race can
+back off, measured beside plain spinning.
+
+- Placements for several producers, `tp_runner::topo::discover_multi_placements`: the consumer on
+  the base cpu, and own cores near, own cores x-L3, shared cores, and unpinned, each producer's
+  cpu printed above the table, a placement the machine cannot give skipped with a note. One
+  producer keeps the two-thread placements, so its rows compare with every earlier run.
+- `run_stream` takes a `StreamPins`, each thread's cpu, in place of one pair and a count.
+- `MpscProducer::send_with_backoff` calls an `on_lost` closure after each lost claim race, the
+  hook `send_with` never had, since a lost race is no policy call, and `policy::backoff` spins
+  `2^lost` hints to 64. The flavor `mpsc-v3-backoff` wraps the producer so the cell and stream
+  bodies run it unchanged.
+- The user asked mid-rung how often each side waits, so the stream gained `full %` and `empty %`,
+  the sends that found the ring full and the reads that found it empty, counted in the spin
+  policy's first call, on the waiting path only. With several producers the ring is nearly always
+  empty, which answers it.
+- The design note's multi-producer bullets are rewritten from the pinned runs, the first runs'
+  one-pinned rows superseded, and tp_matrix's README describes the placements and the columns.
+
+##### fix: mpsc v3 multi matches single without a switch
+
+`Multi` runs slower than `Single` in streams that never switch, three times across CCXs at depth
+1024, where the contract is that a ring of several segments runs, while it does not switch, as a
+ring of one does. Find the cause and remove it.
 
 ##### feat: attachable MPSC v3 closing
 
@@ -558,20 +597,25 @@ measured](notes/ring-buffer-design.md#mpsc-v3-measured) has the rows.
 - A mark to beat: the rows in the design note, `tp-stream -d 1 --depth 1,8,64`, 3900X, 2026-09-27.
 - From `perf: mpsc v3 in the measurement tools`, in the cycle `feat: attachable MPSC v3`.
 
-### Pinned multi-producer placements
+### MPSC claim contention
 
-tp-stream's `--producers N` pins the first producer where a placement pins the producer and leaves
-the rest unpinned, since a placement names two cpus, and the pinned rows run two to four times
-the unpinned ones and swing by up to three times between runs: the unpinned producers share cpus with the two
-pinned threads, both spinning. The design note's [MPSC v3 measured](notes/ring-buffer-design.md#mpsc-v3-measured)
-has the rows.
+Every MPSC ring, v0 through v3, claims a slot by a CAS loop on one shared word, and with producers
+sending flat out the word decides everything: ten producers move 3 to 4M messages a second between
+them where one moves 75 to 110M, 10 to 21 cross-core line transfers a message, the ring near empty
+and the consumer waiting on the producers. The rows are the design note's [MPSC v3
+measured](notes/ring-buffer-design.md#mpsc-v3-measured) and the user's `-p 10` run of 2026-09-27.
 
-- A placement that pins every producer: N producer cpus on the base's L3, or across L3s, or the
-  base core's SMT sibling beside it, so contention on the claim word is measured without the
-  scheduler.
-- tp-matrix's round trip has one producer by its shape. Whether a multi-producer round trip
-  means anything is part of this entry.
-- From `perf: mpsc v3 in the demo and multi-producer`, which added `--producers`.
+- Claim by `fetch_add`: no failed attempt, about one transfer a claim, but a producer claims before
+  knowing its slot is free and cannot take the claim back, so giving up on a full ring needs a
+  tombstone or a claim that cannot fail.
+- Claim several slots at once: contention divided by the batch, for producers that send in bursts.
+- One SPSC ring per producer and a consumer that fans in, the design note's [Fan-in (composition, not
+  a mode)](notes/ring-buffer-design.md#fan-in-composition-not-a-mode): nothing written by two
+  producers, so the count of producers scales until the consumer saturates, at the price of
+  polling N rings and of order only per producer.
+- Backoff after a lost race is measured first, in `perf: pin every producer`, as the cheap measure
+  the others are weighed against.
+- A protocol change, so its own cycle, from `feat: attachable MPSC v3` on 2026-09-27.
 
 ### MPSC v2 as the default
 
@@ -782,3 +826,5 @@ _None._
 [31]: #docs-mpsc-v3-in-the-design-note-and-guide
 [32]: #feat-attachable-mpsc-v3-closing
 [33]: #perf-mpsc-v3-in-the-demo-and-multi-producer
+[34]: #perf-pin-every-producer
+[35]: #fix-mpsc-v3-multi-matches-single-without-a-switch
