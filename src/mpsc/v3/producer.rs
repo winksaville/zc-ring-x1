@@ -2,33 +2,31 @@
 //! position by CAS on the packed claim word, a closure fills the
 //! slot in place, and the commit happens on closure return, as
 //! v1's. At a full segment it takes a free one and moves the ring
-//! on, sealing the old segment behind it.
+//! on, sealing the old segment behind it. The handle is one
+//! counted producer role, given back by `release`.
 
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
-use super::{MOVED, Segments, TOMBSTONE, check_body_type, seq_of, word, word_pos, word_seg};
+use super::{MOVED, Segments, check_body_type, seq_of, word, word_pos, word_seg};
 use crate::Full;
 
-/// A producing handle: `Clone` one per producing thread, then
-/// `send_with`.
+/// A producing handle, one counted producer role: claim one per
+/// producing thread or process with
+/// [`MpscRing::claim_producer`](super::MpscRing::claim_producer),
+/// then `send_with`.
 ///
 /// - `send_with` takes `&self`: exclusivity comes from the claim
 ///   CAS, not the borrow, so one handle may also be shared by
 ///   reference.
+/// - Not `Clone`: each handle is one count in the roles word, and
+///   [`release`](MpscProducer::release) gives it back. Dropping
+///   the handle writes nothing, so the count stays held.
 pub struct MpscProducer<'a> {
     /// Geometry and segment addresses.
     pub(super) segs: Segments,
     _region: PhantomData<&'a [u8]>,
-}
-
-impl Clone for MpscProducer<'_> {
-    /// A second producing handle over the same ring, and the claim
-    /// CAS serializes them.
-    fn clone(&self) -> Self {
-        MpscProducer { ..*self }
-    }
 }
 
 // SAFETY: any number of producers is the protocol contract: the
@@ -40,25 +38,6 @@ unsafe impl Send for MpscProducer<'_> {}
 // above, so shared references across threads are equally fine.
 unsafe impl Sync for MpscProducer<'_> {}
 
-/// Commits-on-drop guard armed while the fill closure runs: a
-/// panic unwinding through `send_with` must not abandon the
-/// claimed position, so drop-without-disarm publishes the
-/// tombstoned commit the consumer releases without delivering.
-struct TombstoneOnUnwind<'s> {
-    /// The claimed slot's seq word.
-    seq: &'s AtomicU32,
-    /// The commit value (`pos + M + 1`).
-    commit: u32,
-}
-
-impl Drop for TombstoneOnUnwind<'_> {
-    /// Unwind path only, and the normal path disarms with
-    /// `mem::forget`.
-    fn drop(&mut self) {
-        self.seq.store(self.commit | TOMBSTONE, Ordering::Release);
-    }
-}
-
 /// Why a switch attempt did not move the ring.
 enum NoSwitch {
     /// No segment is free: the ring is Full.
@@ -69,13 +48,25 @@ enum NoSwitch {
 }
 
 impl<'a> MpscProducer<'a> {
-    /// Build the handle from [`MpscRing::split`](super::MpscRing::split)'s
+    /// Build the handle for a claimed role from the ring's
     /// geometry snapshot.
     pub(super) fn new(segs: Segments) -> Self {
         MpscProducer {
             segs,
             _region: PhantomData,
         }
+    }
+
+    /// Give the producer role back, counting it out of the roles
+    /// word.
+    ///
+    /// - The producer keeps no state of its own, so nothing is
+    ///   checkpointed: a later claim, in any process, sends on
+    ///   where the ring is.
+    pub fn release(self) {
+        // Release: the ring's release, which needs no role held,
+        // sees everything this producer committed.
+        self.segs.roles().fetch_sub(1, Ordering::Release);
     }
 
     /// Segment switches the ring's producers have made: how many
@@ -98,8 +89,9 @@ impl<'a> MpscProducer<'a> {
     ///
     /// - `fill` writes the message through `&mut T`, and commit is by
     ///   construction, so there is no abandonment state. If `fill`
-    ///   panics, the unwind publishes a tombstoned commit the
-    ///   consumer skips.
+    ///   panics, its slot stays claimed and never committed, as if
+    ///   the producer had been killed there: the consumer waits at
+    ///   it, and the ring is recovered by a restart.
     /// - `on_full` is called after each failed attempt with the
     ///   attempt count (0-based, saturating), and returning `false`
     ///   gives up. Pass `|_| false` for a single non-blocking
@@ -175,19 +167,13 @@ impl<'a> MpscProducer<'a> {
         // store.
         let msg = segs.body(seg, pos) as *mut T;
         let commit = seq_of(pos.wrapping_add(segs.commit_add));
-        let guard = TombstoneOnUnwind {
-            seq: segs.seq(seg, pos),
-            commit,
-        };
+        let seq = segs.seq(seg, pos);
         // SAFETY: msg is in-bounds and aligned (check_body_type
         // against the body's offset in a line-aligned slot), any
         // byte pattern is a valid T (FromBytes bound), and the
         // claim CAS gives exclusive slot access until the commit
         // store below.
         fill(unsafe { &mut *msg });
-        // Normal path: disarm the unwind guard, then publish.
-        let seq = guard.seq;
-        core::mem::forget(guard);
         // Release pairs with the consumer's Acquire seq load:
         // observing pos + M + 1 means the filled bytes are
         // visible.

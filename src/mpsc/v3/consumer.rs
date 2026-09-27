@@ -1,8 +1,9 @@
 //! MPSC v3 consuming endpoint: [`MpscConsumer`] reserves the
 //! oldest committed slot of its current segment through the
-//! [`MpscReadSlot`] guard, v1's loop with its tombstone skip, and
-//! follows the seal to the next segment when the current one has
-//! ended, giving the old one back.
+//! [`MpscReadSlot`] guard, v1's loop, and follows the seal to the
+//! next segment when the current one has ended, giving the old
+//! one back. The handle is the consumer role, given back with its
+//! state by `release`.
 
 use core::marker::PhantomData;
 use core::ops::Deref;
@@ -10,7 +11,8 @@ use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use super::{
-    MAX_SEGMENTS, MOVED, Segments, TOMBSTONE, check_body_type, seq_of, word_pos, word_seg,
+    CONSUMER, Checkpoint, MAX_SEGMENTS, MOVED, Segments, check_body_type, seq_of, word_pos,
+    word_seg,
 };
 use crate::Empty;
 
@@ -31,9 +33,14 @@ pub(super) struct ConsumerState {
     pub(super) switches: u64,
 }
 
-/// The consuming handle: single per ring, CAS-free.
-/// `reserve_slot_with` the oldest committed slot, read in place,
-/// `release`.
+/// The consuming handle, the ring's one consumer role, CAS-free
+/// on the message path. `reserve_slot_with` the oldest committed
+/// slot, read in place, `release`.
+///
+/// - [`release`](MpscConsumer::release) gives the role back with
+///   the consumer's state, so the next claim continues where this
+///   one stopped. Dropping the handle writes nothing, so the role
+///   stays held.
 pub struct MpscConsumer<'a> {
     /// Private state, borrowed by each guard.
     pub(super) st: ConsumerState,
@@ -46,23 +53,42 @@ pub struct MpscConsumer<'a> {
 unsafe impl Send for MpscConsumer<'_> {}
 
 impl<'a> MpscConsumer<'a> {
-    /// Start in segment 0 at position 0, where the ring starts.
-    pub(super) fn new(segs: Segments) -> Self {
+    /// Continue from `cp`, the checkpoint the last consumer left,
+    /// or the ring's start.
+    pub(super) fn resume(segs: Segments, cp: Checkpoint) -> Self {
         MpscConsumer {
             st: ConsumerState {
                 segs,
-                cur: 0,
-                pos: 0,
-                resume: [0; MAX_SEGMENTS as usize],
+                cur: cp.cur,
+                pos: cp.pos,
+                resume: cp.resume,
                 switches: 0,
             },
             _region: PhantomData,
         }
     }
 
+    /// Give the consumer role back, with its state.
+    ///
+    /// - Writes the segment, the position, and each segment's resume
+    ///   position into the control block, then clears the role, so
+    ///   the next claim, in any process, continues exactly here.
+    pub fn release(self) {
+        let st = &self.st;
+        st.segs.store_consumer(&Checkpoint {
+            cur: st.cur,
+            pos: st.pos,
+            resume: st.resume,
+        });
+        // Release: the next claim's AcqRel sees the checkpoint and
+        // every release of a slot before it.
+        st.segs.roles().fetch_and(!CONSUMER, Ordering::Release);
+    }
+
     /// Segment switches this consumer has made: how many seals it
-    /// has followed. Once it has read everything sent, it equals
-    /// the producers' count.
+    /// has followed since its claim. Once it has read everything
+    /// sent, a consumer claimed on a new ring equals the producers'
+    /// count.
     pub fn switches(&self) -> u64 {
         self.st.switches
     }
@@ -77,9 +103,7 @@ impl<'a> MpscConsumer<'a> {
     /// injected wait policy: retry until a message arrives or the
     /// policy gives up, then [`Empty`].
     ///
-    /// - The slot at the position is committed, tombstoned, or
-    ///   neither. Tombstoned slots are released and skipped
-    ///   inline, progress rather than an attempt. Neither means a
+    /// - The slot at the position is committed or not. Not means a
     ///   second look at the segment's seal: MOVED with the end
     ///   position equal to this one means the segment has ended,
     ///   so it is given back and the reading continues in the
@@ -114,14 +138,6 @@ impl<'a> MpscConsumer<'a> {
             let seq = segs.seq(st.cur, c).load(Ordering::Acquire);
             if seq == committed {
                 break;
-            }
-            if seq == committed | TOMBSTONE {
-                // Unwound producer: release the slot without
-                // delivering and move on.
-                segs.seq(st.cur, c)
-                    .store(seq_of(c.wrapping_add(segs.capacity)), Ordering::Release);
-                st.pos = seq_of(c.wrapping_add(1));
-                continue;
             }
             // Acquire pairs with the sealing producer's Release
             // store: seeing MOVED means the next segment's seal is

@@ -4,18 +4,27 @@
 //! roles" section. v2 stays as built to measure against.
 //!
 //! - What v3 adds to v2 so far: a control block at the front of
-//!   segment 0 (magic, layout version, geometry, and the table of
-//!   every segment's pool buffer index), [`MpscRing::attach`] from
-//!   a pool, and [`MpscRing::first_segment`]. The counted roles,
-//!   the ring's release, the compile-time segment modes, and
+//!   segment 0 (magic, layout version, geometry, the roles word,
+//!   the consumer's checkpoint, and the table of every segment's
+//!   pool buffer index), [`MpscRing::attach`] from a pool,
+//!   [`MpscRing::first_segment`], and the roles claimed by count,
+//!   [`MpscRing::claim_producer`] and [`MpscRing::claim_consumer`].
+//!   The ring's release, the compile-time segment modes, and
 //!   waiting are the rungs after it.
+//! - Roles: one consumer and up to the ring's most producers, each
+//!   claimed and released by one CAS on the roles word. A producer
+//!   keeps no state of its own, and the consumer checkpoints its
+//!   state at `release`, so a later claim, in any process,
+//!   continues where it stopped. Neither endpoint has a `Drop`.
 //! - Segments: up to [`MAX_SEGMENTS`] taken from the application's
-//!   [`Pool`] at [`MpscRing::init`], each a header of six lines
+//!   [`Pool`] at [`MpscRing::init`], each a header of seven lines
 //!   then `seg_capacity` slots opening with the seq word.
 //! - Words: 32 bits everywhere. A position is [`SEQ_BITS`] wide,
 //!   and the slot word holds v1's values in those bits, claimable
-//!   at `pos`, committed at `pos + M + 1`, released at `pos + M`,
-//!   with v1's tombstone at bit 31. The claim word packs the
+//!   at `pos`, committed at `pos + M + 1`, released at `pos + M`.
+//!   There is no tombstone: a producer that panics inside its fill
+//!   leaves its slot claimed, as one killed there does, and the
+//!   ring is recovered by a restart. The claim word packs the
 //!   current segment over the next position, and a seal packs
 //!   MOVED, the next segment, and the end position the same way.
 //! - The claim word is the seal: every producer claims as v1
@@ -24,7 +33,7 @@
 //! - A producer at a full segment takes a free one by setting its
 //!   bit in the in-use word, moves the claim word to it, and seals
 //!   the old segment's header. The consumer reads the seal only when a
-//!   slot is neither committed nor tombstoned, so its fast path
+//!   slot is not committed, so its fast path
 //!   is v1's one load.
 //! - Gated with the rest of `mpsc` on `target_has_atomic = "32"`.
 
@@ -56,14 +65,6 @@ const SEG_MASK: u32 = MAX_SEGMENTS - 1;
 /// and the ring went on in the word's segment.
 const MOVED: u32 = 1 << 31;
 
-/// Tombstone offset in a slot word: an unwound `send_with`
-/// commits `pos + M + 1 + TOMBSTONE`, which the consumer
-/// releases without delivering, as v1's.
-///
-/// - Distinct from every value a side can see: the position
-///   bits of a committed word never carry bit 31.
-pub(crate) const TOMBSTONE: u32 = 1 << 31;
-
 const _: () = assert!(SEG_SHIFT + MAX_SEGMENTS.trailing_zeros() <= 31);
 
 /// Layout marker written by [`MpscRing::init`] into every
@@ -76,6 +77,16 @@ const LAYOUT_VERSION: u32 = 1;
 
 /// A table entry naming no segment.
 const NO_SEGMENT: u32 = u32::MAX;
+
+/// Set in the roles word once the ring is released: no role can
+/// be claimed.
+const CLOSED: u32 = 1 << 31;
+
+/// Set in the roles word while the consumer role is held.
+const CONSUMER: u32 = 1 << 30;
+
+/// The roles word's count of producers held.
+const PRODUCERS: u32 = 0xFFFF;
 
 /// The word naming segment `seg` and position `pos`.
 #[inline]
@@ -109,14 +120,40 @@ struct Info {
     seg_count: AtomicU32,
     /// This segment's number in the ring.
     seg_num: AtomicU32,
+    /// The most producers the ring allows, segment 0's.
+    max_producers: AtomicU32,
+    /// The consumer's resume position in this segment, written by
+    /// its `release`.
+    cons_resume: AtomicU32,
 }
 
-/// The six lines at the front of every segment: the ring's
+/// The claims line of segment 0: who holds the roles, and the
+/// consumer's checkpoint.
+///
+/// - The roles word is [`CLOSED`], [`CONSUMER`], and the count of
+///   producers held under [`PRODUCERS`], so a claim, a release, and
+///   the ring's release are each one CAS on one word.
+/// - The consumer's segment and position, with each segment's
+///   resume position in its info line, are what the consumer's
+///   `release` leaves for the next claim.
+/// - Nothing on the message path reads or writes the line.
+#[repr(C)]
+struct Claims {
+    /// The roles word.
+    roles: AtomicU32,
+    /// The consumer's segment, written by its `release`.
+    cons_cur: AtomicU32,
+    /// The consumer's position in its segment, written by its
+    /// `release`.
+    cons_pos: AtomicU32,
+}
+
+/// The seven lines at the front of every segment: the ring's
 /// control block in segment 0, and the same layout in the others
 /// so every segment's slots start at one offset.
 ///
-/// - Only segment 0's `claim`, `in_use`, and `table` lines are
-///   used. The claim word is the contended line and has it alone.
+/// - Only segment 0's `claim`, `in_use`, `claims`, and `table`
+///   lines are used. The claim word is the contended line and has it alone.
 /// - The pool buffer index of each segment is in the table, so a
 ///   process holding the pool and segment 0's index finds every
 ///   segment.
@@ -135,7 +172,9 @@ struct SegmentHeader {
     /// Line 3, segment 0: the in-use word and the switch count,
     /// both touched on the switch path only.
     in_use: CacheAligned<InUseLine>,
-    /// Lines 4 and 5, segment 0: the pool buffer index of segment
+    /// Line 4, segment 0: the roles and the consumer's checkpoint.
+    claims: CacheAligned<Claims>,
+    /// Lines 5 and 6, segment 0: the pool buffer index of segment
     /// `i` at `table[i]`, [`NO_SEGMENT`] past `seg_count`.
     table: CacheAligned<[AtomicU32; MAX_SEGMENTS as usize]>,
 }
@@ -155,7 +194,7 @@ struct InUseLine {
     switches: AtomicU32,
 }
 
-const _: () = assert!(size_of::<SegmentHeader>() == 6 * CACHE_LINE_SIZE);
+const _: () = assert!(size_of::<SegmentHeader>() == 7 * CACHE_LINE_SIZE);
 
 /// Bytes a segment needs: its header lines, then the slots.
 ///
@@ -283,6 +322,50 @@ impl Segments {
         &self.header(0).in_use.switches
     }
 
+    /// The claims line.
+    fn claims(&self) -> &Claims {
+        &self.header(0).claims
+    }
+
+    /// The roles word.
+    fn roles(&self) -> &AtomicU32 {
+        &self.claims().roles
+    }
+
+    /// The consumer's state from the region, the checkpoint the
+    /// last consumer's `release` wrote, or the start of a ring
+    /// never consumed, where every word is zero.
+    fn load_consumer(&self) -> Result<Checkpoint, Error> {
+        let c = self.claims();
+        let cur = c.cons_cur.load(Ordering::Acquire);
+        if cur >= self.seg_count {
+            return Err(Error::BadCheckpoint);
+        }
+        let mut resume = [0; MAX_SEGMENTS as usize];
+        for seg in 0..self.seg_count {
+            resume[seg as usize] = self.header(seg).info.cons_resume.load(Ordering::Acquire);
+        }
+        Ok(Checkpoint {
+            cur,
+            pos: c.cons_pos.load(Ordering::Acquire),
+            resume,
+        })
+    }
+
+    /// Write the consumer's state for the next claim, ahead of the
+    /// release of its role.
+    fn store_consumer(&self, cp: &Checkpoint) {
+        for seg in 0..self.seg_count {
+            self.header(seg)
+                .info
+                .cons_resume
+                .store(cp.resume[seg as usize], Ordering::Relaxed);
+        }
+        let c = self.claims();
+        c.cons_cur.store(cp.cur, Ordering::Relaxed);
+        c.cons_pos.store(cp.pos, Ordering::Relaxed);
+    }
+
     /// Every segment's bit.
     #[inline]
     fn all(&self) -> u32 {
@@ -294,8 +377,20 @@ impl Segments {
     }
 }
 
-/// A ring of segments over the application's pool, split into
-/// the producer and consumer handles with [`MpscRing::split`].
+/// The consumer's state, what its `release` leaves and a claim
+/// loads.
+pub(crate) struct Checkpoint {
+    /// The segment being read.
+    pub(crate) cur: u32,
+    /// Position in `cur`.
+    pub(crate) pos: u32,
+    /// Where the consumer left each segment.
+    pub(crate) resume: [u32; MAX_SEGMENTS as usize],
+}
+
+/// A ring of segments over the application's pool, its roles
+/// claimed with [`MpscRing::claim_producer`] and
+/// [`MpscRing::claim_consumer`].
 pub struct MpscRing<'a> {
     /// Geometry and segment addresses.
     segs: Segments,
@@ -326,12 +421,31 @@ impl<'a> MpscRing<'a> {
     ///   holds the table of segments, so a process holding the
     ///   pool and [`first_segment`](MpscRing::first_segment) can
     ///   find the ring.
+    /// - Up to `u16::MAX` producers, the most the roles word counts.
+    ///   [`init_with_max_producers`](MpscRing::init_with_max_producers)
+    ///   sets fewer.
     pub fn init(
         pool: &mut Pool<'a>,
         slot_size: u32,
         seg_capacity: u32,
         seg_count: u32,
     ) -> Result<Self, Error> {
+        Self::init_with_max_producers(pool, slot_size, seg_capacity, seg_count, u16::MAX)
+    }
+
+    /// [`init`](MpscRing::init) with at most `max_producers`
+    /// producers held at once, `0` being
+    /// [`Error::BadMaxProducers`].
+    pub fn init_with_max_producers(
+        pool: &mut Pool<'a>,
+        slot_size: u32,
+        seg_capacity: u32,
+        seg_count: u32,
+        max_producers: u16,
+    ) -> Result<Self, Error> {
+        if max_producers == 0 {
+            return Err(Error::BadMaxProducers);
+        }
         validate_geometry(slot_size, seg_capacity, seg_count)?;
         if (pool.buf_size() as u64) < segment_size(slot_size, seg_capacity) {
             return Err(Error::TooSmall);
@@ -359,7 +473,7 @@ impl<'a> MpscRing<'a> {
             // SAFETY: the index names a buffer of at least
             // segment_size bytes the pool just handed out,
             // line-aligned, and nothing else can reach it until
-            // the ring is split: the header lines and each slot's
+            // a role is claimed: the header lines and each slot's
             // header are ours to write.
             unsafe {
                 let seg_base = base.add(indices[seg] as usize * buf_size);
@@ -372,6 +486,8 @@ impl<'a> MpscRing<'a> {
                 info.seg_count.store(seg_count, Ordering::Relaxed);
                 info.seg_num.store(seg as u32, Ordering::Relaxed);
                 if seg == 0 {
+                    info.max_producers
+                        .store(max_producers as u32, Ordering::Relaxed);
                     for (entry, &idx) in header.table.iter().zip(indices.iter()) {
                         entry.store(idx, Ordering::Relaxed);
                     }
@@ -444,6 +560,10 @@ impl<'a> MpscRing<'a> {
         if block.info.seg_num.load(Ordering::Relaxed) != 0 {
             return Err(Error::BadSegment);
         }
+        let max_producers = block.info.max_producers.load(Ordering::Relaxed);
+        if max_producers == 0 || max_producers > PRODUCERS {
+            return Err(Error::BadMaxProducers);
+        }
         let mut indices = [NO_SEGMENT; MAX_SEGMENTS as usize];
         for seg in 0..seg_count as usize {
             let idx = block.table[seg].load(Ordering::Relaxed);
@@ -484,13 +604,81 @@ impl<'a> MpscRing<'a> {
         self.first_segment
     }
 
-    /// Split into one producer handle and the consumer handle.
+    /// Claim a producer role.
     ///
-    /// - The producer is `Clone`: one clone per producing thread,
-    ///   or one handle shared by reference. The consumer is
-    ///   unique.
-    pub fn split(self) -> (MpscProducer<'a>, MpscConsumer<'a>) {
-        (MpscProducer::new(self.segs), MpscConsumer::new(self.segs))
+    /// - One CAS on the roles word counts the producer in, so any
+    ///   number up to the ring's most may hold one at once, in this
+    ///   process and others. At the most it is
+    ///   [`Error::RoleTaken`], and on a released ring
+    ///   [`Error::RingClosed`].
+    /// - A producer keeps no state of its own, each send claiming
+    ///   its slot on the shared claim word, so producers come and go
+    ///   freely.
+    /// - The role stays held until [`MpscProducer::release`]:
+    ///   dropping the endpoint writes nothing.
+    pub fn claim_producer(&self) -> Result<MpscProducer<'a>, Error> {
+        let roles = self.segs.roles();
+        let max = self
+            .segs
+            .header(0)
+            .info
+            .max_producers
+            .load(Ordering::Relaxed);
+        let mut r = roles.load(Ordering::Acquire);
+        loop {
+            if r & CLOSED != 0 {
+                return Err(Error::RingClosed);
+            }
+            if r & PRODUCERS >= max {
+                return Err(Error::RoleTaken);
+            }
+            // AcqRel: a claim sees the ring as the last release of
+            // any role left it.
+            match roles.compare_exchange_weak(r, r + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Ok(MpscProducer::new(self.segs)),
+                Err(actual) => r = actual,
+            }
+        }
+    }
+
+    /// Claim the consumer role.
+    ///
+    /// - One CAS on the roles word, so the role held anywhere is
+    ///   [`Error::RoleTaken`], and on a released ring
+    ///   [`Error::RingClosed`].
+    /// - The consumer continues from the checkpoint the last
+    ///   consumer's [`release`](MpscConsumer::release) wrote, in
+    ///   this process or another, exactly where it stopped, and a
+    ///   ring never consumed starts at its start.
+    /// - A checkpoint that names no segment of the ring is
+    ///   [`Error::BadCheckpoint`], with the role left free.
+    /// - The role stays held until [`MpscConsumer::release`]:
+    ///   dropping the endpoint writes nothing.
+    pub fn claim_consumer(&self) -> Result<MpscConsumer<'a>, Error> {
+        let roles = self.segs.roles();
+        let mut r = roles.load(Ordering::Acquire);
+        loop {
+            if r & CLOSED != 0 {
+                return Err(Error::RingClosed);
+            }
+            if r & CONSUMER != 0 {
+                return Err(Error::RoleTaken);
+            }
+            // AcqRel: the claim sees the checkpoint the last
+            // consumer's release wrote.
+            match roles.compare_exchange_weak(r, r | CONSUMER, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break,
+                Err(actual) => r = actual,
+            }
+        }
+        match self.segs.load_consumer() {
+            Ok(cp) => Ok(MpscConsumer::resume(self.segs, cp)),
+            Err(e) => {
+                roles.fetch_and(!CONSUMER, Ordering::Release);
+                Err(e)
+            }
+        }
     }
 }
 
@@ -509,8 +697,8 @@ mod tests {
     }
 
     /// Test pool buffer: a segment of up to 16 one-line slots
-    /// behind its six header lines.
-    const BUF: usize = 6 * CACHE_LINE_SIZE + 16 * CACHE_LINE_SIZE;
+    /// behind its seven header lines.
+    const BUF: usize = 7 * CACHE_LINE_SIZE + 16 * CACHE_LINE_SIZE;
 
     /// Buffers in the test pool.
     const BUFS: usize = 8;
@@ -554,6 +742,15 @@ mod tests {
         }
     }
 
+    /// Claim both roles of a fresh ring, as an in-process caller
+    /// does.
+    fn endpoints<'a>(ring: &MpscRing<'a>) -> (MpscProducer<'a>, MpscConsumer<'a>) {
+        (
+            ring.claim_producer().unwrap(),
+            ring.claim_consumer().unwrap(),
+        )
+    }
+
     /// Segments free by the in-use word.
     fn free_segments(prod: &MpscProducer<'_>) -> u32 {
         let segs = &prod.segs;
@@ -579,7 +776,7 @@ mod tests {
             err(64, 4, MAX_SEGMENTS + 1, &mut pool),
             Some(Error::BadSegmentCount)
         );
-        // 32 one-line slots do not fit a 22-line buffer.
+        // 32 one-line slots do not fit a 23-line buffer.
         assert_eq!(err(64, 32, 2, &mut pool), Some(Error::TooSmall));
         // More segments than the pool has: nothing is kept.
         assert_eq!(
@@ -596,7 +793,7 @@ mod tests {
         for cap in [1u32, 4, 16] {
             assert_eq!(
                 segment_size(64, cap),
-                6 * CACHE_LINE_SIZE as u64 + 64 * cap as u64
+                7 * CACHE_LINE_SIZE as u64 + 64 * cap as u64
             );
         }
     }
@@ -614,6 +811,16 @@ mod tests {
         );
         assert_eq!(segs.claim().load(Ordering::Relaxed), word(0, 0));
         assert_eq!(segs.in_use().load(Ordering::Relaxed), 1);
+        // No role held, the consumer's checkpoint the ring's start,
+        // and the most producers the default.
+        let c = segs.claims();
+        for w in [&c.roles, &c.cons_cur, &c.cons_pos] {
+            assert_eq!(w.load(Ordering::Relaxed), 0);
+        }
+        assert_eq!(
+            header0.info.max_producers.load(Ordering::Relaxed),
+            u16::MAX as u32
+        );
         let base = pool.bufs_ptr();
         for (i, entry) in header0.table.iter().enumerate() {
             let idx = entry.load(Ordering::Relaxed);
@@ -636,6 +843,7 @@ mod tests {
             assert_eq!(info.seg_capacity.load(Ordering::Relaxed), 4);
             assert_eq!(info.seg_count.load(Ordering::Relaxed), 3);
             assert_eq!(info.seg_num.load(Ordering::Relaxed), seg);
+            assert_eq!(info.cons_resume.load(Ordering::Relaxed), 0);
         }
     }
 
@@ -687,9 +895,11 @@ mod tests {
         let ring_2 = unsafe { MpscRing::attach(&b2, first) }.unwrap();
         assert_eq!(ring_2.first_segment(), first);
         assert_eq!(ring_2.segs.headers, ring_1.segs.headers);
-        // The producer from one handle, the consumer from the other.
-        let (prod, _) = ring_1.split();
-        let (_, mut cons) = ring_2.split();
+        // The producer from one handle, the consumer from the other,
+        // and the roles are one word for both.
+        let prod = ring_1.claim_producer().unwrap();
+        let mut cons = ring_2.claim_consumer().unwrap();
+        assert_eq!(ring_1.claim_consumer().err(), Some(Error::RoleTaken));
         let mut next = 0u64;
         for burst in [3u64, 9, 12, 5, 12, 12, 7] {
             send(&prod, next, next + burst);
@@ -743,6 +953,14 @@ mod tests {
         assert_eq!(attach(first), Some(Error::TooSmall));
         block.info.seg_capacity.store(4, Ordering::Relaxed);
 
+        // A ring no producer could join.
+        block.info.max_producers.store(0, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadMaxProducers));
+        block
+            .info
+            .max_producers
+            .store(u16::MAX as u32, Ordering::Relaxed);
+
         // Segment 0 claiming to be another segment.
         block.info.seg_num.store(1, Ordering::Relaxed);
         assert_eq!(attach(first), Some(Error::BadSegment));
@@ -767,6 +985,107 @@ mod tests {
     }
 
     #[test]
+    fn init_rejects_no_producers() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        assert_eq!(
+            MpscRing::init_with_max_producers(&mut pool, 64, 4, 2, 0).err(),
+            Some(Error::BadMaxProducers)
+        );
+    }
+
+    #[test]
+    // Dropping an endpoint is the behavior under test.
+    #[allow(clippy::drop_non_drop)]
+    fn roles_are_claimed_by_count() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::init_with_max_producers(&mut pool, 64, 4, 2, 2).unwrap();
+        let roles = |ring: &MpscRing<'_>| ring.segs.roles().load(Ordering::Relaxed);
+        assert_eq!(roles(&ring), 0);
+
+        // Producers up to the most, then RoleTaken, and a release
+        // makes room.
+        let p1 = ring.claim_producer().unwrap();
+        let p2 = ring.claim_producer().unwrap();
+        assert_eq!(roles(&ring), 2);
+        assert_eq!(ring.claim_producer().err(), Some(Error::RoleTaken));
+        p1.release();
+        assert_eq!(roles(&ring), 1);
+        let p3 = ring.claim_producer().unwrap();
+
+        // One consumer, and it may come and go.
+        let cons = ring.claim_consumer().unwrap();
+        assert_eq!(roles(&ring), CONSUMER | 2);
+        assert_eq!(ring.claim_consumer().err(), Some(Error::RoleTaken));
+        cons.release();
+        let cons = ring.claim_consumer().unwrap();
+
+        // Dropping an endpoint writes nothing: its role stays held.
+        drop(p2);
+        assert_eq!(roles(&ring), CONSUMER | 2);
+        drop(cons);
+        assert_eq!(ring.claim_consumer().err(), Some(Error::RoleTaken));
+        p3.release();
+        assert_eq!(roles(&ring), CONSUMER | 1);
+    }
+
+    #[test]
+    fn a_released_consumer_resumes_where_it_stopped() {
+        // Consumers and producers claimed and released from two
+        // attached handles, as processes would, stopping mid-segment
+        // and across switches: every message arrives once, in order.
+        let mut r = Region::new();
+        let (base, len) = region(&mut r);
+        let first = with_init_pool(base, len, |pool| {
+            MpscRing::init(pool, 64, 4, 3).unwrap().first_segment()
+        });
+        let (b1, b2) = (attach_pool(base, len), attach_pool(base, len));
+        // SAFETY: the index came from first_segment of a ring over
+        // this pool, whose segments are still the ring's.
+        let rings = [
+            unsafe { MpscRing::attach(&b1, first) }.unwrap(),
+            unsafe { MpscRing::attach(&b2, first) }.unwrap(),
+        ];
+        let (mut sent, mut read) = (0u64, 0u64);
+        for (round, (burst, take)) in [(3u64, 1u64), (4, 5), (5, 3), (3, 6), (6, 4), (2, 4)]
+            .into_iter()
+            .enumerate()
+        {
+            let ring = &rings[round % 2];
+            let prod = ring.claim_producer().unwrap();
+            send(&prod, sent, sent + burst);
+            sent += burst;
+            prod.release();
+            let mut cons = rings[(round + 1) % 2].claim_consumer().unwrap();
+            recv(&mut cons, read, read + take);
+            read += take;
+            cons.release();
+        }
+        assert_eq!(read, sent);
+        let mut cons = rings[0].claim_consumer().unwrap();
+        assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+        // Every segment but the current one is back.
+        let probe = rings[1].claim_producer().unwrap();
+        assert_eq!(free_segments(&probe).count_ones(), 2);
+        assert!(probe.switches() > 3);
+        assert_eq!(probe.segment(), cons.segment());
+    }
+
+    #[test]
+    fn a_checkpoint_naming_no_segment_is_refused() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::init(&mut pool, 64, 4, 2).unwrap();
+        ring.segs.claims().cons_cur.store(2, Ordering::Relaxed);
+        assert_eq!(ring.claim_consumer().err(), Some(Error::BadCheckpoint));
+        // The role is left free.
+        assert_eq!(ring.segs.roles().load(Ordering::Relaxed), 0);
+        ring.segs.claims().cons_cur.store(1, Ordering::Relaxed);
+        assert!(ring.claim_consumer().is_ok());
+    }
+
+    #[test]
     fn words_pack_segment_over_position() {
         assert_eq!(word_seg(word(31, 5)), 31);
         assert_eq!(word_pos(word(31, 5)), 5);
@@ -778,7 +1097,7 @@ mod tests {
     fn one_segment_is_a_ring() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = MpscRing::init(&mut pool, 64, 4, 1).unwrap().split();
+        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 4, 1).unwrap());
         assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
         for lap in 0..3u64 {
             send(&prod, lap * 4, lap * 4 + 4);
@@ -797,7 +1116,7 @@ mod tests {
         for (cap, count) in [(1u32, 2u32), (4, 3), (16, 4)] {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-            let (prod, mut cons) = MpscRing::init(&mut pool, 64, cap, count).unwrap().split();
+            let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, cap, count).unwrap());
             let total = (cap * count) as u64;
             send(&prod, 0, total);
             assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
@@ -820,7 +1139,7 @@ mod tests {
         for (cap, count) in [(1u32, 2u32), (1, 5), (2, 3), (4, 2), (16, 8)] {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-            let (prod, mut cons) = MpscRing::init(&mut pool, 64, cap, count).unwrap().split();
+            let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, cap, count).unwrap());
             let burst = (cap * count) as u64;
             let mut next = 0u64;
             for round in 0..200u64 {
@@ -847,7 +1166,7 @@ mod tests {
         // the reserve after its message, one poll late.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = MpscRing::init(&mut pool, 64, 1, 3).unwrap().split();
+        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 1, 3).unwrap());
         for i in 0..10u64 {
             send(&prod, i, i + 1);
             recv(&mut cons, i, i + 1);
@@ -875,7 +1194,7 @@ mod tests {
         // consumer frees a slot.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = MpscRing::init(&mut pool, 64, 1, 2).unwrap().split();
+        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 1, 2).unwrap());
         send(&prod, 0, 2);
         assert_eq!(prod.segment(), 1);
         assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
@@ -906,7 +1225,7 @@ mod tests {
     fn policies_count_and_give_up() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = MpscRing::init(&mut pool, 64, 2, 1).unwrap().split();
+        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 2, 1).unwrap());
         let mut seen = Vec::new();
         let err = cons
             .reserve_slot_with::<Msg>(|attempt| {
@@ -943,7 +1262,7 @@ mod tests {
     fn abandoned_read_guard_redelivers() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = MpscRing::init(&mut pool, 64, 1, 2).unwrap().split();
+        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 1, 2).unwrap());
         send(&prod, 0, 2);
         // The first read is the last message of segment 0, and an
         // abandoned read re-delivers it, the switch after it.
@@ -956,55 +1275,23 @@ mod tests {
     }
 
     #[test]
-    fn panicking_fill_tombstones_and_skips() {
+    fn a_panicking_fill_jams_the_ring() {
+        // No unwind guard: a fill that panics leaves its slot
+        // claimed and never committed, as a producer killed there
+        // does, so the consumer stops at it and the messages after
+        // it are never delivered. The ring is recovered by a
+        // restart.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = MpscRing::init(&mut pool, 64, 4, 2).unwrap().split();
-        // A committed message, a panicked fill, another committed
-        // message.
-        send(&prod, 0, 1);
-        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            prod.send_with::<Msg>(
-                |_| false,
-                |m| {
-                    m.seq = 99;
-                    panic!("fill panics");
-                },
-            )
-        }));
-        assert!(unwound.is_err());
-        send(&prod, 1, 2);
-        recv(&mut cons, 0, 2);
-        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
-        // The skipped slot is claimable again: a full lap of the
-        // segment still fits 4 messages before the switch.
-        send(&prod, 2, 6);
-        assert_eq!(prod.switches(), 0);
-        send(&prod, 6, 7);
-        assert_eq!(prod.switches(), 1);
-        recv(&mut cons, 2, 7);
-        assert_eq!(cons.switches(), 1);
-    }
-
-    #[test]
-    fn tombstone_before_a_seal_is_skipped() {
-        // The last slot of a segment tombstoned, then the switch:
-        // the consumer skips it, sees the seal at the end position,
-        // and follows.
-        let mut r = Region::new();
-        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = MpscRing::init(&mut pool, 64, 2, 2).unwrap().split();
+        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 4, 2).unwrap());
         send(&prod, 0, 1);
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             prod.send_with::<Msg>(|_| false, |_: &mut Msg| panic!("fill panics"))
         }));
         assert!(unwound.is_err());
         send(&prod, 1, 3);
-        assert_eq!(prod.segment(), 1);
-        recv(&mut cons, 0, 3);
-        assert_eq!(cons.segment(), 1);
-        assert_eq!(cons.switches(), 1);
-        assert_eq!(free_segments(&prod), 1);
+        recv(&mut cons, 0, 1);
+        assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
     }
 
     #[test]
@@ -1027,7 +1314,7 @@ mod tests {
             ring.segs.seal(seg).store(start, Ordering::Relaxed);
         }
         ring.segs.claim().store(word(0, start), Ordering::Relaxed);
-        let (prod, mut cons) = ring.split();
+        let (prod, mut cons) = endpoints(&ring);
         cons.st.pos = start;
         cons.st.resume = [start; MAX_SEGMENTS as usize];
         // Batches of at most the ring's 12, so no send finds Full.
@@ -1048,7 +1335,7 @@ mod tests {
         // position.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = MpscRing::init(&mut pool, 64, 2, 2).unwrap().split();
+        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 2, 2).unwrap());
         send(&prod, 0, 3);
         recv(&mut cons, 0, 3);
         assert_eq!(cons.segment(), 1);
@@ -1068,23 +1355,38 @@ mod tests {
     fn stream(producers: u64, cap: u32, seg_count: u32, count: u64) {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = MpscRing::init(&mut pool, 64, cap, seg_count)
-            .unwrap()
-            .split();
+        let ring = MpscRing::init(&mut pool, 64, cap, seg_count).unwrap();
+        let mut cons = ring.claim_consumer().unwrap();
+        let prods: Vec<_> = (0..producers)
+            .map(|_| ring.claim_producer().unwrap())
+            .collect();
+        let probe = ring.claim_producer().unwrap();
+        stream_threads(prods, &mut cons, count);
+        // Every seal was consumed once, and every segment but the
+        // current one is back.
+        assert_eq!(cons.switches(), probe.switches());
+        assert_eq!(free_segments(&probe).count_ones(), seg_count - 1);
+        assert_eq!(probe.segment(), cons.segment());
+    }
+
+    /// Each producer on its own thread sending `count` messages, and
+    /// the consumer on its own, all spinning, per-producer FIFO
+    /// checked at the consumer.
+    fn stream_threads(prods: Vec<MpscProducer<'_>>, cons: &mut MpscConsumer<'_>, count: u64) {
+        let producers = prods.len() as u64;
         std::thread::scope(|s| {
-            for p in 0..producers {
-                let prod = prod.clone();
+            for (p, prod) in prods.into_iter().enumerate() {
                 s.spawn(move || {
                     for i in 0..count {
                         prod.send_with::<Msg>(crate::policy::spin, |m| {
                             m.seq = i;
-                            m.val = p;
+                            m.val = p as u64;
                         })
                         .unwrap(); // OK: policy::spin never gives up
                     }
+                    prod.release();
                 });
             }
-            let cons = &mut cons;
             s.spawn(move || {
                 // Global arrival order is claim order, and only
                 // per-producer FIFO is promised.
@@ -1099,11 +1401,6 @@ mod tests {
                 assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
             });
         });
-        // Every seal was consumed once, and every segment but the
-        // current one is back.
-        assert_eq!(cons.switches(), prod.switches());
-        assert_eq!(free_segments(&prod).count_ones(), seg_count - 1);
-        assert_eq!(prod.segment(), cons.segment());
     }
 
     /// One cache line of heap backing store, so a `Vec` of them is
@@ -1129,13 +1426,12 @@ mod tests {
 
     /// Run `f` on a ring of `count` segments of `depth` one-line
     /// slots over a pool holding exactly those segments.
-    fn with_ring(count: u32, depth: u32, f: impl FnOnce(MpscProducer<'_>, MpscConsumer<'_>)) {
+    fn with_ring(count: u32, depth: u32, f: impl FnOnce(&MpscRing<'_>)) {
         let buf = segment_size(64, depth);
         let bytes = size_of::<PoolHeader>() as u64 + buf * count as u64;
         let mut store = vec![Line([0; CACHE_LINE_SIZE]); bytes.div_ceil(64) as usize];
         let mut pool = Pool::init(store.as_mut_slice().as_mut_bytes(), buf as u32, count).unwrap();
-        let (prod, cons) = MpscRing::init(&mut pool, 64, depth, count).unwrap().split();
-        f(prod, cons);
+        f(&MpscRing::init(&mut pool, 64, depth, count).unwrap());
     }
 
     #[test]
@@ -1146,7 +1442,8 @@ mod tests {
         let (counts, depths, _) = matrix();
         for &count in &counts {
             for &depth in &depths {
-                with_ring(count, depth, |prod, mut cons| {
+                with_ring(count, depth, |ring| {
+                    let (prod, mut cons) = endpoints(ring);
                     let total = (count * depth) as u64;
                     let mut used = 1u32 << prod.segment();
                     for i in 0..total {
@@ -1178,7 +1475,8 @@ mod tests {
         let rounds = if cfg!(miri) { 5 } else { 40 };
         for &count in &counts {
             for &depth in &depths {
-                with_ring(count, depth, |prod, mut cons| {
+                with_ring(count, depth, |ring| {
+                    let (prod, mut cons) = endpoints(ring);
                     let capacity = (count * depth) as u64;
                     let mut next = 0u64;
                     for round in 0..rounds {
@@ -1205,41 +1503,20 @@ mod tests {
         for &count in &counts {
             for &depth in &depths {
                 for &producers in &producers {
-                    with_ring(count, depth, |prod, mut cons| {
-                        std::thread::scope(|s| {
-                            for p in 0..producers {
-                                let prod = prod.clone();
-                                s.spawn(move || {
-                                    for i in 0..total {
-                                        prod.send_with::<Msg>(crate::policy::spin, |m| {
-                                            m.seq = i;
-                                            m.val = p;
-                                        })
-                                        .unwrap(); // OK: policy::spin never gives up
-                                    }
-                                });
-                            }
-                            let cons = &mut cons;
-                            s.spawn(move || {
-                                let mut next = vec![0u64; producers as usize];
-                                for _ in 0..producers * total {
-                                    let msg =
-                                        cons.reserve_slot_with::<Msg>(crate::policy::spin).unwrap(); // OK: policy::spin never gives up
-                                    let p = msg.val as usize;
-                                    assert_eq!(msg.seq, next[p], "per-producer order broken");
-                                    next[p] += 1;
-                                    msg.release();
-                                }
-                                assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
-                            });
-                        });
+                    with_ring(count, depth, |ring| {
+                        let mut cons = ring.claim_consumer().unwrap();
+                        let prods = (0..producers)
+                            .map(|_| ring.claim_producer().unwrap())
+                            .collect();
+                        stream_threads(prods, &mut cons, total);
+                        let probe = ring.claim_producer().unwrap();
                         assert_eq!(
                             cons.switches(),
-                            prod.switches(),
+                            probe.switches(),
                             "{count} segments at depth {depth}, {producers} producers"
                         );
-                        assert_eq!(free_segments(&prod).count_ones(), count - 1);
-                        assert_eq!(prod.segment(), cons.segment());
+                        assert_eq!(free_segments(&probe).count_ones(), count - 1);
+                        assert_eq!(probe.segment(), cons.segment());
                     });
                 }
             }
@@ -1266,11 +1543,11 @@ mod tests {
     #[test]
     fn threaded_shared_reference_producers() {
         // The Sync path: two threads share one &MpscProducer
-        // instead of cloning.
+        // instead of each claiming its own.
         const COUNT: u64 = if cfg!(miri) { 100 } else { 50_000 };
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = MpscRing::init(&mut pool, 64, 4, 2).unwrap().split();
+        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 4, 2).unwrap());
         let prod = &prod;
         std::thread::scope(|s| {
             for p in 0..2u64 {

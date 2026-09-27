@@ -70,7 +70,7 @@ no side can sleep until the other acts.
 - [docs: mpsc v3 design and restart domains][22] (done)
 - [feat: mpsc v3 as a copy of v2][23] (done)
 - [feat: mpsc v3 control block and attach][24] (done)
-- [feat: mpsc v3 claims word and roles][25]
+- [feat: mpsc v3 claims word and roles][25] (done)
 - [feat: mpsc v3 ring release][26]
 - [feat: mpsc v3 single and multi segment paths][27]
 - [feat: mpsc v3 wait and wake][28]
@@ -156,6 +156,19 @@ the pool and the first segment's index can attach.
 
 The roles are claimed and released through one claims word, and `split`, producer `Clone`, and the
 unwind guard go.
+
+- The claims line joins the header as line 4, so the header is the design note's seven lines, and
+  the info line gains the most producers and the consumer's resume position per segment.
+- The consumer's switch count is its own since its claim, not checkpointed: the count is a
+  diagnostic, and the producers' shared count is the ring's.
+- New errors: `RingClosed` for a claim on a released ring, ready for the release rung, and
+  `BadMaxProducers` for a ring no producer could join. `RoleTaken` also covers a ring at its most
+  producers.
+- The unwind guard's two tests became `a_panicking_fill_jams_the_ring`, which pins the price: the
+  consumer stops at the panicked slot.
+- A finding: a ring of segments cannot hold its full `seg_count * seg_capacity` unread, since a
+  segment is given back only at the consumer's reserve after its last release. v2 is the same, and
+  the resume test keeps its unread count well under capacity.
 
 ##### feat: mpsc v3 ring release
 
