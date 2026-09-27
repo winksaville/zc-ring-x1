@@ -1,16 +1,17 @@
-//! MPSC v3 ring: v2's ring of segments, copied so a second
-//! process can attach to it and the two measure side by side, per
-//! the design doc's "MPSC v3: attachable segments with counted
-//! roles" section.
+//! MPSC v3 ring: v2's ring of segments over a ring that describes
+//! itself in the region, so a second process can attach to it,
+//! per the design doc's "MPSC v3: attachable segments with counted
+//! roles" section. v2 stays as built to measure against.
 //!
-//! - This rung is the verbatim copy. The control block, `attach`,
-//!   the counted roles, the ring's release, the compile-time
-//!   segment modes, and waiting are the rungs after it, and until
-//!   they land v3 behaves as v2 does.
+//! - What v3 adds to v2 so far: a control block at the front of
+//!   segment 0 (magic, layout version, geometry, and the table of
+//!   every segment's pool buffer index), [`MpscRing::attach`] from
+//!   a pool, and [`MpscRing::first_segment`]. The counted roles,
+//!   the ring's release, the compile-time segment modes, and
+//!   waiting are the rungs after it.
 //! - Segments: up to [`MAX_SEGMENTS`] taken from the application's
-//!   [`Pool`] at [`MpscRing::init`], each a header of three lines
-//!   then `seg_capacity` slots opening with the seq word, as
-//!   `spsc::v3` lays its segments out.
+//!   [`Pool`] at [`MpscRing::init`], each a header of six lines
+//!   then `seg_capacity` slots opening with the seq word.
 //! - Words: 32 bits everywhere. A position is [`SEQ_BITS`] wide,
 //!   and the slot word holds v1's values in those bits, claimable
 //!   at `pos`, committed at `pos + M + 1`, released at `pos + M`,
@@ -65,6 +66,17 @@ pub(crate) const TOMBSTONE: u32 = 1 << 31;
 
 const _: () = assert!(SEG_SHIFT + MAX_SEGMENTS.trailing_zeros() <= 31);
 
+/// Layout marker written by [`MpscRing::init`] into every
+/// segment's header, distinct from the other rings' and the
+/// pools'.
+const MAGIC: u32 = 0x5A43_4D33; // "ZCM3"
+
+/// Bumped on any change to the segment layout.
+const LAYOUT_VERSION: u32 = 1;
+
+/// A table entry naming no segment.
+const NO_SEGMENT: u32 = u32::MAX;
+
 /// The word naming segment `seg` and position `pos`.
 #[inline]
 fn word(seg: u32, pos: u32) -> u32 {
@@ -83,24 +95,49 @@ fn word_pos(w: u32) -> u32 {
     w & SEQ_MASK
 }
 
-/// The three lines at the front of every segment.
+/// The first line of every segment: which ring it belongs to,
+/// written by [`MpscRing::init`] and read back by `attach`.
 ///
-/// - Only segment 0's `claim` and `in_use` lines are used, so
-///   every segment has the same layout. The claim word is the
-///   contended line and has it alone.
+/// - Every field is a `u32` atomic, so a process reads the line
+///   with the ordering the magic's Acquire gives it.
+#[repr(C)]
+struct Info {
+    magic: AtomicU32,
+    layout_version: AtomicU32,
+    slot_size: AtomicU32,
+    seg_capacity: AtomicU32,
+    seg_count: AtomicU32,
+    /// This segment's number in the ring.
+    seg_num: AtomicU32,
+}
+
+/// The six lines at the front of every segment: the ring's
+/// control block in segment 0, and the same layout in the others
+/// so every segment's slots start at one offset.
+///
+/// - Only segment 0's `claim`, `in_use`, and `table` lines are
+///   used. The claim word is the contended line and has it alone.
+/// - The pool buffer index of each segment is in the table, so a
+///   process holding the pool and segment 0's index finds every
+///   segment.
 #[repr(C)]
 struct SegmentHeader {
-    /// The seal: MOVED, the next segment, and the end position,
-    /// stored by the producer that moved the ring on, cleared by
-    /// the producer that next takes this segment, and read by
-    /// the consumer when a slot is not committed.
+    /// Line 0: the ring's identity and geometry.
+    info: CacheAligned<Info>,
+    /// Line 1: the seal: MOVED, the next segment, and the end
+    /// position, stored by the producer that moved the ring on,
+    /// cleared by the producer that next takes this segment, and
+    /// read by the consumer when a slot is not committed.
     seal: CacheAligned<AtomicU32>,
-    /// Segment 0: the current segment and the next position to
-    /// claim, CAS-claimed by every producer.
+    /// Line 2, segment 0: the current segment and the next
+    /// position to claim, CAS-claimed by every producer.
     claim: CacheAligned<AtomicU32>,
-    /// Segment 0: the in-use word and the switch count, both
-    /// touched on the switch path only.
+    /// Line 3, segment 0: the in-use word and the switch count,
+    /// both touched on the switch path only.
     in_use: CacheAligned<InUseLine>,
+    /// Lines 4 and 5, segment 0: the pool buffer index of segment
+    /// `i` at `table[i]`, [`NO_SEGMENT`] past `seg_count`.
+    table: CacheAligned<[AtomicU32; MAX_SEGMENTS as usize]>,
 }
 
 /// The in-use line's two words.
@@ -118,7 +155,7 @@ struct InUseLine {
     switches: AtomicU32,
 }
 
-const _: () = assert!(size_of::<SegmentHeader>() == 3 * CACHE_LINE_SIZE);
+const _: () = assert!(size_of::<SegmentHeader>() == 6 * CACHE_LINE_SIZE);
 
 /// Bytes a segment needs: its header lines, then the slots.
 ///
@@ -130,9 +167,12 @@ pub fn segment_size(slot_size: u32, seg_capacity: u32) -> u64 {
     size_of::<SegmentHeader>() as u64 + slot_size as u64 * seg_capacity as u64
 }
 
-/// A ring's geometry and its segments' addresses, the state
-/// every endpoint starts from.
+/// A ring's geometry and its segments' addresses in this process,
+/// the state every endpoint starts from.
 ///
+/// - Built from the table of pool buffer indices by `init` and
+///   `attach` alike, so each process holds its own addresses for
+///   the same segments.
 /// - Borrowed on every path, never copied: v3's fast-path
 ///   finding.
 #[derive(Clone, Copy)]
@@ -155,6 +195,40 @@ struct Segments {
 }
 
 impl Segments {
+    /// The addresses of the segments `indices` names, in the pool
+    /// whose buffer array is at `base`, built the same way by
+    /// `init` and `attach`.
+    fn load(
+        base: *mut u8,
+        buf_size: usize,
+        indices: &[u32; MAX_SEGMENTS as usize],
+        slot_size: u32,
+        seg_capacity: u32,
+        seg_count: u32,
+    ) -> Self {
+        let mut slots = [core::ptr::null_mut(); MAX_SEGMENTS as usize];
+        let mut headers = [core::ptr::null(); MAX_SEGMENTS as usize];
+        for seg in 0..seg_count as usize {
+            // SAFETY: every index was handed out by the pool or
+            // validated against its count, so the buffer is inside
+            // the buffer array, and it holds a segment_size segment.
+            unsafe {
+                let seg_base = base.add(indices[seg] as usize * buf_size);
+                slots[seg] = seg_base.add(size_of::<SegmentHeader>());
+                headers[seg] = seg_base as *const SegmentHeader;
+            }
+        }
+        Segments {
+            slots,
+            headers,
+            slot_size,
+            capacity: seg_capacity,
+            mask: seg_capacity - 1,
+            seg_count,
+            commit_add: seg_capacity + 1,
+        }
+    }
+
     /// The seq word of the slot at position `idx` in segment
     /// `seg`.
     #[inline]
@@ -181,7 +255,7 @@ impl Segments {
     fn header(&self, seg: u32) -> &SegmentHeader {
         // SAFETY: seg < seg_count, and the header is the front of
         // a buffer that lives as long as the pool region the ring
-        // borrows from.
+        // borrows from, every field atomic.
         unsafe { &*self.headers[seg as usize] }
     }
 
@@ -225,6 +299,9 @@ impl Segments {
 pub struct MpscRing<'a> {
     /// Geometry and segment addresses.
     segs: Segments,
+    /// The pool buffer index of segment 0, where the control
+    /// block is.
+    first_segment: u32,
     _region: PhantomData<&'a [u8]>,
 }
 
@@ -245,6 +322,10 @@ impl<'a> MpscRing<'a> {
     /// - The pool is borrowed only here. The segments stay
     ///   allocated for the life of the pool region, as a
     ///   [`BufSlot`](crate::BufSlot) dropped without `free` does.
+    /// - Every segment's header names the ring, and segment 0's
+    ///   holds the table of segments, so a process holding the
+    ///   pool and [`first_segment`](MpscRing::first_segment) can
+    ///   find the ring.
     pub fn init(
         pool: &mut Pool<'a>,
         slot_size: u32,
@@ -257,11 +338,11 @@ impl<'a> MpscRing<'a> {
         }
         let mut taken: [Option<crate::BufSlot<'a, [u8]>>; MAX_SEGMENTS as usize] =
             core::array::from_fn(|_| None);
-        let mut bases = [core::ptr::null_mut::<u8>(); MAX_SEGMENTS as usize];
+        let mut indices = [NO_SEGMENT; MAX_SEGMENTS as usize];
         for seg in 0..seg_count as usize {
             match pool.alloc_bytes() {
                 Ok(buf) => {
-                    bases[seg] = buf.as_mut_ptr();
+                    indices[seg] = buf.idx();
                     taken[seg] = Some(buf);
                 }
                 Err(_) => {
@@ -272,45 +353,135 @@ impl<'a> MpscRing<'a> {
         }
         // The segments stay allocated: their guards go out of
         // scope with `taken`, never freed.
-        let mut slots = [core::ptr::null_mut(); MAX_SEGMENTS as usize];
-        let mut headers = [core::ptr::null(); MAX_SEGMENTS as usize];
-        for (seg, &base) in bases.iter().take(seg_count as usize).enumerate() {
-            // SAFETY: base is a buffer of at least segment_size
-            // bytes the pool just handed out, line-aligned, and
-            // nothing else can reach it until the ring is split:
-            // the header lines and each slot's header are ours to
-            // write.
+        let base = pool.bufs_ptr();
+        let buf_size = pool.buf_size() as usize;
+        for seg in 0..seg_count as usize {
+            // SAFETY: the index names a buffer of at least
+            // segment_size bytes the pool just handed out,
+            // line-aligned, and nothing else can reach it until
+            // the ring is split: the header lines and each slot's
+            // header are ours to write.
             unsafe {
-                core::ptr::write_bytes(base, 0, size_of::<SegmentHeader>());
-                let seg_slots = base.add(size_of::<SegmentHeader>());
+                let seg_base = base.add(indices[seg] as usize * buf_size);
+                core::ptr::write_bytes(seg_base, 0, size_of::<SegmentHeader>());
+                let header = &*(seg_base as *const SegmentHeader);
+                let info = &header.info;
+                info.layout_version.store(LAYOUT_VERSION, Ordering::Relaxed);
+                info.slot_size.store(slot_size, Ordering::Relaxed);
+                info.seg_capacity.store(seg_capacity, Ordering::Relaxed);
+                info.seg_count.store(seg_count, Ordering::Relaxed);
+                info.seg_num.store(seg as u32, Ordering::Relaxed);
+                if seg == 0 {
+                    for (entry, &idx) in header.table.iter().zip(indices.iter()) {
+                        entry.store(idx, Ordering::Relaxed);
+                    }
+                    // The ring starts in segment 0 at position 0,
+                    // segment 0 in use.
+                    header.claim.store(word(0, 0), Ordering::Relaxed);
+                    header.in_use.in_use.store(1, Ordering::Relaxed);
+                }
+                let seg_slots = seg_base.add(size_of::<SegmentHeader>());
                 for i in 0..seg_capacity {
                     let slot = seg_slots.add(i as usize * slot_size as usize);
                     core::ptr::write_bytes(slot, 0, SLOT_HEADER_BYTES);
                     // `seq[i] = i`: every slot claimable for lap 0.
                     (*(slot as *const AtomicU32)).store(seq_of(i), Ordering::Relaxed);
                 }
-                slots[seg] = seg_slots;
-                headers[seg] = base as *const SegmentHeader;
+                // The magic last (Release): a reader that sees it
+                // sees the rest of the block.
+                info.magic.store(MAGIC, Ordering::Release);
             }
         }
-        let segs = Segments {
-            slots,
-            headers,
-            slot_size,
-            capacity: seg_capacity,
-            mask: seg_capacity - 1,
-            seg_count,
-            commit_add: seg_capacity + 1,
-        };
-        // The ring starts in segment 0 at position 0, segment 0
-        // in use. The threads that use the ring start after this,
-        // so Relaxed is enough here.
-        segs.claim().store(word(0, 0), Ordering::Relaxed);
-        segs.in_use().store(1, Ordering::Relaxed);
         Ok(MpscRing {
-            segs,
+            segs: Segments::load(base, buf_size, &indices, slot_size, seg_capacity, seg_count),
+            first_segment: indices[0],
             _region: PhantomData,
         })
+    }
+
+    /// Join a ring another process (or an earlier call) initialized
+    /// over `pool`, from the pool buffer index of its segment 0.
+    ///
+    /// - Reads the control block, checks every field and every
+    ///   table entry against the pool's geometry, and every
+    ///   segment's own header against the block, so a hostile
+    ///   region is an `Err`, never an out-of-bounds access.
+    ///
+    /// # Safety
+    ///
+    /// - `first_segment` came from
+    ///   [`first_segment`](MpscRing::first_segment) of a ring
+    ///   initialized over this pool's region, and its segments are
+    ///   still the ring's: validation cannot tell a ring's segment
+    ///   from a buffer since freed and reused, and the ring writes
+    ///   seq words into every segment it is told it has.
+    pub unsafe fn attach(pool: &Pool<'a>, first_segment: u32) -> Result<Self, Error> {
+        let buf_count = pool.buf_count();
+        if first_segment >= buf_count {
+            return Err(Error::BadSegment);
+        }
+        let base = pool.bufs_ptr();
+        let buf_size = pool.buf_size() as usize;
+        // SAFETY: first_segment < buf_count, so the header is the
+        // line-aligned front of a buffer inside the pool's region,
+        // and every field read is atomic.
+        let block =
+            unsafe { &*(base.add(first_segment as usize * buf_size) as *const SegmentHeader) };
+        // Acquire pairs with init's Release store of the magic.
+        if block.info.magic.load(Ordering::Acquire) != MAGIC {
+            return Err(Error::BadMagic);
+        }
+        if block.info.layout_version.load(Ordering::Relaxed) != LAYOUT_VERSION {
+            return Err(Error::BadLayoutVersion);
+        }
+        let slot_size = block.info.slot_size.load(Ordering::Relaxed);
+        let seg_capacity = block.info.seg_capacity.load(Ordering::Relaxed);
+        let seg_count = block.info.seg_count.load(Ordering::Relaxed);
+        validate_geometry(slot_size, seg_capacity, seg_count)?;
+        if (buf_size as u64) < segment_size(slot_size, seg_capacity) {
+            return Err(Error::TooSmall);
+        }
+        if block.info.seg_num.load(Ordering::Relaxed) != 0 {
+            return Err(Error::BadSegment);
+        }
+        let mut indices = [NO_SEGMENT; MAX_SEGMENTS as usize];
+        for seg in 0..seg_count as usize {
+            let idx = block.table[seg].load(Ordering::Relaxed);
+            if idx >= buf_count || indices[..seg].contains(&idx) {
+                return Err(Error::BadSegment);
+            }
+            indices[seg] = idx;
+        }
+        if indices[0] != first_segment {
+            return Err(Error::BadSegment);
+        }
+        // Every segment's own header must agree with the block.
+        for (seg, &idx) in indices.iter().enumerate().take(seg_count as usize) {
+            // SAFETY: idx < buf_count, as checked above.
+            let info =
+                unsafe { &(*(base.add(idx as usize * buf_size) as *const SegmentHeader)).info };
+            let agrees = info.magic.load(Ordering::Acquire) == MAGIC
+                && info.layout_version.load(Ordering::Relaxed) == LAYOUT_VERSION
+                && info.slot_size.load(Ordering::Relaxed) == slot_size
+                && info.seg_capacity.load(Ordering::Relaxed) == seg_capacity
+                && info.seg_count.load(Ordering::Relaxed) == seg_count
+                && info.seg_num.load(Ordering::Relaxed) == seg as u32;
+            if !agrees {
+                return Err(Error::BadSegment);
+            }
+        }
+        Ok(MpscRing {
+            segs: Segments::load(base, buf_size, &indices, slot_size, seg_capacity, seg_count),
+            first_segment,
+            _region: PhantomData,
+        })
+    }
+
+    /// The pool buffer index of segment 0, where the ring's
+    /// control block is: what a process hands to another so it
+    /// can find the ring in the same pool.
+    pub fn first_segment(&self) -> u32 {
+        self.first_segment
     }
 
     /// Split into one producer handle and the consumer handle.
@@ -337,8 +508,9 @@ mod tests {
         val: u64,
     }
 
-    /// Test pool buffer: a segment of up to 16 one-line slots.
-    const BUF: usize = 3 * CACHE_LINE_SIZE + 16 * CACHE_LINE_SIZE;
+    /// Test pool buffer: a segment of up to 16 one-line slots
+    /// behind its six header lines.
+    const BUF: usize = 6 * CACHE_LINE_SIZE + 16 * CACHE_LINE_SIZE;
 
     /// Buffers in the test pool.
     const BUFS: usize = 8;
@@ -407,7 +579,7 @@ mod tests {
             err(64, 4, MAX_SEGMENTS + 1, &mut pool),
             Some(Error::BadSegmentCount)
         );
-        // 32 one-line slots do not fit a 19-line buffer.
+        // 32 one-line slots do not fit a 22-line buffer.
         assert_eq!(err(64, 32, 2, &mut pool), Some(Error::TooSmall));
         // More segments than the pool has: nothing is kept.
         assert_eq!(
@@ -424,9 +596,174 @@ mod tests {
         for cap in [1u32, 4, 16] {
             assert_eq!(
                 segment_size(64, cap),
-                3 * CACHE_LINE_SIZE as u64 + 64 * cap as u64
+                6 * CACHE_LINE_SIZE as u64 + 64 * cap as u64
             );
         }
+    }
+
+    #[test]
+    fn control_block_names_the_ring() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::init(&mut pool, 64, 4, 3).unwrap();
+        let segs = ring.segs;
+        let header0 = segs.header(0);
+        assert_eq!(
+            ring.first_segment(),
+            header0.table[0].load(Ordering::Relaxed)
+        );
+        assert_eq!(segs.claim().load(Ordering::Relaxed), word(0, 0));
+        assert_eq!(segs.in_use().load(Ordering::Relaxed), 1);
+        let base = pool.bufs_ptr();
+        for (i, entry) in header0.table.iter().enumerate() {
+            let idx = entry.load(Ordering::Relaxed);
+            assert_eq!(idx == NO_SEGMENT, i >= 3, "table entry {i}");
+            if i < 3 {
+                assert!(idx < BUFS as u32, "entry {i} names buffer {idx}");
+                // The table entry and the private address agree.
+                assert_eq!(
+                    segs.headers[i],
+                    base.wrapping_add(idx as usize * BUF) as *const _
+                );
+            }
+        }
+        // Every segment's first line names the ring and itself.
+        for seg in 0..3u32 {
+            let info = &segs.header(seg).info;
+            assert_eq!(info.magic.load(Ordering::Acquire), MAGIC);
+            assert_eq!(info.layout_version.load(Ordering::Relaxed), LAYOUT_VERSION);
+            assert_eq!(info.slot_size.load(Ordering::Relaxed), 64);
+            assert_eq!(info.seg_capacity.load(Ordering::Relaxed), 4);
+            assert_eq!(info.seg_count.load(Ordering::Relaxed), 3);
+            assert_eq!(info.seg_num.load(Ordering::Relaxed), seg);
+        }
+    }
+
+    /// The test region's base and length, for the attach tests.
+    ///
+    /// - Stacked Borrows: the handle `init` returns holds pointers
+    ///   under the `&mut` it took, and a write through an attached
+    ///   handle, which holds the region's own pointer, invalidates
+    ///   them, so a test drops the initializing handle before it
+    ///   attaches and never writes through both, the hazard the
+    ///   pools' `attach` notes.
+    fn region(r: &mut Region) -> (*mut u8, usize) {
+        (r.0.as_mut_ptr(), r.0.len())
+    }
+
+    /// Initialize the test pool over `base` and run `f` on it,
+    /// dropping the handle after.
+    fn with_init_pool<R>(base: *mut u8, len: usize, f: impl FnOnce(&mut Pool<'_>) -> R) -> R {
+        // SAFETY: base and len are the region, and the slice is
+        // the only use of the region while it lives.
+        let mut pool = Pool::init(
+            unsafe { &mut *core::ptr::slice_from_raw_parts_mut(base, len) },
+            BUF as u32,
+            BUFS as u32,
+        )
+        .unwrap();
+        f(&mut pool)
+    }
+
+    /// Attach a pool handle over `base`.
+    fn attach_pool<'a>(base: *mut u8, len: usize) -> Pool<'a> {
+        // SAFETY: the same live region, and no attached handle
+        // allocates, so no second popper exists.
+        unsafe { Pool::attach(base, len) }.unwrap()
+    }
+
+    #[test]
+    fn attach_joins_the_ring() {
+        let mut r = Region::new();
+        let (base, len) = region(&mut r);
+        let first = with_init_pool(base, len, |pool| {
+            MpscRing::init(pool, 64, 4, 3).unwrap().first_segment()
+        });
+        // Two attached handles, as two processes would hold.
+        let (b1, b2) = (attach_pool(base, len), attach_pool(base, len));
+        // SAFETY: the index came from first_segment of a ring over
+        // this pool, whose segments are still the ring's.
+        let ring_1 = unsafe { MpscRing::attach(&b1, first) }.unwrap();
+        let ring_2 = unsafe { MpscRing::attach(&b2, first) }.unwrap();
+        assert_eq!(ring_2.first_segment(), first);
+        assert_eq!(ring_2.segs.headers, ring_1.segs.headers);
+        // The producer from one handle, the consumer from the other.
+        let (prod, _) = ring_1.split();
+        let (_, mut cons) = ring_2.split();
+        let mut next = 0u64;
+        for burst in [3u64, 9, 12, 5, 12, 12, 7] {
+            send(&prod, next, next + burst);
+            recv(&mut cons, next, next + burst);
+            next += burst;
+        }
+        assert!(prod.switches() > 3 && prod.switches() == cons.switches());
+    }
+
+    #[test]
+    fn attach_rejects_hostile_control_blocks() {
+        let mut r = Region::new();
+        let (base, len) = region(&mut r);
+        let (first, spare) = with_init_pool(base, len, |pool| {
+            let ring = MpscRing::init(pool, 64, 4, 3).unwrap();
+            // A buffer that is no segment: free, its first word the
+            // free-stack link.
+            let spare = pool.alloc_bytes().unwrap();
+            let spare_idx = spare.idx();
+            spare.free();
+            (ring.first_segment(), spare_idx)
+        });
+        let b = attach_pool(base, len);
+        // SAFETY: each index names a buffer of this pool, and the
+        // ring's segments are still the ring's.
+        let attach = |idx| unsafe { MpscRing::attach(&b, idx) }.err();
+        // SAFETY: first names the ring's segment 0.
+        let ring = unsafe { MpscRing::attach(&b, first) }.unwrap();
+        let block = ring.segs.header(0);
+
+        // Not a buffer of the pool, and a buffer that is no segment.
+        assert_eq!(attach(BUFS as u32), Some(Error::BadSegment));
+        assert_eq!(attach(spare), Some(Error::BadMagic));
+
+        // A field at a time, restored after each.
+        let version = &block.info.layout_version;
+        version.store(LAYOUT_VERSION + 1, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadLayoutVersion));
+        version.store(LAYOUT_VERSION, Ordering::Relaxed);
+
+        block.info.slot_size.store(63, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSlotSize));
+        block.info.slot_size.store(64, Ordering::Relaxed);
+
+        block.info.seg_count.store(0, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSegmentCount));
+        block.info.seg_count.store(3, Ordering::Relaxed);
+
+        // A segment the pool's buffers cannot hold.
+        block.info.seg_capacity.store(32, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::TooSmall));
+        block.info.seg_capacity.store(4, Ordering::Relaxed);
+
+        // Segment 0 claiming to be another segment.
+        block.info.seg_num.store(1, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSegment));
+        block.info.seg_num.store(0, Ordering::Relaxed);
+
+        // A table naming a buffer outside the pool, one twice, and
+        // two whose headers are each other's.
+        let second = block.table[1].load(Ordering::Relaxed);
+        let third = block.table[2].load(Ordering::Relaxed);
+        block.table[1].store(BUFS as u32, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSegment));
+        block.table[1].store(first, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSegment));
+        block.table[1].store(third, Ordering::Relaxed);
+        block.table[2].store(second, Ordering::Relaxed);
+        assert_eq!(attach(first), Some(Error::BadSegment));
+        block.table[1].store(second, Ordering::Relaxed);
+        block.table[2].store(third, Ordering::Relaxed);
+
+        // Restored, it attaches.
+        assert!(attach(first).is_none());
     }
 
     #[test]

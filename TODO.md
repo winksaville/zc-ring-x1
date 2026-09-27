@@ -69,7 +69,7 @@ no side can sleep until the other acts.
 - [feat: attachable MPSC v3 opening][21] (done)
 - [docs: mpsc v3 design and restart domains][22] (done)
 - [feat: mpsc v3 as a copy of v2][23] (done)
-- [feat: mpsc v3 control block and attach][24]
+- [feat: mpsc v3 control block and attach][24] (done)
 - [feat: mpsc v3 claims word and roles][25]
 - [feat: mpsc v3 ring release][26]
 - [feat: mpsc v3 single and multi segment paths][27]
@@ -142,6 +142,15 @@ what v3 changes.
 
 Segment 0 holds the ring's identity, geometry, mode, and table of segments, so a process holding
 the pool and the first segment's index can attach.
+
+- Six header lines for now: the info line and the table join v2's seal, claim, and in-use lines.
+  The claims line comes with the roles and the mode with the modes, each into the info line or a
+  line of its own, so the layout grows to the design note's seven lines by the rungs that use it.
+- The endpoints keep v2's per-process pointers rather than v4's offsets: each process builds its
+  own from the table's buffer indices and its pool's buffer array, so nothing process-local is
+  shared, and the message path is v2's.
+- `attach` validates as v4's does, and its tests are v4's, the pairing across handles done by
+  `split` until the roles land.
 
 ##### feat: mpsc v3 claims word and roles
 
