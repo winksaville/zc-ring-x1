@@ -68,7 +68,7 @@ no side can sleep until the other acts.
 
 - [feat: attachable MPSC v3 opening][21] (done)
 - [docs: mpsc v3 design and restart domains][22] (done)
-- [feat: mpsc v3 as a copy of v2][23]
+- [feat: mpsc v3 as a copy of v2][23] (done)
 - [feat: mpsc v3 control block and attach][24]
 - [feat: mpsc v3 claims word and roles][25]
 - [feat: mpsc v3 ring release][26]
@@ -134,6 +134,9 @@ long-term possibilities, restart domains and what crossing one costs.
 
 v2's files copied to `src/mpsc/v3/` unchanged but for the names, so each later rung's diff is only
 what v3 changes.
+
+- The copy keeps v2's tests, so v3 passes them as v2 does until the rungs after it change what it
+  is, and its module docs say so.
 
 ##### feat: mpsc v3 control block and attach
 
