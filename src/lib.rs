@@ -53,6 +53,7 @@ pub mod policy;
 pub mod pool;
 mod registry;
 pub mod spsc;
+pub mod wake;
 
 #[cfg(target_has_atomic = "32")]
 pub use mpsc::{MpscConsumer, MpscHeader, MpscProducer, MpscReadSlot, MpscRing, mpsc_region_size};

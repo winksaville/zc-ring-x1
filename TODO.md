@@ -73,7 +73,7 @@ no side can sleep until the other acts.
 - [feat: mpsc v3 claims word and roles][25] (done)
 - [feat: mpsc v3 ring release][26] (done)
 - [feat: mpsc v3 single and multi segment paths][27] (done)
-- [feat: mpsc v3 wait and wake][28]
+- [feat: mpsc v3 wait and wake][28] (done)
 - [feat: mpsc v3 inter-process test][29]
 - [perf: mpsc v3 in the measurement tools][30]
 - [docs: mpsc v3 in the design note and guide][31]
@@ -206,6 +206,21 @@ and seal paths.
 
 A full producer and an empty consumer can sleep until woken, through a wake trait, with a futex
 implementation on Linux.
+
+- `crate::wake` holds `Wake`, `NoWake`, and `Futex<TIMEOUT_MS>`, crate-level rather than in `mpsc::v3`
+  so another ring can take them. `Wake` is static functions and a `WAKES` constant, so a ring over
+  `NoWake` compiles every check out.
+- `W` is a third type parameter of the ring, both endpoints, and the read slot, which needs it for
+  the release's check, `NoWake` by default.
+- The waiting entries are `send_wait` and `reserve_slot_wait`, beside `send_with` and
+  `reserve_slot_with`, sharing one inlined body with a `sleep` flag, and the policy is called after
+  each wake, a timeout included, so `|_| true` waits without end and a bounded policy bounds it.
+- The consumer's waiting flag is the claim word's bit 31, free there since MOVED lives in seals
+  only. Every producer CAS and the switch CAS carry it over, and only the consumer clears it.
+- Producers are also woken at each segment the consumer gives back, since in `Multi` a free
+  segment is room, and at the consumer's first empty look.
+- The tests prove a wake with a futex whose timeout is 5 s against a 2 s bound, and ran 15 times
+  clean.
 
 ##### feat: mpsc v3 inter-process test
 

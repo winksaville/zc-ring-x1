@@ -11,10 +11,11 @@ use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use super::{
-    CONSUMER, Checkpoint, MAX_SEGMENTS, MOVED, Mode, Multi, Segments, check_body_type, seq_of,
-    word_pos, word_seg,
+    CONSUMER, Checkpoint, MAX_SEGMENTS, MOVED, Mode, Multi, Segments, WAITING, check_body_type,
+    seq_of, word, word_pos, word_seg,
 };
 use crate::Empty;
+use crate::wake::{NoWake, Wake};
 
 /// The consumer's private state, held apart from the handle so a
 /// guard can borrow it without naming the region's lifetime.
@@ -41,18 +42,18 @@ pub(super) struct ConsumerState {
 ///   the consumer's state, so the next claim continues where this
 ///   one stopped. Dropping the handle writes nothing, so the role
 ///   stays held.
-pub struct MpscConsumer<'a, M: Mode = Multi> {
+pub struct MpscConsumer<'a, M: Mode = Multi, W: Wake = NoWake> {
     /// Private state, borrowed by each guard.
     pub(super) st: ConsumerState,
-    _region: PhantomData<(&'a [u8], M)>,
+    _region: PhantomData<(&'a [u8], M, W)>,
 }
 
 // SAFETY: the handle owns the single-consumer role, and shared state
 // (the header words, the slot seqs) is atomic with
 // Release/Acquire handoff.
-unsafe impl<M: Mode> Send for MpscConsumer<'_, M> {}
+unsafe impl<M: Mode, W: Wake> Send for MpscConsumer<'_, M, W> {}
 
-impl<'a, M: Mode> MpscConsumer<'a, M> {
+impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
     /// Continue from `cp`, the checkpoint the last consumer left,
     /// or the ring's start.
     pub(super) fn resume(segs: Segments, cp: Checkpoint) -> Self {
@@ -120,10 +121,49 @@ impl<'a, M: Mode> MpscConsumer<'a, M> {
     ///   probe.
     /// - Guard semantics as v1's: drop without release re-delivers
     ///   the same slot.
+    /// - Producers asleep on a full ring are woken when this first
+    ///   finds the ring empty, when its [`Wake`] wakes.
     pub fn reserve_slot_with<T>(
         &mut self,
+        on_empty: impl FnMut(u32) -> bool,
+    ) -> Result<MpscReadSlot<'_, T, W>, Empty>
+    where
+        T: FromBytes + KnownLayout + Immutable,
+    {
+        self.reserve(on_empty, false)
+    }
+
+    /// [`reserve_slot_with`](MpscConsumer::reserve_slot_with),
+    /// sleeping on an empty ring until a producer commits, then
+    /// calling `on_empty` after each wake.
+    ///
+    /// - The sleep is `W`'s: with [`NoWake`] it is a spin, and with
+    ///   a futex it returns when a producer wakes it or at its
+    ///   timeout, so `on_empty` also counts the timeouts, and
+    ///   bounds the wait as it bounds a spin. Pass `|_| true` to
+    ///   wait until a message arrives.
+    /// - A wake can come between a producer's claim and its commit,
+    ///   and the look after it then finds the slot claimed and not
+    ///   yet committed, which does not sleep again, so the policy
+    ///   runs until the commit lands.
+    pub fn reserve_slot_wait<T>(
+        &mut self,
+        on_empty: impl FnMut(u32) -> bool,
+    ) -> Result<MpscReadSlot<'_, T, W>, Empty>
+    where
+        T: FromBytes + KnownLayout + Immutable,
+    {
+        self.reserve(on_empty, true)
+    }
+
+    /// The reserve both entries share, sleeping on an empty ring
+    /// when `sleep` is set.
+    #[inline(always)]
+    fn reserve<T>(
+        &mut self,
         mut on_empty: impl FnMut(u32) -> bool,
-    ) -> Result<MpscReadSlot<'_, T>, Empty>
+        sleep: bool,
+    ) -> Result<MpscReadSlot<'_, T, W>, Empty>
     where
         T: FromBytes + KnownLayout + Immutable,
     {
@@ -161,10 +201,23 @@ impl<'a, M: Mode> MpscConsumer<'a, M> {
                 st.cur = k;
                 st.pos = st.resume[k as usize];
                 st.switches += 1;
+                // A segment given back is room a producer asleep on
+                // a full ring can take.
+                if W::WAKES {
+                    segs.wake_producers::<W>();
+                }
                 continue;
             }
             // Not committed yet (or a peer-corrupted seq: degrade
             // toward Empty, never toward reading an unowned slot).
+            // The first time, everything read is released: wake any
+            // producer asleep on a full ring.
+            if W::WAKES && attempt == 0 {
+                segs.wake_producers::<W>();
+            }
+            if sleep {
+                sleep_empty::<W>(segs, cur, c, M::MULTI);
+            }
             if !on_empty(attempt) {
                 return Err(Empty);
             }
@@ -179,19 +232,48 @@ impl<'a, M: Mode> MpscConsumer<'a, M> {
     }
 }
 
+/// Sleep on an empty ring until a producer claims past `pos` in
+/// segment `cur`, a wake that comes early, or `W`'s timeout.
+///
+/// - Set the waiting flag on the claim word, then sleep only while
+///   the word, flag aside, still names `cur` and `pos`: nothing is
+///   claimed past what the consumer read, so no commit is on its
+///   way, and every later claim CAS sees the flag and wakes this
+///   side after its commit. A claim between the flag and the sleep
+///   moves the word, and the sleep returns at once.
+/// - `Single` compares the position alone, its segment bits being
+///   always 0.
+/// - The flag is cleared after, so producers stop waking a
+///   consumer that is awake.
+#[cold]
+#[inline(never)]
+fn sleep_empty<W: Wake>(segs: &Segments, cur: u32, pos: u32, multi: bool) {
+    let claim = segs.claim();
+    let prev = claim.fetch_or(WAITING, Ordering::SeqCst);
+    let here = if multi {
+        prev & !WAITING == word(cur, pos)
+    } else {
+        word_pos(prev) == seq_of(pos)
+    };
+    if here {
+        W::wait(claim, prev | WAITING);
+    }
+    claim.fetch_and(!WAITING, Ordering::SeqCst);
+}
+
 /// A reserved read slot: `Deref` to read the message, then
 /// [`release`](MpscReadSlot::release).
-pub struct MpscReadSlot<'c, T> {
+pub struct MpscReadSlot<'c, T, W: Wake = NoWake> {
     /// The consumer's state, for the release.
     st: &'c mut ConsumerState,
     /// The slot body, viewed as the message type. Raw on purpose,
     /// see the SPSC `ReadSlot`.
     msg: *const T,
     /// Owns the `&'c mut` borrow of the consumer.
-    _slot: PhantomData<&'c T>,
+    _slot: PhantomData<(&'c T, W)>,
 }
 
-impl<T> Deref for MpscReadSlot<'_, T> {
+impl<T, W: Wake> Deref for MpscReadSlot<'_, T, W> {
     type Target = T;
     /// Read access to the in-slot message.
     fn deref(&self) -> &T {
@@ -203,12 +285,15 @@ impl<T> Deref for MpscReadSlot<'_, T> {
     }
 }
 
-impl<T> MpscReadSlot<'_, T> {
+impl<T, W: Wake> MpscReadSlot<'_, T, W> {
     /// Free the slot for reuse.
     ///
     /// - The position advances first, private state, and the seq
     ///   store last (`Release`), the protocol-visible handoff
     ///   producers acquire.
+    /// - Every half segment of releases, producers asleep on a full
+    ///   ring are woken, when the [`Wake`] wakes: a fence per half
+    ///   segment, not per message.
     pub fn release(self) {
         let st = self.st;
         let segs = &st.segs;
@@ -216,5 +301,8 @@ impl<T> MpscReadSlot<'_, T> {
         st.pos = seq_of(c.wrapping_add(1));
         segs.seq(st.cur, c)
             .store(seq_of(c.wrapping_add(segs.capacity)), Ordering::Release);
+        if W::WAKES && st.pos & segs.wake_mask == 0 {
+            segs.wake_producers::<W>();
+        }
     }
 }

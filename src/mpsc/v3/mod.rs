@@ -11,8 +11,9 @@
 //!   [`MpscRing::claim_producer`] and [`MpscRing::claim_consumer`].
 //!   [`MpscRing::release_ring`] gives a ring no role holds back to
 //!   the pool, and the segment handling is a mode type chosen at
-//!   compile time, [`Single`] or [`Multi`]. Waiting is the rung
-//!   after it.
+//!   compile time, [`Single`] or [`Multi`]. A full producer or an
+//!   empty consumer can sleep until the other side acts, through a
+//!   [`Wake`] type, [`NoWake`] by default.
 //! - Modes: [`Multi`] is v2's switching over up to
 //!   [`MAX_SEGMENTS`] segments. [`Single`] is one segment, where a
 //!   full ring goes straight to the policy and the consumer never
@@ -43,6 +44,23 @@
 //!   the old segment's header. The consumer reads the seal only when a
 //!   slot is not committed, so its fast path
 //!   is v1's one load.
+//! - Waiting: `send_wait` and `reserve_slot_wait` sleep between
+//!   attempts where `send_with` and `reserve_slot_with` spin or
+//!   give up, and call the same policy after each wake.
+//!   - The consumer sleeps on the claim word, whose bit 31 is its
+//!     waiting flag. It sets the flag and sleeps only while the
+//!     word, flag aside, names its own segment and position, so no
+//!     slot is claimed past what it read. A producer's claim CAS
+//!     returns the flag at no cost, and the producer wakes the
+//!     consumer after its commit.
+//!   - A producer at a full ring counts itself into the producers'
+//!     waiting word, looks again, and sleeps on the wake sequence
+//!     word. The consumer checks the count behind a SeqCst fence
+//!     at every half segment of releases, at each segment it gives
+//!     back, and when it first finds the ring empty, and bumps the
+//!     sequence and wakes them all: a fence every half segment, not
+//!     every message.
+//!   - With [`NoWake`] every check folds away and a wait polls.
 //! - Gated with the rest of `mpsc` on `target_has_atomic = "32"`.
 
 use core::marker::PhantomData;
@@ -50,6 +68,7 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::spsc::v3::{check_body_type, seq_of, validate_geometry};
+use crate::wake::{NoWake, Wake};
 use crate::{CACHE_LINE_SIZE, CacheAligned, Error, Pool};
 
 mod consumer;
@@ -72,6 +91,11 @@ const SEG_MASK: u32 = MAX_SEGMENTS - 1;
 /// Set in a seal word: the segment ended at the word's position,
 /// and the ring went on in the word's segment.
 const MOVED: u32 = 1 << 31;
+
+/// Set in the claim word while the consumer sleeps or is about to:
+/// the producer whose claim CAS sees it wakes the consumer after
+/// its commit.
+const WAITING: u32 = 1 << 31;
 
 const _: () = assert!(SEG_SHIFT + MAX_SEGMENTS.trailing_zeros() <= 31);
 
@@ -183,7 +207,10 @@ struct Info {
 /// - The consumer's segment and position, with each segment's
 ///   resume position in its info line, are what the consumer's
 ///   `release` leaves for the next claim.
-/// - Nothing on the message path reads or writes the line.
+/// - The producers' waiting count and wake sequence, read by the
+///   consumer every half segment of releases when its [`Wake`]
+///   wakes, and written by a producer about to sleep.
+/// - Nothing else on the message path reads or writes the line.
 #[repr(C)]
 struct Claims {
     /// The roles word.
@@ -193,6 +220,11 @@ struct Claims {
     /// The consumer's position in its segment, written by its
     /// `release`.
     cons_pos: AtomicU32,
+    /// Producers asleep, or about to be, on a full ring.
+    prod_waiters: AtomicU32,
+    /// The producers' wake sequence, bumped by the consumer before
+    /// it wakes them, the word they sleep on.
+    prod_wake: AtomicU32,
 }
 
 /// The seven lines at the front of every segment: the ring's
@@ -278,6 +310,9 @@ struct Segments {
     /// `capacity + 1`, precomputed: the commit value is
     /// `pos + M + 1`, one add on the hot path.
     commit_add: u32,
+    /// Releases between the consumer's checks for sleeping
+    /// producers, less one: half a segment, at least one.
+    wake_mask: u32,
 }
 
 impl Segments {
@@ -312,6 +347,7 @@ impl Segments {
             mask: seg_capacity - 1,
             seg_count,
             commit_add: seg_capacity + 1,
+            wake_mask: (seg_capacity / 2).max(1) - 1,
         }
     }
 
@@ -413,6 +449,23 @@ impl Segments {
         c.cons_pos.store(cp.pos, Ordering::Relaxed);
     }
 
+    /// Wake the producers asleep on a full ring, if any.
+    ///
+    /// - The fence orders this side's releases before the count's
+    ///   load, against a producer that counts itself in and then
+    ///   looks at the ring: either the producer sees the release,
+    ///   or this sees the producer.
+    #[cold]
+    #[inline(never)]
+    fn wake_producers<W: Wake>(&self) {
+        core::sync::atomic::fence(Ordering::SeqCst);
+        let c = self.claims();
+        if c.prod_waiters.load(Ordering::Relaxed) != 0 {
+            c.prod_wake.fetch_add(1, Ordering::Release);
+            W::wake(&c.prod_wake);
+        }
+    }
+
     /// Every segment's bit.
     #[inline]
     fn all(&self) -> u32 {
@@ -438,17 +491,18 @@ pub(crate) struct Checkpoint {
 /// A ring of segments over the application's pool, its roles
 /// claimed with [`MpscRing::claim_producer`] and
 /// [`MpscRing::claim_consumer`], its segments handled as mode `M`
-/// has them, [`Multi`] by default.
-pub struct MpscRing<'a, M: Mode = Multi> {
+/// has them, [`Multi`] by default, and its waits slept by `W`,
+/// [`NoWake`] by default.
+pub struct MpscRing<'a, M: Mode = Multi, W: Wake = NoWake> {
     /// Geometry and segment addresses.
     segs: Segments,
     /// The pool buffer index of segment 0, where the control
     /// block is.
     first_segment: u32,
-    _region: PhantomData<(&'a [u8], M)>,
+    _region: PhantomData<(&'a [u8], M, W)>,
 }
 
-impl<'a, M: Mode> MpscRing<'a, M> {
+impl<'a, M: Mode, W: Wake> MpscRing<'a, M, W> {
     /// Take `seg_count` segments from `pool` and initialize each
     /// as an empty ring of `seg_capacity` slots of `slot_size`
     /// bytes.
@@ -739,7 +793,7 @@ impl<'a, M: Mode> MpscRing<'a, M> {
     ///   freely.
     /// - The role stays held until [`MpscProducer::release`]:
     ///   dropping the endpoint writes nothing.
-    pub fn claim_producer(&self) -> Result<MpscProducer<'a, M>, Error> {
+    pub fn claim_producer(&self) -> Result<MpscProducer<'a, M, W>, Error> {
         let roles = self.segs.roles();
         let max = self
             .segs
@@ -777,7 +831,7 @@ impl<'a, M: Mode> MpscRing<'a, M> {
     ///   [`Error::BadCheckpoint`], with the role left free.
     /// - The role stays held until [`MpscConsumer::release`]:
     ///   dropping the endpoint writes nothing.
-    pub fn claim_consumer(&self) -> Result<MpscConsumer<'a, M>, Error> {
+    pub fn claim_consumer(&self) -> Result<MpscConsumer<'a, M, W>, Error> {
         let roles = self.segs.roles();
         let mut r = roles.load(Ordering::Acquire);
         loop {
@@ -837,7 +891,7 @@ mod tests {
     }
 
     /// Send `from..to` as `seq = i`, `val = i * 10`.
-    fn send<M: Mode>(prod: &MpscProducer<'_, M>, from: u64, to: u64) {
+    fn send<M: Mode, W: Wake>(prod: &MpscProducer<'_, M, W>, from: u64, to: u64) {
         for i in from..to {
             prod.send_with::<Msg>(
                 |_| false,
@@ -851,7 +905,7 @@ mod tests {
     }
 
     /// Receive `from..to` in order.
-    fn recv<M: Mode>(cons: &mut MpscConsumer<'_, M>, from: u64, to: u64) {
+    fn recv<M: Mode, W: Wake>(cons: &mut MpscConsumer<'_, M, W>, from: u64, to: u64) {
         for i in from..to {
             let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
             assert_eq!(
@@ -867,9 +921,9 @@ mod tests {
 
     /// Claim both roles of a fresh ring, as an in-process caller
     /// does.
-    fn endpoints<'a, M: Mode>(
-        ring: &MpscRing<'a, M>,
-    ) -> (MpscProducer<'a, M>, MpscConsumer<'a, M>) {
+    fn endpoints<'a, M: Mode, W: Wake>(
+        ring: &MpscRing<'a, M, W>,
+    ) -> (MpscProducer<'a, M, W>, MpscConsumer<'a, M, W>) {
         (
             ring.claim_producer().unwrap(),
             ring.claim_consumer().unwrap(),
@@ -1376,6 +1430,199 @@ mod tests {
                 assert_eq!(cons.switches(), 0);
             }
         }
+    }
+
+    /// Each producer on its own thread sending `count` messages with
+    /// `send_wait`, and the consumer reading with
+    /// `reserve_slot_wait`, all waiting without end: per-producer
+    /// order holds and every message arrives.
+    fn stream_waiting<M: Mode, W: Wake>(
+        prods: Vec<MpscProducer<'_, M, W>>,
+        cons: &mut MpscConsumer<'_, M, W>,
+        count: u64,
+    ) {
+        let producers = prods.len();
+        std::thread::scope(|s| {
+            for (p, prod) in prods.into_iter().enumerate() {
+                s.spawn(move || {
+                    for i in 0..count {
+                        prod.send_wait::<Msg>(
+                            |_| true,
+                            |m| {
+                                m.seq = i;
+                                m.val = p as u64;
+                            },
+                        )
+                        .unwrap(); // OK: a policy of |_| true never gives up
+                    }
+                });
+            }
+            s.spawn(move || {
+                let mut next = vec![0u64; producers];
+                for _ in 0..producers as u64 * count {
+                    let msg = cons.reserve_slot_wait::<Msg>(|_| true).unwrap(); // OK: a policy of |_| true never gives up
+                    let p = msg.val as usize;
+                    assert_eq!(msg.seq, next[p], "per-producer order broken");
+                    next[p] += 1;
+                    msg.release();
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn waiting_streams_across_threads() {
+        // Producers and a consumer that wait rather than spin, over
+        // both modes and both wakes, at depths where every message
+        // fills the ring and where few do.
+        let total: u64 = if cfg!(miri) { 20 } else { 5_000 };
+        for depth in [1u32, 2, 8] {
+            for producers in [1usize, 2, 4] {
+                let mut r = Region::new();
+                let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+                let ring = MpscRing::<Single, NoWake>::init(&mut pool, 64, depth, 1).unwrap();
+                let mut cons = ring.claim_consumer().unwrap();
+                let prods = (0..producers)
+                    .map(|_| ring.claim_producer().unwrap())
+                    .collect();
+                stream_waiting(prods, &mut cons, total);
+                #[cfg(target_os = "linux")]
+                {
+                    use crate::wake::Futex;
+                    let mut r = Region::new();
+                    let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+                    let ring = MpscRing::<Single, Futex<5>>::init(&mut pool, 64, depth, 1).unwrap();
+                    let mut cons = ring.claim_consumer().unwrap();
+                    let prods = (0..producers)
+                        .map(|_| ring.claim_producer().unwrap())
+                        .collect();
+                    stream_waiting(prods, &mut cons, total);
+                    let ring = MpscRing::<Multi, Futex<5>>::init(&mut pool, 64, depth, 3).unwrap();
+                    let mut cons = ring.claim_consumer().unwrap();
+                    let prods = (0..producers)
+                        .map(|_| ring.claim_producer().unwrap())
+                        .collect();
+                    stream_waiting(prods, &mut cons, total);
+                    // Every sleeper woke and cleared its trace.
+                    assert_eq!(ring.segs.claim().load(Ordering::Relaxed) & WAITING, 0);
+                    let c = ring.segs.claims();
+                    assert_eq!(c.prod_waiters.load(Ordering::Relaxed), 0);
+                }
+            }
+        }
+    }
+
+    /// A futex whose timeout is far longer than any test step, so a
+    /// wait that ends quickly ended by a wake.
+    #[cfg(target_os = "linux")]
+    type SlowFutex = crate::wake::Futex<5_000>;
+
+    /// Well under [`SlowFutex`]'s timeout, well over a step's time.
+    #[cfg(target_os = "linux")]
+    const WOKEN: std::time::Duration = std::time::Duration::from_millis(2_000);
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_waiting_consumer_is_woken_by_a_send() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::<Multi, SlowFutex>::init(&mut pool, 64, 4, 2).unwrap();
+        let (prod, mut cons) = endpoints(&ring);
+        std::thread::scope(|s| {
+            let reader = s.spawn(move || {
+                let start = std::time::Instant::now();
+                let mut wakes = 0u32;
+                let msg = cons
+                    .reserve_slot_wait::<Msg>(|attempt| {
+                        wakes = attempt + 1;
+                        true
+                    })
+                    .unwrap();
+                assert_eq!(msg.seq, 7);
+                msg.release();
+                (start.elapsed(), wakes)
+            });
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            prod.send_with::<Msg>(|_| false, |m| m.seq = 7).unwrap();
+            let (waited, wakes) = reader.join().unwrap();
+            assert!(waited < WOKEN, "woken by its timeout, not the send");
+            // A sleep and a wake, and perhaps a short spin between a
+            // claim and its commit, never a poll.
+            assert!(wakes < 100, "{wakes} wakes");
+        });
+        assert_eq!(ring.segs.claim().load(Ordering::Relaxed) & WAITING, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_waiting_producer_is_woken_by_releases() {
+        // A full ring of each mode: the producer sleeps, and the
+        // consumer's releases, half a segment of them, or the
+        // segment it gives back, wake it.
+        fn run<M: Mode>(count: u32) {
+            let mut r = Region::new();
+            let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+            let ring = MpscRing::<M, SlowFutex>::init(&mut pool, 64, 4, count).unwrap();
+            let (prod, mut cons) = endpoints(&ring);
+            let full = 4 * count as u64;
+            send(&prod, 0, full);
+            assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
+            std::thread::scope(|s| {
+                let writer = s.spawn(move || {
+                    let start = std::time::Instant::now();
+                    prod.send_wait::<Msg>(
+                        |_| true,
+                        |m| {
+                            m.seq = full;
+                            m.val = full * 10;
+                        },
+                    )
+                    .unwrap();
+                    start.elapsed()
+                });
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                recv(&mut cons, 0, full);
+                let waited = writer.join().unwrap();
+                assert!(waited < WOKEN, "woken by its timeout, not a release");
+                recv(&mut cons, full, full + 1);
+            });
+            assert_eq!(ring.segs.claims().prod_waiters.load(Ordering::Relaxed), 0);
+        }
+        run::<Single>(1);
+        run::<Multi>(2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_wait_is_bounded_by_its_policy() {
+        // Nothing arrives: each timeout is a policy call, and the
+        // policy ends the wait.
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::<Single, crate::wake::Futex<1>>::init(&mut pool, 64, 2, 1).unwrap();
+        let (prod, mut cons) = endpoints(&ring);
+        let mut seen = Vec::new();
+        let err = cons
+            .reserve_slot_wait::<Msg>(|attempt| {
+                seen.push(attempt);
+                attempt < 2
+            })
+            .err();
+        assert_eq!(err, Some(Empty));
+        assert_eq!(seen, [0, 1, 2]);
+        send(&prod, 0, 2);
+        let mut seen = Vec::new();
+        let err = prod
+            .send_wait::<Msg>(
+                |attempt| {
+                    seen.push(attempt);
+                    attempt < 2
+                },
+                |_| {},
+            )
+            .err();
+        assert_eq!(err, Some(Full));
+        assert_eq!(seen, [0, 1, 2]);
     }
 
     #[test]

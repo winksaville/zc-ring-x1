@@ -9,8 +9,11 @@ use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
-use super::{MOVED, Mode, Multi, Segments, check_body_type, seq_of, word, word_pos, word_seg};
+use super::{
+    MOVED, Mode, Multi, Segments, WAITING, check_body_type, seq_of, word, word_pos, word_seg,
+};
 use crate::Full;
+use crate::wake::{NoWake, Wake};
 
 /// A producing handle, one counted producer role: claim one per
 /// producing thread or process with
@@ -23,20 +26,20 @@ use crate::Full;
 /// - Not `Clone`: each handle is one count in the roles word, and
 ///   [`release`](MpscProducer::release) gives it back. Dropping
 ///   the handle writes nothing, so the count stays held.
-pub struct MpscProducer<'a, M: Mode = Multi> {
+pub struct MpscProducer<'a, M: Mode = Multi, W: Wake = NoWake> {
     /// Geometry and segment addresses.
     pub(super) segs: Segments,
-    _region: PhantomData<(&'a [u8], M)>,
+    _region: PhantomData<(&'a [u8], M, W)>,
 }
 
 // SAFETY: any number of producers is the protocol contract: the
 // shared state (the header words, the slot seqs) is atomic, slot
 // claims are exclusive by CAS, and slot writes are handed off
 // with Release/Acquire ordering.
-unsafe impl<M: Mode> Send for MpscProducer<'_, M> {}
+unsafe impl<M: Mode, W: Wake> Send for MpscProducer<'_, M, W> {}
 // SAFETY: send_with is &self and every access is protected as
 // above, so shared references across threads are equally fine.
-unsafe impl<M: Mode> Sync for MpscProducer<'_, M> {}
+unsafe impl<M: Mode, W: Wake> Sync for MpscProducer<'_, M, W> {}
 
 /// Why a switch attempt did not move the ring.
 enum NoSwitch {
@@ -47,7 +50,7 @@ enum NoSwitch {
     Lost,
 }
 
-impl<'a, M: Mode> MpscProducer<'a, M> {
+impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     /// Build the handle for a claimed role from the ring's
     /// geometry snapshot.
     pub(super) fn new(segs: Segments) -> Self {
@@ -103,10 +106,50 @@ impl<'a, M: Mode> MpscProducer<'a, M> {
     /// - `T` must fit the slot body, `slot_size` less
     ///   [`SLOT_HEADER_BYTES`](super::SLOT_HEADER_BYTES), at an
     ///   alignment of at most that.
+    /// - A consumer asleep on the empty ring is woken after the
+    ///   commit, when its [`Wake`] wakes.
     pub fn send_with<T>(
+        &self,
+        on_full: impl FnMut(u32) -> bool,
+        fill: impl FnOnce(&mut T),
+    ) -> Result<(), Full>
+    where
+        T: FromBytes + IntoBytes + KnownLayout,
+    {
+        self.send(on_full, fill, false)
+    }
+
+    /// [`send_with`](MpscProducer::send_with), sleeping on a full
+    /// ring until the consumer frees room, then calling `on_full`
+    /// after each wake.
+    ///
+    /// - The sleep is `W`'s: with [`NoWake`] it is a spin, and with
+    ///   a futex it returns when the consumer wakes it or at its
+    ///   timeout, so `on_full` also counts the timeouts, and bounds
+    ///   the wait as it bounds a spin. Pass `|_| true` to wait until
+    ///   there is room.
+    /// - The consumer checks for sleepers every half segment of
+    ///   releases, not every release, so a sleeping producer is
+    ///   woken within half a segment of room.
+    pub fn send_wait<T>(
+        &self,
+        on_full: impl FnMut(u32) -> bool,
+        fill: impl FnOnce(&mut T),
+    ) -> Result<(), Full>
+    where
+        T: FromBytes + IntoBytes + KnownLayout,
+    {
+        self.send(on_full, fill, true)
+    }
+
+    /// The send both entries share, sleeping on a full ring when
+    /// `sleep` is set.
+    #[inline(always)]
+    fn send<T>(
         &self,
         mut on_full: impl FnMut(u32) -> bool,
         fill: impl FnOnce(&mut T),
+        sleep: bool,
     ) -> Result<(), Full>
     where
         T: FromBytes + IntoBytes + KnownLayout,
@@ -135,10 +178,12 @@ impl<'a, M: Mode> MpscProducer<'a, M> {
             let seq = segs.seq(seg, pos).load(Ordering::Acquire);
             if seq == pos {
                 // Claimable. Weak CAS: a spurious failure just
-                // retries with the fresher word.
+                // retries with the fresher word. The consumer's
+                // waiting flag carries over, cleared only by the
+                // consumer.
                 match claim.compare_exchange_weak(
                     w,
-                    word(seg, pos.wrapping_add(1)),
+                    word(seg, pos.wrapping_add(1)) | (w & WAITING),
                     Ordering::SeqCst,
                     Ordering::SeqCst,
                 ) {
@@ -163,6 +208,9 @@ impl<'a, M: Mode> MpscProducer<'a, M> {
             match switched {
                 Ok(()) | Err(NoSwitch::Lost) => {}
                 Err(NoSwitch::NoFree) => {
+                    if sleep {
+                        self.sleep_full();
+                    }
                     if !on_full(attempt) {
                         return Err(Full);
                     }
@@ -186,7 +234,50 @@ impl<'a, M: Mode> MpscProducer<'a, M> {
         // observing pos + M + 1 means the filled bytes are
         // visible.
         seq.store(commit, Ordering::Release);
+        // The claim CAS returned the word it replaced, flag and
+        // all, so learning the consumer sleeps costs nothing.
+        if W::WAKES && w & WAITING != 0 {
+            W::wake(claim);
+        }
         Ok(())
+    }
+
+    /// Sleep on a full ring until the consumer frees room, a wake
+    /// that comes early, or `W`'s timeout.
+    ///
+    /// - Count in, then look again: the consumer's check fences
+    ///   its releases before it reads the count, and the fence here
+    ///   orders the count before the look, so either the consumer
+    ///   sees this producer or this producer sees the room.
+    /// - The wake sequence is read before the look, so a wake
+    ///   between the look and the sleep moves the word and the
+    ///   sleep returns at once.
+    #[cold]
+    #[inline(never)]
+    fn sleep_full(&self) {
+        let segs = &self.segs;
+        let c = segs.claims();
+        c.prod_waiters.fetch_add(1, Ordering::SeqCst);
+        core::sync::atomic::fence(Ordering::SeqCst);
+        let seen = c.prod_wake.load(Ordering::SeqCst);
+        if !self.has_room() {
+            W::wait(&c.prod_wake, seen);
+        }
+        c.prod_waiters.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Whether a claim could land now: the claim word's slot is
+    /// claimable, or a `Multi` ring has a free segment.
+    fn has_room(&self) -> bool {
+        let segs = &self.segs;
+        let w = segs.claim().load(Ordering::SeqCst);
+        let seg = if M::MULTI { word_seg(w) } else { 0 };
+        if seg >= segs.seg_count {
+            return true;
+        }
+        let pos = word_pos(w);
+        segs.seq(seg, pos).load(Ordering::SeqCst) == pos
+            || (M::MULTI && !segs.in_use().load(Ordering::SeqCst) & segs.all() != 0)
     }
 
     /// Move the ring from the full segment and position `w` names
@@ -229,7 +320,7 @@ impl<'a, M: Mode> MpscProducer<'a, M> {
             seal.store(0, Ordering::Relaxed);
             match segs.claim().compare_exchange(
                 w,
-                word(k, start),
+                word(k, start) | (w & WAITING),
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
