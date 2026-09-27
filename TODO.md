@@ -21,7 +21,144 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### feat: attachable MPSC v3
+
+#### Problem
+
+The MPSC rings are in-process only: `split` hands out the endpoints, no control block lets a second
+process find a ring, and producers cannot come and go. A full or empty ring can only be polled, as
+no side can sleep until the other acts.
+
+#### Solution
+
+`mpsc::v3`, v2's claim and seq protocol over a ring that describes itself in the region, as
+`spsc::v4` does, with a simpler role model than v4's.
+
+- One claims word: a closed bit, a consumer bit, and a producer count, the most producers set at
+  `init`, `u16::MAX` by default. Claiming a role, releasing it, and releasing the ring are each one
+  CAS on it.
+- No holder ids, no takeover, no intent words, and no scan: a holder that dies is recovered by a
+  restart, the narrower contract of `docs: spsc v4 not perfect`.
+- The consumer checkpoints its segment, position, and resume positions at `release`. Producers
+  keep no state, so a producer claim is a count.
+- `release_ring` fails while any role is held, and otherwise closes the ring, clears its magic, and
+  frees its segments to the pool. Anyone holding the ring may call it, and when is the creator's
+  call.
+- Two hot paths chosen at compile time: `Single`, one segment, where a full ring goes straight to
+  the policy, and `Multi`, v2's switching. The mode is in the control block and `attach` checks it.
+- Waiting: a full producer or an empty consumer can sleep until the other side acts, through a
+  small wake trait the crate calls, with a futex implementation on Linux, and error and spin stay
+  the `_with` policies they are.
+- No unwind guard: v2's `TombstoneOnUnwind` does not carry over, so a panic mid-send is a failure
+  like any other, recovered by a restart.
+
+#### Acceptance check
+
+- Two producer processes and one consumer process exchange messages over an attached v3 ring in
+  `/dev/shm`, every message checked.
+- Roles are claimed, released, and claimed again, in one process and across processes, and the
+  consumer resumes where it stopped.
+- `release_ring` refuses while a role is held and succeeds once none is, and a later `attach`
+  fails.
+- A consumer waiting on an empty ring and a producer waiting on a full one are woken by the other
+  side.
+- `Single` and `Multi` are measured beside v1 and v2 in the tp_matrix tables.
+
+#### Ladder
+
+- [feat: attachable MPSC v3 opening][21] (done)
+- [docs: mpsc v3 design and restart domains][22]
+- [feat: mpsc v3 as a copy of v2][23]
+- [feat: mpsc v3 control block and attach][24]
+- [feat: mpsc v3 claims word and roles][25]
+- [feat: mpsc v3 ring release][26]
+- [feat: mpsc v3 single and multi segment paths][27]
+- [feat: mpsc v3 wait and wake][28]
+- [feat: mpsc v3 inter-process test][29]
+- [perf: mpsc v3 in the measurement tools][30]
+- [docs: mpsc v3 in the design note and guide][31]
+- [feat: attachable MPSC v3 closing][32]
+
+#### Deliberation
+
+- Restart, not takeover: a dead holder is recovered by restarting the set it belongs to, the user's
+  call on 2026-09-27, after `docs: spsc v4 not perfect` found v4's takeover uncertain.
+  - So no holder ids, since without takeover nothing can replace a live holder, and `release(self)`
+    consumes the endpoint.
+  - A producer that dies between claim and commit leaves its slot claimed and jams the ring, and
+    the consumer's set restarts. Accepted, the user's call.
+- The ring's release: only when no role is held, anyone may call it, and the creator decides when,
+  the user's call. Any process may free to a pool, so this needs no shared allocation.
+- `Single` and `Multi` as a compile-time choice, starting from v2 as it is, the user's call.
+- The unwind guard is removed, the user's call, which settles the open question the Todo entry
+  `Attachable MPSC with claimed roles` carried. v0 through v2 keep theirs, in-process baselines
+  left as built.
+- A `u16` producer count, the user's call.
+- Wait and wake in this cycle, as its own rung, the user's call.
+- The design section is the first rung after the opening, the user's call.
+- Run unattended, the user's explicit waiver on 2026-09-27, confirmed in the session.
+  - It covers: the per-rung work review and description review, and the approval of each push to
+    the `mpsc-v3` bookmark, from the opening through `docs: mpsc v3 in the design note and guide`.
+  - It does not cover: the closing, Land, any push to `main`, or any write to another repo.
+  - Where a question would stop the cycle, the agent takes the option that keeps the plan and
+    records it in the rung's subsection, and a change of scope stops the cycle.
+
+#### Ladder details
+
+##### feat: attachable MPSC v3 opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
+Todo entry into this block, bump the version-of-record, and rename to the dev names.
+
+##### docs: mpsc v3 design and restart domains
+
+The design note gains an `## MPSC v3` section: the initial design this cycle builds and the
+long-term possibilities, restart domains and what crossing one costs.
+
+##### feat: mpsc v3 as a copy of v2
+
+v2's files copied to `src/mpsc/v3/` unchanged but for the names, so each later rung's diff is only
+what v3 changes.
+
+##### feat: mpsc v3 control block and attach
+
+Segment 0 holds the ring's identity, geometry, mode, and table of segments, so a process holding
+the pool and the first segment's index can attach.
+
+##### feat: mpsc v3 claims word and roles
+
+The roles are claimed and released through one claims word, and `split`, producer `Clone`, and the
+unwind guard go.
+
+##### feat: mpsc v3 ring release
+
+`release_ring` closes a ring no role holds and returns its segments to the pool.
+
+##### feat: mpsc v3 single and multi segment paths
+
+The segment handling becomes a type parameter, so a one-segment ring compiles without the switch
+and seal paths.
+
+##### feat: mpsc v3 wait and wake
+
+A full producer and an empty consumer can sleep until woken, through a wake trait, with a futex
+implementation on Linux.
+
+##### feat: mpsc v3 inter-process test
+
+`zcr-test-ipm` gains an MPSC mode, two producer processes into one consumer process.
+
+##### perf: mpsc v3 in the measurement tools
+
+v3 in tp_matrix beside v1 and v2, both modes.
+
+##### docs: mpsc v3 in the design note and guide
+
+The measured results in the design note, and v3 in the user guide.
+
+##### feat: attachable MPSC v3 closing
+
+Closing out the cycle.
 
 ## Waiting
 
@@ -51,31 +188,6 @@ acceptance check, deliberation, then `#### Ladder` directly above the rung subse
   `agent-files` proposal cycle, its own commit and its own cycle.
 - A single-step cycle's block already takes the order, from `feat: test inter-process message`,
   where the user moved it by hand.
-
-### Attachable MPSC with claimed roles
-
-The MPSC rings are in-process only: `split` hands out the endpoints, and no control block lets a
-second process find a ring or claim a role in it. The attachable MPSC is the multi-producer
-sibling of `spsc::v4`, built on its model, which `feat: test inter-process message` showed
-working between processes.
-
-- Roles as v4's: `claim_consumer(id)` once, `claim_producer(id)` into one of N producer role
-  slots, each with its checkpoint, `release`, and `take_over_*`, and the claims line laid out
-  for the slots from the start, as the design note's Pool topology and phasing asks.
-- Destructors never touch shared memory, from its first design (the design note's Holders and
-  recovery).
-- The unwind guard: the MPSC producers, v0 through v2, arm `TombstoneOnUnwind` while the fill
-  closure runs, a `Drop` that publishes a tombstoned commit into the claimed slot when a panic
-  unwinds through `send_with`, releasing what the producer holds so the consumer is not left
-  waiting on a slot no one will commit. Reasonable in a process that survives the panic, the
-  user's reading on 2026-09-26, and the one `Drop` in `src/` that writes shared memory. Decide
-  here, one of:
-  - Narrow the rule and its check: a guard that runs only on unwind and finishes a protocol step
-    is allowed, and an ordinary drop still writes nothing.
-  - Remove it: a producer's takeover must already repair a slot claimed and never committed,
-    since an abort or a kill runs no guard, and that repair may cover a panic too.
-- Found in `fix: spsc v4 roles survive their holders`, whose acceptance check's no-`Drop` clause
-  it fails, and placed here by the user on 2026-09-26, the cycle after multi-process SPSC v4.
 
 ### Find a ring by name
 
@@ -483,56 +595,20 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### docs: spsc v4 not perfect
-
-#### Problem
-
-`spsc::v4` recovers a role whose holder crashed, by a takeover from its last checkpoint and a scan
-of one segment's seq words, and the design note stated what a takeover loses without stating when
-it fails. Reviewed the day after it landed, the recovery is not certain: it rests on the app
-knowing the holder is dead, and several cases lose more than in-progress work or cannot recover at
-all.
-
-#### Solution
-
-A bullet in the design note's SPSC v4 section, `What recovery does not guarantee`, after `Resume
-and takeover`, records the limits.
-
-- What a takeover guarantees: after a holder that is truly dead, at depth 2 or more, with the
-  shared words intact, it loses at most one uncommitted producer message or repeats one unreleased
-  consumer message.
-- Where it fails or recovers only part: a hung holder taken over and waking, depth 1, delivery that
-  is at-least-once or at-most-once and never exactly-once, a region corrupted before the death, the
-  pool's buffers, and the machine.
-- The requirement of 2026-09-25 is met for a clean death of a holder known dead, and for the ring
-  only. A narrower contract on the inbox model, dropping takeover and keeping handoff, is recorded
-  as open, not decided.
-
-#### Acceptance check
-
-`notes/ring-buffer-design.md`'s SPSC v4 section names each limit above and what a takeover does
-guarantee, and `vc-x1 validate` passes. Pass: the bullet is at `What recovery does not guarantee`,
-and the full validation passed.
-
-#### Deliberation
-
-- A design-note bullet, not a code change: the limits are properties of the design, and whether
-  to narrow the contract is open, so the record comes first and any change is its own cycle.
-- Placed in the SPSC v4 section beside `Resume and takeover`, the user's call, rather than in
-  `Holders and recovery`, which states the requirement the bullet measures v4 against.
-- The lead is plain, the user's call at review, though the section's other leads are bold,
-  following [Leads are labels, unmarked](agent-data/prose.md#leads-are-labels-unmarked).
-- Single-step: one doc change and its record, the user's call.
-- Landed directly on `main`, no bookmark and no dev name, the user's explicit waiver at review on
-  2026-09-27 of [Cycles run on a bookmark](AGENTS.md#cycles-run-on-a-bookmark) and the opening's
-  rename.
-  - It covers this cycle's one commit and its push to `main`, which is the Land.
-  - It does not cover the per-push approval, the description review, or later cycles.
-
-#### Ladder
-
-- docs: spsc v4 not perfect (done)
+_None._
 
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
+[21]: #feat-attachable-mpsc-v3-opening
+[22]: #docs-mpsc-v3-design-and-restart-domains
+[23]: #feat-mpsc-v3-as-a-copy-of-v2
+[24]: #feat-mpsc-v3-control-block-and-attach
+[25]: #feat-mpsc-v3-claims-word-and-roles
+[26]: #feat-mpsc-v3-ring-release
+[27]: #feat-mpsc-v3-single-and-multi-segment-paths
+[28]: #feat-mpsc-v3-wait-and-wake
+[29]: #feat-mpsc-v3-inter-process-test
+[30]: #perf-mpsc-v3-in-the-measurement-tools
+[31]: #docs-mpsc-v3-in-the-design-note-and-guide
+[32]: #feat-attachable-mpsc-v3-closing
