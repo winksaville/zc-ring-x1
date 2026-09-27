@@ -72,7 +72,7 @@ no side can sleep until the other acts.
 - [feat: mpsc v3 control block and attach][24] (done)
 - [feat: mpsc v3 claims word and roles][25] (done)
 - [feat: mpsc v3 ring release][26] (done)
-- [feat: mpsc v3 single and multi segment paths][27]
+- [feat: mpsc v3 single and multi segment paths][27] (done)
 - [feat: mpsc v3 wait and wake][28]
 - [feat: mpsc v3 inter-process test][29]
 - [perf: mpsc v3 in the measurement tools][30]
@@ -188,6 +188,19 @@ unwind guard go.
 
 The segment handling becomes a type parameter, so a one-segment ring compiles without the switch
 and seal paths.
+
+- A sealed `Mode` trait with an associated `const MULTI: bool`, implemented by `Single` and `Multi`,
+  rather than a const generic: the mode reads as a name at the call site, `MpscRing::<Single>`, and
+  the trait carries the control block's code beside the flag. Every `if M::MULTI` folds at compile
+  time.
+- The ring and both endpoints take the mode, `Multi` by default. A default does not apply to a
+  path in an expression, so `init` and `attach` are called as `MpscRing::<Multi>::init`, which
+  names the mode everywhere a ring is made.
+- `Single` needs `seg_count` 1, at `init` and at `attach`. Its producer takes segment 0 whatever the
+  claim word's segment bits hold and goes straight to the policy at a full ring, and its consumer
+  never loads a seal.
+- The mode joins the info line, and `attach` of the other mode is the new `Error::BadMode`, checked
+  in every segment's header as the geometry is.
 
 ##### feat: mpsc v3 wait and wake
 

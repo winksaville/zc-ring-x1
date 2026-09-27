@@ -9,7 +9,7 @@ use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
-use super::{MOVED, Segments, check_body_type, seq_of, word, word_pos, word_seg};
+use super::{MOVED, Mode, Multi, Segments, check_body_type, seq_of, word, word_pos, word_seg};
 use crate::Full;
 
 /// A producing handle, one counted producer role: claim one per
@@ -23,20 +23,20 @@ use crate::Full;
 /// - Not `Clone`: each handle is one count in the roles word, and
 ///   [`release`](MpscProducer::release) gives it back. Dropping
 ///   the handle writes nothing, so the count stays held.
-pub struct MpscProducer<'a> {
+pub struct MpscProducer<'a, M: Mode = Multi> {
     /// Geometry and segment addresses.
     pub(super) segs: Segments,
-    _region: PhantomData<&'a [u8]>,
+    _region: PhantomData<(&'a [u8], M)>,
 }
 
 // SAFETY: any number of producers is the protocol contract: the
 // shared state (the header words, the slot seqs) is atomic, slot
 // claims are exclusive by CAS, and slot writes are handed off
 // with Release/Acquire ordering.
-unsafe impl Send for MpscProducer<'_> {}
+unsafe impl<M: Mode> Send for MpscProducer<'_, M> {}
 // SAFETY: send_with is &self and every access is protected as
 // above, so shared references across threads are equally fine.
-unsafe impl Sync for MpscProducer<'_> {}
+unsafe impl<M: Mode> Sync for MpscProducer<'_, M> {}
 
 /// Why a switch attempt did not move the ring.
 enum NoSwitch {
@@ -47,7 +47,7 @@ enum NoSwitch {
     Lost,
 }
 
-impl<'a> MpscProducer<'a> {
+impl<'a, M: Mode> MpscProducer<'a, M> {
     /// Build the handle for a claimed role from the ring's
     /// geometry snapshot.
     pub(super) fn new(segs: Segments) -> Self {
@@ -119,9 +119,11 @@ impl<'a> MpscProducer<'a> {
         let mut w = claim.load(Ordering::SeqCst);
         let mut attempt = 0u32;
         let (seg, pos) = loop {
-            let seg = word_seg(w);
+            // Single: segment 0 always, whatever the word's segment
+            // bits hold, so the check below folds away.
+            let seg = if M::MULTI { word_seg(w) } else { 0 };
             let pos = word_pos(w);
-            if seg >= segs.seg_count {
+            if M::MULTI && seg >= segs.seg_count {
                 // A scribbled claim word: the ring is wedged, and
                 // this degrades toward Full, never toward a slot
                 // the ring does not have.
@@ -152,7 +154,13 @@ impl<'a> MpscProducer<'a> {
                 w = cur;
                 continue;
             }
-            match self.switch(w) {
+            // Single has no segment to switch to: the ring is Full.
+            let switched = if M::MULTI {
+                self.switch(w)
+            } else {
+                Err(NoSwitch::NoFree)
+            };
+            match switched {
                 Ok(()) | Err(NoSwitch::Lost) => {}
                 Err(NoSwitch::NoFree) => {
                     if !on_full(attempt) {

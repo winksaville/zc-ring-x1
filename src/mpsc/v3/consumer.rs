@@ -11,8 +11,8 @@ use core::sync::atomic::Ordering;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use super::{
-    CONSUMER, Checkpoint, MAX_SEGMENTS, MOVED, Segments, check_body_type, seq_of, word_pos,
-    word_seg,
+    CONSUMER, Checkpoint, MAX_SEGMENTS, MOVED, Mode, Multi, Segments, check_body_type, seq_of,
+    word_pos, word_seg,
 };
 use crate::Empty;
 
@@ -41,18 +41,18 @@ pub(super) struct ConsumerState {
 ///   the consumer's state, so the next claim continues where this
 ///   one stopped. Dropping the handle writes nothing, so the role
 ///   stays held.
-pub struct MpscConsumer<'a> {
+pub struct MpscConsumer<'a, M: Mode = Multi> {
     /// Private state, borrowed by each guard.
     pub(super) st: ConsumerState,
-    _region: PhantomData<&'a [u8]>,
+    _region: PhantomData<(&'a [u8], M)>,
 }
 
 // SAFETY: the handle owns the single-consumer role, and shared state
 // (the header words, the slot seqs) is atomic with
 // Release/Acquire handoff.
-unsafe impl Send for MpscConsumer<'_> {}
+unsafe impl<M: Mode> Send for MpscConsumer<'_, M> {}
 
-impl<'a> MpscConsumer<'a> {
+impl<'a, M: Mode> MpscConsumer<'a, M> {
     /// Continue from `cp`, the checkpoint the last consumer left,
     /// or the ring's start.
     pub(super) fn resume(segs: Segments, cp: Checkpoint) -> Self {
@@ -110,7 +110,8 @@ impl<'a> MpscConsumer<'a> {
     ///   named segment, progress again. Otherwise the slot is not
     ///   yet committed and the policy runs. So a segment is given
     ///   back at the reserve after its last release, not at that
-    ///   release: the fast path never loads the seal.
+    ///   release: the fast path never loads the seal, and a
+    ///   [`Single`](super::Single) ring never does.
     /// - A seal naming a segment the ring does not have reads as
     ///   Empty, failing toward Empty as the rings do.
     /// - `on_empty` is called after each failed attempt with the
@@ -132,17 +133,24 @@ impl<'a> MpscConsumer<'a> {
         let mut attempt = 0u32;
         loop {
             let c = st.pos;
+            // Single: segment 0 always, known at compile time.
+            let cur = if M::MULTI { st.cur } else { 0 };
             let committed = seq_of(c.wrapping_add(segs.commit_add));
             // Acquire pairs with the producer's Release commit:
             // observing committed means the fill is visible.
-            let seq = segs.seq(st.cur, c).load(Ordering::Acquire);
+            let seq = segs.seq(cur, c).load(Ordering::Acquire);
             if seq == committed {
                 break;
             }
             // Acquire pairs with the sealing producer's Release
             // store: seeing MOVED means the next segment's seal is
             // clear and its seqs are as the producers left them.
-            let seal = segs.seal(st.cur).load(Ordering::Acquire);
+            // Single never switches, so it never loads a seal.
+            let seal = if M::MULTI {
+                segs.seal(cur).load(Ordering::Acquire)
+            } else {
+                0
+            };
             if seal & MOVED != 0 && word_pos(seal) == c && word_seg(seal) < segs.seg_count {
                 let k = word_seg(seal);
                 st.resume[st.cur as usize] = c;

@@ -169,6 +169,9 @@ pub enum Error {
     /// MPSC v3: a ring's most producers is `0`, which no producer
     /// could claim under.
     BadMaxProducers,
+    /// MPSC v3, attach: the ring was built for the other segment
+    /// mode, `Single` or `Multi`.
+    BadMode,
 }
 
 /// Check `T` fits a slot, called once per `reserve_slot_with`

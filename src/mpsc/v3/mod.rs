@@ -10,8 +10,15 @@
 //!   [`MpscRing::first_segment`], and the roles claimed by count,
 //!   [`MpscRing::claim_producer`] and [`MpscRing::claim_consumer`].
 //!   [`MpscRing::release_ring`] gives a ring no role holds back to
-//!   the pool. The compile-time segment modes and waiting are the
-//!   rungs after it.
+//!   the pool, and the segment handling is a mode type chosen at
+//!   compile time, [`Single`] or [`Multi`]. Waiting is the rung
+//!   after it.
+//! - Modes: [`Multi`] is v2's switching over up to
+//!   [`MAX_SEGMENTS`] segments. [`Single`] is one segment, where a
+//!   full ring goes straight to the policy and the consumer never
+//!   loads a seal, so its paths compile without the switch. The
+//!   mode is in the control block, and an `attach` of the other
+//!   mode is [`Error::BadMode`].
 //! - Roles: one consumer and up to the ring's most producers, each
 //!   claimed and released by one CAS on the roles word. A producer
 //!   keeps no state of its own, and the consumer checkpoints its
@@ -89,6 +96,43 @@ const CONSUMER: u32 = 1 << 30;
 /// The roles word's count of producers held.
 const PRODUCERS: u32 = 0xFFFF;
 
+/// How a ring handles its segments, chosen at compile time: the
+/// type parameter of [`MpscRing`] and its endpoints.
+///
+/// - Sealed: [`Single`] and [`Multi`] are the two modes.
+pub trait Mode: sealed::Sealed + 'static {
+    /// Whether the ring switches segments, the one question the
+    /// message paths ask, answered at compile time.
+    const MULTI: bool;
+    /// The mode's value in the control block.
+    const CODE: u32;
+}
+
+/// One segment: a full ring goes straight to the policy and the
+/// consumer never loads a seal.
+pub struct Single;
+
+/// Up to [`MAX_SEGMENTS`] segments, v2's switching: a producer at
+/// a full segment takes a free one.
+pub struct Multi;
+
+impl Mode for Single {
+    const MULTI: bool = false;
+    const CODE: u32 = 1;
+}
+
+impl Mode for Multi {
+    const MULTI: bool = true;
+    const CODE: u32 = 2;
+}
+
+mod sealed {
+    /// Keeps [`Mode`](super::Mode) to the crate's two modes.
+    pub trait Sealed {}
+    impl Sealed for super::Single {}
+    impl Sealed for super::Multi {}
+}
+
 /// The word naming segment `seg` and position `pos`.
 #[inline]
 fn word(seg: u32, pos: u32) -> u32 {
@@ -121,6 +165,8 @@ struct Info {
     seg_count: AtomicU32,
     /// This segment's number in the ring.
     seg_num: AtomicU32,
+    /// The ring's [`Mode::CODE`].
+    mode: AtomicU32,
     /// The most producers the ring allows, segment 0's.
     max_producers: AtomicU32,
     /// The consumer's resume position in this segment, written by
@@ -391,17 +437,18 @@ pub(crate) struct Checkpoint {
 
 /// A ring of segments over the application's pool, its roles
 /// claimed with [`MpscRing::claim_producer`] and
-/// [`MpscRing::claim_consumer`].
-pub struct MpscRing<'a> {
+/// [`MpscRing::claim_consumer`], its segments handled as mode `M`
+/// has them, [`Multi`] by default.
+pub struct MpscRing<'a, M: Mode = Multi> {
     /// Geometry and segment addresses.
     segs: Segments,
     /// The pool buffer index of segment 0, where the control
     /// block is.
     first_segment: u32,
-    _region: PhantomData<&'a [u8]>,
+    _region: PhantomData<(&'a [u8], M)>,
 }
 
-impl<'a> MpscRing<'a> {
+impl<'a, M: Mode> MpscRing<'a, M> {
     /// Take `seg_count` segments from `pool` and initialize each
     /// as an empty ring of `seg_capacity` slots of `slot_size`
     /// bytes.
@@ -410,7 +457,8 @@ impl<'a> MpscRing<'a> {
     ///   multiple, of which [`SLOT_HEADER_BYTES`] are the crate's.
     /// - `seg_capacity`: M slots per segment, a power of two up to
     ///   [`MAX_SEG_CAPACITY`], 1 included.
-    /// - `seg_count`: 1 to [`MAX_SEGMENTS`].
+    /// - `seg_count`: 1 to [`MAX_SEGMENTS`], and exactly 1 for
+    ///   [`Single`], else [`Error::BadSegmentCount`].
     /// - The pool's buffers must hold [`segment_size`], else
     ///   [`Error::TooSmall`]. A pool without `seg_count` free
     ///   buffers gives [`Error::Exhausted`], with the buffers
@@ -448,6 +496,9 @@ impl<'a> MpscRing<'a> {
             return Err(Error::BadMaxProducers);
         }
         validate_geometry(slot_size, seg_capacity, seg_count)?;
+        if !M::MULTI && seg_count != 1 {
+            return Err(Error::BadSegmentCount);
+        }
         if (pool.buf_size() as u64) < segment_size(slot_size, seg_capacity) {
             return Err(Error::TooSmall);
         }
@@ -486,6 +537,7 @@ impl<'a> MpscRing<'a> {
                 info.seg_capacity.store(seg_capacity, Ordering::Relaxed);
                 info.seg_count.store(seg_count, Ordering::Relaxed);
                 info.seg_num.store(seg as u32, Ordering::Relaxed);
+                info.mode.store(M::CODE, Ordering::Relaxed);
                 if seg == 0 {
                     info.max_producers
                         .store(max_producers as u32, Ordering::Relaxed);
@@ -523,6 +575,7 @@ impl<'a> MpscRing<'a> {
     ///   table entry against the pool's geometry, and every
     ///   segment's own header against the block, so a hostile
     ///   region is an `Err`, never an out-of-bounds access.
+    /// - A ring built for the other mode is [`Error::BadMode`].
     ///
     /// # Safety
     ///
@@ -551,10 +604,16 @@ impl<'a> MpscRing<'a> {
         if block.info.layout_version.load(Ordering::Relaxed) != LAYOUT_VERSION {
             return Err(Error::BadLayoutVersion);
         }
+        if block.info.mode.load(Ordering::Relaxed) != M::CODE {
+            return Err(Error::BadMode);
+        }
         let slot_size = block.info.slot_size.load(Ordering::Relaxed);
         let seg_capacity = block.info.seg_capacity.load(Ordering::Relaxed);
         let seg_count = block.info.seg_count.load(Ordering::Relaxed);
         validate_geometry(slot_size, seg_capacity, seg_count)?;
+        if !M::MULTI && seg_count != 1 {
+            return Err(Error::BadSegmentCount);
+        }
         if (buf_size as u64) < segment_size(slot_size, seg_capacity) {
             return Err(Error::TooSmall);
         }
@@ -586,7 +645,8 @@ impl<'a> MpscRing<'a> {
                 && info.slot_size.load(Ordering::Relaxed) == slot_size
                 && info.seg_capacity.load(Ordering::Relaxed) == seg_capacity
                 && info.seg_count.load(Ordering::Relaxed) == seg_count
-                && info.seg_num.load(Ordering::Relaxed) == seg as u32;
+                && info.seg_num.load(Ordering::Relaxed) == seg as u32
+                && info.mode.load(Ordering::Relaxed) == M::CODE;
             if !agrees {
                 return Err(Error::BadSegment);
             }
@@ -679,7 +739,7 @@ impl<'a> MpscRing<'a> {
     ///   freely.
     /// - The role stays held until [`MpscProducer::release`]:
     ///   dropping the endpoint writes nothing.
-    pub fn claim_producer(&self) -> Result<MpscProducer<'a>, Error> {
+    pub fn claim_producer(&self) -> Result<MpscProducer<'a, M>, Error> {
         let roles = self.segs.roles();
         let max = self
             .segs
@@ -717,7 +777,7 @@ impl<'a> MpscRing<'a> {
     ///   [`Error::BadCheckpoint`], with the role left free.
     /// - The role stays held until [`MpscConsumer::release`]:
     ///   dropping the endpoint writes nothing.
-    pub fn claim_consumer(&self) -> Result<MpscConsumer<'a>, Error> {
+    pub fn claim_consumer(&self) -> Result<MpscConsumer<'a, M>, Error> {
         let roles = self.segs.roles();
         let mut r = roles.load(Ordering::Acquire);
         loop {
@@ -777,7 +837,7 @@ mod tests {
     }
 
     /// Send `from..to` as `seq = i`, `val = i * 10`.
-    fn send(prod: &MpscProducer<'_>, from: u64, to: u64) {
+    fn send<M: Mode>(prod: &MpscProducer<'_, M>, from: u64, to: u64) {
         for i in from..to {
             prod.send_with::<Msg>(
                 |_| false,
@@ -791,7 +851,7 @@ mod tests {
     }
 
     /// Receive `from..to` in order.
-    fn recv(cons: &mut MpscConsumer<'_>, from: u64, to: u64) {
+    fn recv<M: Mode>(cons: &mut MpscConsumer<'_, M>, from: u64, to: u64) {
         for i in from..to {
             let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
             assert_eq!(
@@ -807,7 +867,9 @@ mod tests {
 
     /// Claim both roles of a fresh ring, as an in-process caller
     /// does.
-    fn endpoints<'a>(ring: &MpscRing<'a>) -> (MpscProducer<'a>, MpscConsumer<'a>) {
+    fn endpoints<'a, M: Mode>(
+        ring: &MpscRing<'a, M>,
+    ) -> (MpscProducer<'a, M>, MpscConsumer<'a, M>) {
         (
             ring.claim_producer().unwrap(),
             ring.claim_consumer().unwrap(),
@@ -815,7 +877,7 @@ mod tests {
     }
 
     /// Segments free by the in-use word.
-    fn free_segments(prod: &MpscProducer<'_>) -> u32 {
+    fn free_segments<M: Mode>(prod: &MpscProducer<'_, M>) -> u32 {
         let segs = &prod.segs;
         !segs.in_use().load(Ordering::Acquire) & segs.all()
     }
@@ -824,8 +886,9 @@ mod tests {
     fn init_rejects_bad_geometry() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let err =
-            |slot, cap, count, pool: &mut Pool<'_>| MpscRing::init(pool, slot, cap, count).err();
+        let err = |slot, cap, count, pool: &mut Pool<'_>| {
+            MpscRing::<Multi>::init(pool, slot, cap, count).err()
+        };
         assert_eq!(err(63, 4, 2, &mut pool), Some(Error::BadSlotSize));
         assert_eq!(err(0, 4, 2, &mut pool), Some(Error::BadSlotSize));
         assert_eq!(err(64, 3, 2, &mut pool), Some(Error::BadCapacity));
@@ -865,7 +928,7 @@ mod tests {
     fn control_block_names_the_ring() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let ring = MpscRing::init(&mut pool, 64, 4, 3).unwrap();
+        let ring = MpscRing::<Multi>::init(&mut pool, 64, 4, 3).unwrap();
         let segs = ring.segs;
         let header0 = segs.header(0);
         assert_eq!(
@@ -948,14 +1011,16 @@ mod tests {
         let mut r = Region::new();
         let (base, len) = region(&mut r);
         let first = with_init_pool(base, len, |pool| {
-            MpscRing::init(pool, 64, 4, 3).unwrap().first_segment()
+            MpscRing::<Multi>::init(pool, 64, 4, 3)
+                .unwrap()
+                .first_segment()
         });
         // Two attached handles, as two processes would hold.
         let (b1, b2) = (attach_pool(base, len), attach_pool(base, len));
         // SAFETY: the index came from first_segment of a ring over
         // this pool, whose segments are still the ring's.
-        let ring_1 = unsafe { MpscRing::attach(&b1, first) }.unwrap();
-        let ring_2 = unsafe { MpscRing::attach(&b2, first) }.unwrap();
+        let ring_1 = unsafe { MpscRing::<Multi>::attach(&b1, first) }.unwrap();
+        let ring_2 = unsafe { MpscRing::<Multi>::attach(&b2, first) }.unwrap();
         assert_eq!(ring_2.first_segment(), first);
         assert_eq!(ring_2.segs.headers, ring_1.segs.headers);
         // The producer from one handle, the consumer from the other,
@@ -977,7 +1042,7 @@ mod tests {
         let mut r = Region::new();
         let (base, len) = region(&mut r);
         let (first, spare) = with_init_pool(base, len, |pool| {
-            let ring = MpscRing::init(pool, 64, 4, 3).unwrap();
+            let ring = MpscRing::<Multi>::init(pool, 64, 4, 3).unwrap();
             // A buffer that is no segment: free, its first word the
             // free-stack link.
             let spare = pool.alloc_bytes().unwrap();
@@ -988,9 +1053,9 @@ mod tests {
         let b = attach_pool(base, len);
         // SAFETY: each index names a buffer of this pool, and the
         // ring's segments are still the ring's.
-        let attach = |idx| unsafe { MpscRing::attach(&b, idx) }.err();
+        let attach = |idx| unsafe { MpscRing::<Multi>::attach(&b, idx) }.err();
         // SAFETY: first names the ring's segment 0.
-        let ring = unsafe { MpscRing::attach(&b, first) }.unwrap();
+        let ring = unsafe { MpscRing::<Multi>::attach(&b, first) }.unwrap();
         let block = ring.segs.header(0);
 
         // Not a buffer of the pool, and a buffer that is no segment.
@@ -1052,7 +1117,7 @@ mod tests {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
         assert_eq!(
-            MpscRing::init_with_max_producers(&mut pool, 64, 4, 2, 0).err(),
+            MpscRing::<Multi>::init_with_max_producers(&mut pool, 64, 4, 2, 0).err(),
             Some(Error::BadMaxProducers)
         );
     }
@@ -1063,7 +1128,7 @@ mod tests {
     fn roles_are_claimed_by_count() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let ring = MpscRing::init_with_max_producers(&mut pool, 64, 4, 2, 2).unwrap();
+        let ring = MpscRing::<Multi>::init_with_max_producers(&mut pool, 64, 4, 2, 2).unwrap();
         let roles = |ring: &MpscRing<'_>| ring.segs.roles().load(Ordering::Relaxed);
         assert_eq!(roles(&ring), 0);
 
@@ -1101,14 +1166,16 @@ mod tests {
         let mut r = Region::new();
         let (base, len) = region(&mut r);
         let first = with_init_pool(base, len, |pool| {
-            MpscRing::init(pool, 64, 4, 3).unwrap().first_segment()
+            MpscRing::<Multi>::init(pool, 64, 4, 3)
+                .unwrap()
+                .first_segment()
         });
         let (b1, b2) = (attach_pool(base, len), attach_pool(base, len));
         // SAFETY: the index came from first_segment of a ring over
         // this pool, whose segments are still the ring's.
         let rings = [
-            unsafe { MpscRing::attach(&b1, first) }.unwrap(),
-            unsafe { MpscRing::attach(&b2, first) }.unwrap(),
+            unsafe { MpscRing::<Multi>::attach(&b1, first) }.unwrap(),
+            unsafe { MpscRing::<Multi>::attach(&b2, first) }.unwrap(),
         ];
         let (mut sent, mut read) = (0u64, 0u64);
         for (round, (burst, take)) in [(3u64, 1u64), (4, 5), (5, 3), (3, 6), (6, 4), (2, 4)]
@@ -1139,7 +1206,7 @@ mod tests {
     fn a_checkpoint_naming_no_segment_is_refused() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let ring = MpscRing::init(&mut pool, 64, 4, 2).unwrap();
+        let ring = MpscRing::<Multi>::init(&mut pool, 64, 4, 2).unwrap();
         ring.segs.claims().cons_cur.store(2, Ordering::Relaxed);
         assert_eq!(ring.claim_consumer().err(), Some(Error::BadCheckpoint));
         // The role is left free.
@@ -1153,13 +1220,15 @@ mod tests {
         let mut r = Region::new();
         let (base, len) = region(&mut r);
         let first = with_init_pool(base, len, |pool| {
-            MpscRing::init(pool, 64, 4, 3).unwrap().first_segment()
+            MpscRing::<Multi>::init(pool, 64, 4, 3)
+                .unwrap()
+                .first_segment()
         });
         let (b1, b2) = (attach_pool(base, len), attach_pool(base, len));
         // SAFETY: the index came from first_segment of a ring over
         // this pool, whose segments are still the ring's, for every
         // attach until the release below.
-        let attach = |pool| unsafe { MpscRing::attach(pool, first) };
+        let attach = |pool| unsafe { MpscRing::<Multi>::attach(pool, first) };
 
         // A producer or the consumer held: in use, and the ring is
         // unchanged.
@@ -1207,16 +1276,106 @@ mod tests {
     fn a_released_ring_is_released_once() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let ring = MpscRing::init(&mut pool, 64, 4, 2).unwrap();
+        let ring = MpscRing::<Multi>::init(&mut pool, 64, 4, 2).unwrap();
         // A second handle to the same ring, as another process may
         // hold: its release after the first finds the ring closed.
-        let stale = MpscRing {
+        let stale: MpscRing<'_, Multi> = MpscRing {
             segs: ring.segs,
             first_segment: ring.first_segment(),
             _region: PhantomData,
         };
         ring.release_ring(&pool).unwrap();
         assert_eq!(stale.release_ring(&pool).err(), Some(Error::RingClosed));
+    }
+
+    #[test]
+    fn single_takes_one_segment() {
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        assert_eq!(
+            MpscRing::<Single>::init(&mut pool, 64, 4, 2).err(),
+            Some(Error::BadSegmentCount)
+        );
+        let ring = MpscRing::<Single>::init(&mut pool, 64, 4, 1).unwrap();
+        assert_eq!(
+            ring.segs.header(0).info.mode.load(Ordering::Relaxed),
+            Single::CODE
+        );
+    }
+
+    #[test]
+    fn single_is_one_ring() {
+        // Full at the segment's depth, with no switch, lap after lap.
+        for cap in [1u32, 2, 16] {
+            let mut r = Region::new();
+            let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+            let (prod, mut cons) =
+                endpoints(&MpscRing::<Single>::init(&mut pool, 64, cap, 1).unwrap());
+            let cap = cap as u64;
+            for lap in 0..5u64 {
+                send(&prod, lap * cap, lap * cap + cap);
+                assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
+                recv(&mut cons, lap * cap, lap * cap + cap);
+                assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+            }
+            assert_eq!(prod.switches(), 0);
+            assert_eq!(cons.switches(), 0);
+            assert_eq!(prod.segment(), 0);
+        }
+    }
+
+    #[test]
+    fn attach_checks_the_mode() {
+        let mut r = Region::new();
+        let (base, len) = region(&mut r);
+        let (single, multi) = with_init_pool(base, len, |pool| {
+            (
+                MpscRing::<Single>::init(pool, 64, 4, 1)
+                    .unwrap()
+                    .first_segment(),
+                MpscRing::<Multi>::init(pool, 64, 4, 1)
+                    .unwrap()
+                    .first_segment(),
+            )
+        });
+        let b = attach_pool(base, len);
+        // SAFETY: both indices came from first_segment of rings over
+        // this pool, whose segments are still the rings'.
+        unsafe {
+            assert_eq!(
+                MpscRing::<Multi>::attach(&b, single).err(),
+                Some(Error::BadMode)
+            );
+            assert_eq!(
+                MpscRing::<Single>::attach(&b, multi).err(),
+                Some(Error::BadMode)
+            );
+            let ring = MpscRing::<Single>::attach(&b, single).unwrap();
+            let (prod, mut cons) = endpoints(&ring);
+            send(&prod, 0, 4);
+            recv(&mut cons, 0, 4);
+        }
+    }
+
+    #[test]
+    fn single_streams_across_threads() {
+        // One, two, and four producers on their own threads into a
+        // one-segment ring, all spinning: per-producer order holds.
+        let total: u64 = if cfg!(miri) { 50 } else { 20_000 };
+        let depths: &[u32] = if cfg!(miri) { &[1, 8] } else { &[1, 2, 8, 16] };
+        for &depth in depths {
+            for producers in [1usize, 2, 4] {
+                let mut r = Region::new();
+                let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+                let ring = MpscRing::<Single>::init(&mut pool, 64, depth, 1).unwrap();
+                let mut cons = ring.claim_consumer().unwrap();
+                let prods = (0..producers)
+                    .map(|_| ring.claim_producer().unwrap())
+                    .collect();
+                stream_threads(prods, &mut cons, total);
+                assert_eq!(cons.switches(), 0);
+            }
+        }
     }
 
     #[test]
@@ -1231,7 +1390,7 @@ mod tests {
     fn one_segment_is_a_ring() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 4, 1).unwrap());
+        let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 4, 1).unwrap());
         assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
         for lap in 0..3u64 {
             send(&prod, lap * 4, lap * 4 + 4);
@@ -1250,7 +1409,8 @@ mod tests {
         for (cap, count) in [(1u32, 2u32), (4, 3), (16, 4)] {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-            let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, cap, count).unwrap());
+            let (prod, mut cons) =
+                endpoints(&MpscRing::<Multi>::init(&mut pool, 64, cap, count).unwrap());
             let total = (cap * count) as u64;
             send(&prod, 0, total);
             assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
@@ -1273,7 +1433,8 @@ mod tests {
         for (cap, count) in [(1u32, 2u32), (1, 5), (2, 3), (4, 2), (16, 8)] {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-            let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, cap, count).unwrap());
+            let (prod, mut cons) =
+                endpoints(&MpscRing::<Multi>::init(&mut pool, 64, cap, count).unwrap());
             let burst = (cap * count) as u64;
             let mut next = 0u64;
             for round in 0..200u64 {
@@ -1300,7 +1461,7 @@ mod tests {
         // the reserve after its message, one poll late.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 1, 3).unwrap());
+        let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 1, 3).unwrap());
         for i in 0..10u64 {
             send(&prod, i, i + 1);
             recv(&mut cons, i, i + 1);
@@ -1328,7 +1489,7 @@ mod tests {
         // consumer frees a slot.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 1, 2).unwrap());
+        let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 1, 2).unwrap());
         send(&prod, 0, 2);
         assert_eq!(prod.segment(), 1);
         assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
@@ -1359,7 +1520,7 @@ mod tests {
     fn policies_count_and_give_up() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 2, 1).unwrap());
+        let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 2, 1).unwrap());
         let mut seen = Vec::new();
         let err = cons
             .reserve_slot_with::<Msg>(|attempt| {
@@ -1396,7 +1557,7 @@ mod tests {
     fn abandoned_read_guard_redelivers() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 1, 2).unwrap());
+        let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 1, 2).unwrap());
         send(&prod, 0, 2);
         // The first read is the last message of segment 0, and an
         // abandoned read re-delivers it, the switch after it.
@@ -1417,7 +1578,7 @@ mod tests {
         // restart.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 4, 2).unwrap());
+        let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 4, 2).unwrap());
         send(&prod, 0, 1);
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             prod.send_with::<Msg>(|_| false, |_: &mut Msg| panic!("fill panics"))
@@ -1435,7 +1596,7 @@ mod tests {
         // starts there, then several laps across it.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let ring = MpscRing::init(&mut pool, 64, 4, 3).unwrap();
+        let ring = MpscRing::<Multi>::init(&mut pool, 64, 4, 3).unwrap();
         let start = SEQ_MASK - 1;
         for seg in 0..3 {
             for i in 0..4u32 {
@@ -1469,7 +1630,7 @@ mod tests {
         // position.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 2, 2).unwrap());
+        let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 2, 2).unwrap());
         send(&prod, 0, 3);
         recv(&mut cons, 0, 3);
         assert_eq!(cons.segment(), 1);
@@ -1489,7 +1650,7 @@ mod tests {
     fn stream(producers: u64, cap: u32, seg_count: u32, count: u64) {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let ring = MpscRing::init(&mut pool, 64, cap, seg_count).unwrap();
+        let ring = MpscRing::<Multi>::init(&mut pool, 64, cap, seg_count).unwrap();
         let mut cons = ring.claim_consumer().unwrap();
         let prods: Vec<_> = (0..producers)
             .map(|_| ring.claim_producer().unwrap())
@@ -1506,7 +1667,11 @@ mod tests {
     /// Each producer on its own thread sending `count` messages, and
     /// the consumer on its own, all spinning, per-producer FIFO
     /// checked at the consumer.
-    fn stream_threads(prods: Vec<MpscProducer<'_>>, cons: &mut MpscConsumer<'_>, count: u64) {
+    fn stream_threads<M: Mode>(
+        prods: Vec<MpscProducer<'_, M>>,
+        cons: &mut MpscConsumer<'_, M>,
+        count: u64,
+    ) {
         let producers = prods.len() as u64;
         std::thread::scope(|s| {
             for (p, prod) in prods.into_iter().enumerate() {
@@ -1565,7 +1730,7 @@ mod tests {
         let bytes = size_of::<PoolHeader>() as u64 + buf * count as u64;
         let mut store = vec![Line([0; CACHE_LINE_SIZE]); bytes.div_ceil(64) as usize];
         let mut pool = Pool::init(store.as_mut_slice().as_mut_bytes(), buf as u32, count).unwrap();
-        f(&MpscRing::init(&mut pool, 64, depth, count).unwrap());
+        f(&MpscRing::<Multi>::init(&mut pool, 64, depth, count).unwrap());
     }
 
     #[test]
@@ -1681,7 +1846,7 @@ mod tests {
         const COUNT: u64 = if cfg!(miri) { 100 } else { 50_000 };
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = endpoints(&MpscRing::init(&mut pool, 64, 4, 2).unwrap());
+        let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 4, 2).unwrap());
         let prod = &prod;
         std::thread::scope(|s| {
             for p in 0..2u64 {
