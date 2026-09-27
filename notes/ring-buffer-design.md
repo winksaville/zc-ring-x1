@@ -2073,7 +2073,7 @@ that dies is recovered by a restart, not a takeover.
 
 ### MPSC v3 design
 
-The design the cycle builds, provisional until its measurements and closing.
+The design as the cycle built it, with its measurements in [MPSC v3 measured](#mpsc-v3-measured).
 
 - The control block: every segment opens with seven header lines, so every segment's slots start
   at one offset.
@@ -2148,6 +2148,111 @@ The design the cycle builds, provisional until its measurements and closing.
   - A dead producer leaves its count, so the ring cannot be released. One that died between claim
     and commit leaves its slot claimed, the consumer waits there, and the ring jams, so the
     consumer's set restarts too.
+
+### MPSC v3 measured
+
+`tp-stream -d 1 --depth 1,8,64` and `tp-matrix -d 1 --depth 1,8`, 3900X, 2026-09-27,
+0.18.5-9, two segments, each run twice, after the rung `perf: mpsc v3 in the measurement tools`
+moved the consumer's first-empty wake check to its sleep. Three flavors: `mpsc-v3` (`Multi`,
+`NoWake`), `mpsc-v3-single`, and `mpsc-v3-futex` (`Multi` over `Futex<10>`, whose checks run
+though nothing sleeps). The unpinned rows and v0 and v1 are in the runs, left out here.
+
+- Streaming, sorted by depth, placement, and flavor, the msgs, xfills, and switches from run 1:
+
+  | depth | placement | flavor | ns/msg run 1 | ns/msg run 2 | msgs | xfills/msg | switches/msg |
+  |---:|---|---|---:|---:|---:|---:|---:|
+  | 1 | 11,10 CCX | mpsc-v2 | 99.3 | 99.4 | 10.1M | 7.995 | 0.996 |
+  | 1 | 11,10 CCX | mpsc-v3 | 102.1 | 101.6 | 9.8M | 7.921 | 0.882 |
+  | 1 | 11,10 CCX | mpsc-v3-single | 66.7 | 66.7 | 15.0M | 2.000 | - |
+  | 1 | 11,10 CCX | mpsc-v3-futex | 102.7 | 102.7 | 9.7M | 7.999 | 0.998 |
+  | 1 | 11,8 x-CCX | mpsc-v2 | 415.1 | 415.3 | 2.4M | 7.340 | 0.736 |
+  | 1 | 11,8 x-CCX | mpsc-v3 | 426.7 | 427.0 | 2.3M | 7.594 | 0.768 |
+  | 1 | 11,8 x-CCX | mpsc-v3-single | 204.7 | 204.7 | 4.9M | 2.000 | - |
+  | 1 | 11,8 x-CCX | mpsc-v3-futex | 378.2 | 382.2 | 2.6M | 6.962 | 0.688 |
+  | 1 | 11,23 SMT | mpsc-v2 | 32.1 | 32.5 | 31.1M | 0.0000 | 0.654 |
+  | 1 | 11,23 SMT | mpsc-v3 | 37.4 | 37.4 | 26.8M | 0.0000 | 0.783 |
+  | 1 | 11,23 SMT | mpsc-v3-single | 41.4 | 41.6 | 24.2M | 0.0000 | - |
+  | 1 | 11,23 SMT | mpsc-v3-futex | 32.0 | 31.6 | 31.3M | 0.0000 | 0.953 |
+  | 8 | 11,10 CCX | mpsc-v2 | 10.8 | 10.9 | 92.2M | 0.753 | 0.000 |
+  | 8 | 11,10 CCX | mpsc-v3 | 13.0 | 12.8 | 76.8M | 0.885 | 0.000 |
+  | 8 | 11,10 CCX | mpsc-v3-single | 9.4 | 9.3 | 106.0M | 0.796 | - |
+  | 8 | 11,10 CCX | mpsc-v3-futex | 13.6 | 13.6 | 73.3M | 0.829 | 0.000 |
+  | 8 | 11,8 x-CCX | mpsc-v2 | 32.0 | 31.9 | 31.2M | 1.032 | 0.001 |
+  | 8 | 11,8 x-CCX | mpsc-v3 | 31.8 | 31.7 | 31.5M | 0.741 | 0.001 |
+  | 8 | 11,8 x-CCX | mpsc-v3-single | 30.9 | 30.3 | 32.4M | 0.897 | - |
+  | 8 | 11,8 x-CCX | mpsc-v3-futex | 32.5 | 32.6 | 30.7M | 0.744 | 0.001 |
+  | 8 | 11,23 SMT | mpsc-v2 | 11.9 | 11.9 | 84.0M | 0.0000 | 0.000 |
+  | 8 | 11,23 SMT | mpsc-v3 | 12.2 | 12.2 | 82.1M | 0.0000 | 0.000 |
+  | 8 | 11,23 SMT | mpsc-v3-single | 9.4 | 9.4 | 106.8M | 0.0000 | - |
+  | 8 | 11,23 SMT | mpsc-v3-futex | 15.6 | 15.6 | 64.1M | 0.0000 | 0.000 |
+  | 64 | 11,10 CCX | mpsc-v2 | 13.5 | 13.7 | 74.2M | 0.591 | 0.000 |
+  | 64 | 11,10 CCX | mpsc-v3 | 15.5 | 15.3 | 64.4M | 0.902 | 0.000 |
+  | 64 | 11,10 CCX | mpsc-v3-single | 12.1 | 9.3 | 82.5M | 0.476 | - |
+  | 64 | 11,10 CCX | mpsc-v3-futex | 15.3 | 15.4 | 65.4M | 0.878 | 0.000 |
+  | 64 | 11,8 x-CCX | mpsc-v2 | 15.2 | 14.1 | 65.9M | 0.090 | 0.000 |
+  | 64 | 11,8 x-CCX | mpsc-v3 | 16.5 | 15.0 | 60.6M | 0.101 | 0.000 |
+  | 64 | 11,8 x-CCX | mpsc-v3-single | 14.6 | 14.2 | 68.4M | 0.090 | - |
+  | 64 | 11,8 x-CCX | mpsc-v3-futex | 17.7 | 17.4 | 56.6M | 0.104 | 0.000 |
+  | 64 | 11,23 SMT | mpsc-v2 | 11.9 | 11.9 | 84.1M | 0.0000 | 0.000 |
+  | 64 | 11,23 SMT | mpsc-v3 | 12.2 | 12.2 | 82.1M | 0.0000 | 0.000 |
+  | 64 | 11,23 SMT | mpsc-v3-single | 9.4 | 9.4 | 106.8M | 0.0000 | - |
+  | 64 | 11,23 SMT | mpsc-v3-futex | 15.3 | 15.3 | 65.5M | 0.0000 | 0.000 |
+
+- Round trips, `mean/stdev` ns per phase from run 1:
+
+  | depth | placement | flavor | m.send | w.recv | m.recv | RTs run 1 | RTs run 2 |
+  |---:|---|---|---:|---:|---:|---:|---:|
+  | 1 | 11,10 CCX | mpsc-v2 | 9.7/1.8 | 90.9/2.5 | 73.9/4.8 | 6.5M | 6.5M |
+  | 1 | 11,10 CCX | mpsc-v3 | 10.4/1.9 | 88.0/4.1 | 70.7/2.8 | 6.3M | 6.3M |
+  | 1 | 11,10 CCX | mpsc-v3-single | 9.3/2.5 | 86.9/4.7 | 72.4/4.2 | 6.6M | 6.6M |
+  | 1 | 11,10 CCX | mpsc-v3-futex | 11.1/3.1 | 89.9/2.2 | 74.1/4.9 | 6.1M | 6.1M |
+  | 1 | 11,8 x-CCX | mpsc-v2 | 9.8/1.6 | 211.2/61.4 | 201.0/73.0 | 2.1M | 2.1M |
+  | 1 | 11,8 x-CCX | mpsc-v3 | 10.3/1.8 | 217.1/57.4 | 196.1/49.8 | 2.1M | 2.1M |
+  | 1 | 11,8 x-CCX | mpsc-v3-single | 9.0/2.9 | 266.3/82.9 | 240.1/83.2 | 2.1M | 2.1M |
+  | 1 | 11,8 x-CCX | mpsc-v3-futex | 10.7/2.5 | 206.8/23.3 | 191.6/24.0 | 2.1M | 2.1M |
+  | 1 | 11,23 SMT | mpsc-v2 | 12.3/4.2 | 85.7/10.7 | 70.3/6.9 | 6.7M | 6.7M |
+  | 1 | 11,23 SMT | mpsc-v3 | 16.6/4.8 | 88.1/7.7 | 69.8/8.9 | 6.6M | 6.6M |
+  | 1 | 11,23 SMT | mpsc-v3-single | 9.0/2.9 | 83.7/7.3 | 71.6/9.7 | 6.9M | 6.9M |
+  | 1 | 11,23 SMT | mpsc-v3-futex | 16.9/4.7 | 100.2/10.6 | 83.1/8.5 | 6.1M | 6.1M |
+  | 8 | 11,10 CCX | mpsc-v2 | 9.5/2.3 | 109.1/10.9 | 97.6/12.3 | 5.7M | 5.7M |
+  | 8 | 11,10 CCX | mpsc-v3 | 10.6/2.6 | 106.0/11.5 | 89.6/13.2 | 5.7M | 5.7M |
+  | 8 | 11,10 CCX | mpsc-v3-single | 9.3/2.6 | 104.5/13.1 | 90.4/15.7 | 5.9M | 5.9M |
+  | 8 | 11,10 CCX | mpsc-v3-futex | 11.5/3.6 | 105.6/11.1 | 93.5/13.5 | 5.6M | 5.6M |
+  | 8 | 11,8 x-CCX | mpsc-v2 | 10.4/10.0 | 364.8/68.7 | 410.1/54.7 | 1.9M | 1.9M |
+  | 8 | 11,8 x-CCX | mpsc-v3 | 10.9/3.0 | 337.0/50.6 | 349.3/62.2 | 2.0M | 2.0M |
+  | 8 | 11,8 x-CCX | mpsc-v3-single | 8.9/3.1 | 366.4/59.7 | 346.1/57.8 | 2.0M | 2.0M |
+  | 8 | 11,8 x-CCX | mpsc-v3-futex | 11.2/3.2 | 373.4/58.9 | 337.2/54.2 | 2.0M | 2.0M |
+  | 8 | 11,23 SMT | mpsc-v2 | 12.3/4.2 | 85.7/10.7 | 70.3/7.0 | 6.7M | 6.7M |
+  | 8 | 11,23 SMT | mpsc-v3 | 16.6/4.7 | 89.3/8.7 | 71.8/11.0 | 6.5M | 6.5M |
+  | 8 | 11,23 SMT | mpsc-v3-single | 9.0/2.9 | 83.7/7.3 | 71.7/9.8 | 6.9M | 6.9M |
+  | 8 | 11,23 SMT | mpsc-v3-futex | 16.9/4.6 | 98.0/11.5 | 81.0/12.9 | 6.2M | 6.2M |
+
+- `Single` is the fastest MPSC ring wherever the ring has slack: 9.3 to 9.4 ns/msg streaming at
+  depths 8 and 64 on the CCX and SMT pairs, one run's 12.1 at depth 64 on the CCX pair aside,
+  against v2's 10.8 to 13.7, and its round trips lead v2 and the other v3 flavors on the CCX and
+  SMT pairs, v1 leading it on the SMT pair. At depth 1 it streams at 66.7 ns on the CCX pair
+  against v2's 99.4, since it never switches, and on the SMT pair it trails, 41.5 against 32.3,
+  where v2's switching spreads the two threads over two segments' lines.
+- `Multi` matches v2 on the x-CCX pair and the SMT pair streaming at depths 8 and 64, and trails
+  it on the CCX pair, 12.8 to 13.0 against 10.8 to 10.9 at depth 8 and 15.3 to 15.5 against 13.5
+  to 13.7 at depth 64, with more cross-core fills per message, 0.89 against 0.75 at depth 8. Its
+  message paths are v2's by construction, the mode's branches folded and the wake's compiled out,
+  so the delta does not explain the gap, as v4's did not explain its gap to v3 before the table
+  copy was found. We think it is layout: the seven header lines move the slots, and the harness's
+  endpoint structs grew. Its round trips are within 3 percent of v2's, and its send on the SMT
+  pair is slower, 16.6 against 12.3 ns.
+- The futex flavor costs about 3 ns/msg streaming on the SMT pair at depths 8 and 64, 15.3 to 15.6
+  against `mpsc-v3`'s 12.2, and 5 to 8 percent of round trips there, more than a fence every half
+  segment explains. Elsewhere it is within a nanosecond or two of `mpsc-v3`.
+- Found by the first run and fixed in the same rung: the consumer checked for sleeping producers
+  at its first empty look of every reserve, which in a round trip is every message, costing the
+  futex flavor 10 to 14 ns a receive on the SMT pair. Draining a full segment crosses a
+  half-segment check, so the first-empty check was redundant on the polling path and moved to
+  just before the consumer sleeps.
+- Verdict (2026-09-27): v3 does what it is for, an MPSC ring processes join and leave, and
+  `Single` is the MPSC ring to use where one segment holds the traffic. `Multi`'s gap to v2 and
+  the futex flavor's SMT cost are the Todo `MPSC v3 message path gaps`. The default `MpscRing`
+  stays v1.
 
 ### MPSC v3 long-term possibilities
 

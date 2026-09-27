@@ -76,7 +76,7 @@ no side can sleep until the other acts.
 - [feat: mpsc v3 wait and wake][28] (done)
 - [feat: mpsc v3 inter-process test][29] (done)
 - [perf: mpsc v3 in the measurement tools][30] (done)
-- [docs: mpsc v3 in the design note and guide][31]
+- [docs: mpsc v3 in the design note and guide][31] (done)
 - [feat: attachable MPSC v3 closing][32]
 
 #### Deliberation
@@ -261,6 +261,14 @@ v3 in tp_matrix beside v1 and v2, both modes.
 ##### docs: mpsc v3 in the design note and guide
 
 The measured results in the design note, and v3 in the user guide.
+
+- The design note's MPSC v3 section gains `MPSC v3 measured`: both tools' rows for v2 and the three
+  v3 flavors, what they show, and a verdict, `Single` the MPSC ring to use where one segment holds
+  the traffic and the default `MpscRing` still v1.
+- The unexplained gaps became the Todo `MPSC v3 message path gaps`, placed before `MPSC v2 as the
+  default`, whose choice of default they bear on.
+- The user guide gains a section for v3's joining, counted roles, waiting, and release, with its
+  errors in the table, and the README a section with the MPSC mode's steps by hand.
 
 ##### feat: attachable MPSC v3 closing
 
@@ -503,6 +511,20 @@ message against v2's 7.5.
   certain and v4 regress, and borrowing `&st.segs` in both endpoints took v4 at depth 64 from
   14.6 to 10.0 ns on the CCX pair and from 19.1 to 12.5 on the SMT pair, under v3's 13.7 and
   17.1 in the same run. The gap was the copy. v3 still copies, and this entry is what changes it.
+
+### MPSC v3 message path gaps
+
+MPSC v3's `Multi` mode trails v2 on the CCX pair's no-switch stream, 12.8 to 13.0 ns/msg against
+10.8 to 10.9 at depth 8, with more cross-core fills, and its send is 4 ns slower on the SMT pair,
+though its message paths are v2's by construction. Its futex flavor costs about 3 ns/msg streaming
+on the SMT pair, more than a fence every half segment explains. The design note's [MPSC v3
+measured](notes/ring-buffer-design.md#mpsc-v3-measured) has the rows.
+
+- Look for what the code delta does not show, as the table copy was for SPSC v4: the seven header
+  lines' placement of the slots, the harness's endpoint structs sharing a line across threads,
+  and the monomorphized code's layout.
+- A mark to beat: the rows in the design note, `tp-stream -d 1 --depth 1,8,64`, 3900X, 2026-09-27.
+- From `perf: mpsc v3 in the measurement tools`, in the cycle `feat: attachable MPSC v3`.
 
 ### MPSC v2 as the default
 

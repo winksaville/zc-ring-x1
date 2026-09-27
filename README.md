@@ -325,6 +325,34 @@ received value=0x53074c4fabcd8c41 checksum=0x46acb927225f8159 ok
   reads, and exits 0, which proves nothing.
 - The value differs every run. The one shown is from the first run, 2026-09-26.
 
+## MPSC v3: attachable ring with counted roles
+
+`mpsc::v3` is the MPSC ring of segments processes join and leave: v2's protocol over a ring that
+describes itself in the region. The details are the design note's [MPSC
+v3](notes/ring-buffer-design.md#mpsc-v3-attachable-segments-with-counted-roles), and the how-to the
+guide's [MPSC v3](notes/user-guide.md#mpsc-v3-joining-counted-roles-and-waiting).
+
+- Counted roles: one consumer and producers up to a most, each claimed and released by one CAS on
+  a roles word, with no holder ids. The consumer's release saves where it stopped for the next.
+- A restart, not a takeover: a holder that dies leaves its role held, and the set the ring
+  belongs to restarts. `release_ring` gives a ring no role holds back to its pool.
+- Two modes chosen at compile time: `Single`, one segment and the fastest MPSC ring with slack,
+  and `Multi`, v2's switching.
+- Waiting: `send_wait` and `reserve_slot_wait` sleep on a full or empty ring through a `Wake`
+  type, a futex on Linux, where `send_with` and `reserve_slot_with` spin or give up.
+- Proven between processes: `zcr-test-ipm`'s MPSC mode, run by `cargo test --test ipm`, sends
+  from two producer processes to a consumer that hands off to a second consumer process
+  mid-stream, then releases the ring. By hand, each step after the one before it, the producers
+  in terminals of their own:
+  1. `zcr-test-ipm mpsc-consumer new 20000` makes the ring, prints `ready`, and reads 20000
+     messages.
+  2. `zcr-test-ipm mpsc-producer 0 20000` and `zcr-test-ipm mpsc-producer 1 20000`, started
+     together once it is ready, send 20000 each and wait on the full ring when the first consumer
+     has gone.
+  3. `zcr-test-ipm mpsc-consumer join 20000`, once the first has exited, reads the rest, each
+     producer's stream continuing where the first consumer stopped.
+  4. `zcr-test-ipm mpsc-release` releases the ring once every role is given back.
+
 ## Workspace and tools
 
 The repo is a Cargo workspace: the ring crate at the root and
