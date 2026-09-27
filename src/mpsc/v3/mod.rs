@@ -57,9 +57,11 @@
 //!     waiting word, looks again, and sleeps on the wake sequence
 //!     word. The consumer checks the count behind a SeqCst fence
 //!     at every half segment of releases, at each segment it gives
-//!     back, and when it first finds the ring empty, and bumps the
-//!     sequence and wakes them all: a fence every half segment, not
-//!     every message.
+//!     back, and before it sleeps itself, and bumps the sequence and
+//!     wakes them all: a fence every half segment, not every
+//!     message. A producer sleeps only on a full ring, and draining
+//!     a full segment crosses a half-segment mark, so the checks
+//!     miss no sleeper.
 //!   - With [`NoWake`] every check folds away and a wait polls.
 //! - Gated with the rest of `mpsc` on `target_has_atomic = "32"`.
 

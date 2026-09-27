@@ -125,10 +125,21 @@ pub enum Flavor {
     /// surface, the depth each segment's, the segment count a
     /// knob).
     MpscV2,
+    /// The MPSC v3 ring, v2's segments attachable with counted
+    /// roles, in its `Multi` mode (same surface, the segment count
+    /// a knob, the roles claimed).
+    MpscV3,
+    /// The MPSC v3 ring in its `Single` mode: one segment, the
+    /// segment count ignored.
+    MpscV3Single,
+    /// The MPSC v3 ring in its `Multi` mode waking with a futex
+    /// (on Linux, else as `mpsc-v3`), so the consumer's wake checks
+    /// are on its path though nothing sleeps.
+    MpscV3Futex,
 }
 
 /// Every flavor, in report order.
-pub const FLAVORS: [Flavor; 8] = [
+pub const FLAVORS: [Flavor; 11] = [
     Flavor::SpscV0,
     Flavor::SpscV1,
     Flavor::SpscV2,
@@ -137,6 +148,9 @@ pub const FLAVORS: [Flavor; 8] = [
     Flavor::MpscV0,
     Flavor::MpscV1,
     Flavor::MpscV2,
+    Flavor::MpscV3,
+    Flavor::MpscV3Single,
+    Flavor::MpscV3Futex,
 ];
 
 impl Flavor {
@@ -151,6 +165,9 @@ impl Flavor {
             Flavor::MpscV0 => "mpsc-v0",
             Flavor::MpscV1 => "mpsc-v1",
             Flavor::MpscV2 => "mpsc-v2",
+            Flavor::MpscV3 => "mpsc-v3",
+            Flavor::MpscV3Single => "mpsc-v3-single",
+            Flavor::MpscV3Futex => "mpsc-v3-futex",
         }
     }
 
@@ -339,6 +356,9 @@ pub fn run_cell(
         Flavor::MpscV0 => run_mpsc_v0(dur, worker, depth, segments),
         Flavor::MpscV1 => run_mpsc_v1(dur, worker, depth, segments),
         Flavor::MpscV2 => run_mpsc_v2(dur, worker, depth, segments),
+        Flavor::MpscV3 => run_mpsc_v3(dur, worker, depth, segments),
+        Flavor::MpscV3Single => run_mpsc_v3_single(dur, worker, depth, segments),
+        Flavor::MpscV3Futex => run_mpsc_v3_futex(dur, worker, depth, segments),
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(Fills::finish);
@@ -407,6 +427,24 @@ impl SegmentSwitches for zc_ring_x1::mpsc::v2::MpscProducer<'_> {
         Some(self.switches())
     }
 }
+
+impl<M: zc_ring_x1::mpsc::v3::Mode, W: zc_ring_x1::wake::Wake> SegmentSwitches
+    for zc_ring_x1::mpsc::v3::MpscProducer<'_, M, W>
+{
+    fn segment_switches(&self) -> Option<u64> {
+        M::MULTI.then(|| self.switches())
+    }
+}
+
+/// The wake the `mpsc-v3-futex` flavor measures: a futex on Linux,
+/// where it exists.
+#[cfg(target_os = "linux")]
+type V3Futex = zc_ring_x1::wake::Futex<10>;
+
+/// The wake the `mpsc-v3-futex` flavor measures: none off Linux,
+/// so the flavor runs as `mpsc-v3`.
+#[cfg(not(target_os = "linux"))]
+type V3Futex = zc_ring_x1::wake::NoWake;
 
 /// Bind one SPSC ring's `$tx` and `$rx` endpoints, one-line
 /// slots at `$depth`, the storage held in `$store` (and, for a
@@ -615,6 +653,9 @@ spsc_cell!(
 ///   `$size(slot_size, depth)`, `$segments` unused.
 /// - `segmented`: a v2 ring of `$segments` segments, each
 ///   `$depth` slots, over a pool holding exactly those segments.
+/// - `v3 $mode, $wake`: a v3 ring of that mode and wake, `$segments`
+///   segments for `Multi` and one for `Single`, over a pool holding
+///   exactly those, the roles claimed.
 macro_rules! mpsc_pair {
     ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr,
      single $ring:path, $size:path) => {
@@ -637,6 +678,25 @@ macro_rules! mpsc_pair {
             zc_ring_x1::mpsc::v2::MpscRing::init(&mut $pool, slot, $depth, $segments)
                 .unwrap() // OK: the pool holds exactly the segments, sized by segment_size
                 .split();
+    };
+    ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr,
+     v3 $mode:ty, $wake:ty) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let buf = zc_ring_x1::mpsc::v3::segment_size(slot, $depth);
+        let count: u32 = if <$mode as zc_ring_x1::mpsc::v3::Mode>::MULTI {
+            $segments
+        } else {
+            1
+        };
+        let mut $store =
+            LineBuf::new(size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * count as u64);
+        let mut $pool = zc_ring_x1::Pool::init($store.as_mut_bytes(), buf as u32, count)
+            .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
+        let ring =
+            zc_ring_x1::mpsc::v3::MpscRing::<$mode, $wake>::init(&mut $pool, slot, $depth, count)
+                .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
+        let $tx = ring.claim_producer().unwrap(); // OK: a fresh ring holds no role
+        let mut $rx = ring.claim_consumer().unwrap(); // OK: a fresh ring holds no role
     };
 }
 
@@ -764,6 +824,24 @@ mpsc_cell!(
     zc_ring_x1::mpsc::v1::mpsc_region_size
 );
 mpsc_cell!(run_mpsc_v2, Flavor::MpscV2, segmented);
+mpsc_cell!(
+    run_mpsc_v3,
+    Flavor::MpscV3,
+    v3 zc_ring_x1::mpsc::v3::Multi,
+    zc_ring_x1::wake::NoWake
+);
+mpsc_cell!(
+    run_mpsc_v3_single,
+    Flavor::MpscV3Single,
+    v3 zc_ring_x1::mpsc::v3::Single,
+    zc_ring_x1::wake::NoWake
+);
+mpsc_cell!(
+    run_mpsc_v3_futex,
+    Flavor::MpscV3Futex,
+    v3 zc_ring_x1::mpsc::v3::Multi,
+    V3Futex
+);
 
 /// One streaming cell's outcome.
 pub struct StreamResult {
@@ -818,6 +896,9 @@ pub fn run_stream(
         Flavor::MpscV0 => stream_mpsc_v0(dur, pin, depth, segments),
         Flavor::MpscV1 => stream_mpsc_v1(dur, pin, depth, segments),
         Flavor::MpscV2 => stream_mpsc_v2(dur, pin, depth, segments),
+        Flavor::MpscV3 => stream_mpsc_v3(dur, pin, depth, segments),
+        Flavor::MpscV3Single => stream_mpsc_v3_single(dur, pin, depth, segments),
+        Flavor::MpscV3Futex => stream_mpsc_v3_futex(dur, pin, depth, segments),
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(Fills::finish);
@@ -995,3 +1076,14 @@ mpsc_stream!(
     zc_ring_x1::mpsc::v1::mpsc_region_size
 );
 mpsc_stream!(stream_mpsc_v2, segmented);
+mpsc_stream!(
+    stream_mpsc_v3,
+    v3 zc_ring_x1::mpsc::v3::Multi,
+    zc_ring_x1::wake::NoWake
+);
+mpsc_stream!(
+    stream_mpsc_v3_single,
+    v3 zc_ring_x1::mpsc::v3::Single,
+    zc_ring_x1::wake::NoWake
+);
+mpsc_stream!(stream_mpsc_v3_futex, v3 zc_ring_x1::mpsc::v3::Multi, V3Futex);

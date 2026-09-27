@@ -2131,9 +2131,11 @@ The design the cycle builds, provisional until its measurements and closing.
     commit. The consumer clears the flag when it wakes.
   - A producer that finds the ring full counts itself into the producers' waiting word, looks
     again, and sleeps on a wake sequence word. The consumer checks the waiting count behind a
-    SeqCst fence at every half segment of releases and when it first finds the ring empty, and
-    bumps the sequence and wakes them all. So a sleeping producer is woken within half a segment
-    of releases, not at the first, a fence paid every half segment rather than every message.
+    SeqCst fence at every half segment of releases, at each segment it gives back, and before it
+    sleeps itself, and bumps the sequence and wakes them all. So a sleeping producer is woken
+    within half a segment of releases, not at the first, a fence paid every half segment rather
+    than every message. A producer sleeps only on a full ring, and draining a full segment crosses
+    a half-segment mark, so the checks miss no sleeper.
   - Every process attached to one ring uses the same `Wake`. A mismatch is not detected, and costs
     only latency, since the futex sleep times out.
 - No unwind guard: v2's `TombstoneOnUnwind` does not carry over. A panic inside the fill closure

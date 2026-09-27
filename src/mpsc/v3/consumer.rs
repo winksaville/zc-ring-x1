@@ -121,8 +121,6 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
     ///   probe.
     /// - Guard semantics as v1's: drop without release re-delivers
     ///   the same slot.
-    /// - Producers asleep on a full ring are woken when this first
-    ///   finds the ring empty, when its [`Wake`] wakes.
     pub fn reserve_slot_with<T>(
         &mut self,
         on_empty: impl FnMut(u32) -> bool,
@@ -146,6 +144,9 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
     ///   and the look after it then finds the slot claimed and not
     ///   yet committed, which does not sleep again, so the policy
     ///   runs until the commit lands.
+    /// - Before each sleep, producers asleep on a full ring are
+    ///   woken, so two sides never sleep on each other past a
+    ///   missed check.
     pub fn reserve_slot_wait<T>(
         &mut self,
         on_empty: impl FnMut(u32) -> bool,
@@ -210,12 +211,15 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
             }
             // Not committed yet (or a peer-corrupted seq: degrade
             // toward Empty, never toward reading an unowned slot).
-            // The first time, everything read is released: wake any
-            // producer asleep on a full ring.
-            if W::WAKES && attempt == 0 {
-                segs.wake_producers::<W>();
-            }
+            // Before sleeping, everything read is released: wake any
+            // producer asleep on a full ring, so the two sides never
+            // sleep on each other. Not on the polling path, where a
+            // fence per empty look would cost a round trip its
+            // every message.
             if sleep {
+                if W::WAKES {
+                    segs.wake_producers::<W>();
+                }
                 sleep_empty::<W>(segs, cur, c, M::MULTI);
             }
             if !on_empty(attempt) {

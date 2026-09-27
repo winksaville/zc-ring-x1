@@ -75,7 +75,7 @@ no side can sleep until the other acts.
 - [feat: mpsc v3 single and multi segment paths][27] (done)
 - [feat: mpsc v3 wait and wake][28] (done)
 - [feat: mpsc v3 inter-process test][29] (done)
-- [perf: mpsc v3 in the measurement tools][30]
+- [perf: mpsc v3 in the measurement tools][30] (done)
 - [docs: mpsc v3 in the design note and guide][31]
 - [feat: attachable MPSC v3 closing][32]
 
@@ -244,6 +244,19 @@ implementation on Linux.
 ##### perf: mpsc v3 in the measurement tools
 
 v3 in tp_matrix beside v1 and v2, both modes.
+
+- Three flavors: `mpsc-v3` (`Multi`, `NoWake`), `mpsc-v3-single`, and `mpsc-v3-futex` (`Multi` over a
+  futex, `NoWake` off Linux), so the wake checks' cost on the message path is measured though
+  nothing sleeps. tp-cell takes them by name, and the tools' help names v3 among the segmented
+  flavors.
+- A finding the measurement made, fixed in this rung: the consumer's wake check at its first empty
+  look ran a fence every time a reserve found the ring empty, which in a round trip is every
+  message, 10 to 14 ns on the SMT pair. It was redundant with the half-segment checks, since
+  draining a full segment crosses a mark, so it moved to just before the consumer's own sleep.
+- The measured results go into the design note in `docs: mpsc v3 in the design note and guide`:
+  `Single` is the fastest MPSC ring with slack, and `Multi` trails v2 on some no-switch streams by
+  more than its code delta explains, as v4 did v3. The futex flavor costs about 3 ns/msg streaming
+  on the SMT pair, also more than its checks explain.
 
 ##### docs: mpsc v3 in the design note and guide
 
