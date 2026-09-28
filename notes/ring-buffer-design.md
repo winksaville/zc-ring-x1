@@ -2238,8 +2238,8 @@ though nothing sleeps). The unpinned rows and v0 and v1 are in the runs, left ou
   to 13.7 at depth 64, with more cross-core fills per message, 0.89 against 0.75 at depth 8. Its
   message paths are v2's by construction, the mode's branches folded and the wake's compiled out,
   so the delta does not explain the gap, as v4's did not explain its gap to v3 before the table
-  copy was found. We think it is layout: the seven header lines move the slots, and the harness's
-  endpoint structs grew. Its round trips are within 3 percent of v2's, and its send on the SMT
+  copy was found. The guess on record then was layout, and the cause proved to be the switch
+  attempt inlined into the send loop, fixed below. Its round trips are within 3 percent of v2's, and its send on the SMT
   pair is slower, 16.6 against 12.3 ns.
 - The futex flavor costs about 3 ns/msg streaming on the SMT pair at depths 8 and 64, 15.3 to 15.6
   against `mpsc-v3`'s 12.2, and 5 to 8 percent of round trips there, more than a fence every half
@@ -2281,12 +2281,32 @@ though nothing sleeps). The unpinned rows and v0 and v1 are in the runs, left ou
     over a pool of one buffer as `Single`'s is, `Multi` still takes 38.0 ns where `Single` takes
     8.7, so the gap follows `Multi`'s code, not the pool's layout, and it grows with depth, 19.6
     at 512 and 40.5 to 41.4 at 1024 and 2048. A header reordered so the seal and the claim word
-    never share a 128-byte prefetch pair left it at 40.5 and was reverted. Unexplained, and the
-    first thing the Todo `MPSC v3 message path gaps` looks at.
-- Several producers, tp-stream's `--producers N` with every thread pinned, from the rung `perf: pin
-  every producer`, 0.18.5-12, depths 8 and 64, two runs each. The first multi-producer runs pinned
-  one producer and left the rest to the scheduler, whose layout changed from run to run, so their
-  rows are superseded. Each thread now has a cpu of its own, the consumer on the base cpu 11:
+    never share a 128-byte prefetch pair left it at 40.5 and was reverted. Found in the next
+    bullet: the switch attempt inlined into the send loop.
+- The `Multi` gap, found and fixed in the rung `fix: mpsc v3 multi matches single without a
+  switch`, 2026-09-27: `Multi` ran slower than `Single` in streams that never switch, three times
+  across CCXs at depth 1024, and the cause was code, not memory.
+  - Probes at one segment located it: with the consumer's seal load disabled `Multi` stayed slow,
+    with the producer's segment index and switch attempt disabled it matched `Single`, and with
+    only the switch attempt disabled it matched too.
+  - The switch attempt runs only on a full ring, almost never in these streams, so its cost was
+    its presence: the compiler inlined `switch`, a loop of read-modify-writes, into the send loop,
+    and the send loop compiled worse around it. v2 carries the same code and did not show it, so
+    the inlining decision is what differed.
+  - The fix is `#[cold]` and `#[inline(never)]` on `switch`, and on the producer's wake of a
+    sleeping consumer by the same rule, a path rarely taken kept out of the loop that runs every
+    message. One producer, depth 1024 across CCXs, ns/msg, run 1 and run 2: `Multi` 8.7 and 8.6,
+    `Single` 8.3 and 8.3, v2 16.0 and 15.3. At depths 8 and 64 `Multi` now matches or beats
+    `Single` at every placement. At depth 1 it switches on nearly every message, so `Single`'s
+    lead there, 66.8 against 109.1 on the CCX pair, is the switch's cost, which the contract
+    allows.
+  - The futex flavor still trails `mpsc-v3` by 2 to 4 ns/msg, 12.5 against 10.6 on the SMT pair,
+    more than its checks explain, the Todo `MPSC v3 message path gaps`.
+- Several producers, tp-stream's `--producers N` with every thread pinned, from the rungs `perf:
+  pin every producer` and, re-run after it, `fix: mpsc v3 multi matches single without a switch`,
+  0.18.5-13, depths 8 and 64, two runs each. The first multi-producer runs pinned one producer
+  and left the rest to the scheduler, whose layout changed from run to run, so their rows are
+  superseded. Each thread now has a cpu of its own, the consumer on the base cpu 11:
   - own cores near: each producer on a core of its own, the base's L3 first, 10,9 at two and
     10,9,8,7 at four
   - own cores x-L3: each producer on a core outside the base's L3, 8,7 at two, none at ten, the
@@ -2298,62 +2318,58 @@ though nothing sleeps). The unpinned rows and v0 and v1 are in the runs, left ou
 
   | producers | depth | placement | v1 | v2 | v3 | v3-single | v3-futex | v3-backoff | v3 full % | v3 empty % |
   |---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
-  | 1 | 8 | 11,10 CCX | 33.2 | 10.8 | 14.0 | 9.8 | 13.5 | 13.9 | 0.001 | 4.5 |
-  | 1 | 8 | 11,8 x-CCX | 110.3 | 32.0 | 33.3 | 31.2 | 32.8 | 32.6 | 0.055 | 0.1 |
-  | 1 | 8 | 11,23 SMT | 15.6 | 12.3 | 12.8 | 10.1 | 14.0 | 13.2 | 0.000 | 0.7 |
-  | 1 | 8 | unpinned | 31.2 | 11.0 | 18.1 | 11.3 | 13.1 | 13.8 | 0.007 | 6.8 |
-  | 1 | 64 | 11,10 CCX | 23.0 | 14.5 | 16.3 | 11.7 | 15.5 | 16.5 | 0.000 | 3.9 |
-  | 1 | 64 | 11,8 x-CCX | 84.3 | 15.6 | 18.8 | 13.9 | 18.6 | 17.5 | 0.002 | 0.043 |
-  | 1 | 64 | 11,23 SMT | 15.6 | 12.3 | 12.8 | 10.1 | 13.8 | 13.2 | 0.000 | 0.7 |
-  | 1 | 64 | unpinned | 22.4 | 13.3 | 18.2 | 11.3 | 14.8 | 15.2 | 0.000 | 0.8 |
-  | 2 | 8 | own cores near | 61.1 | 51.2 | 54.7 | 51.7 | 53.1 | 24.8 | 0.006 | 41.4 |
-  | 2 | 8 | own cores x-L3 | 134.1 | 87.7 | 77.8 | 72.9 | 76.9 | 79.8 | 0.5 | 11.4 |
-  | 2 | 8 | shared cores | 43.6 | 28.7 | 28.8 | 26.7 | 29.6 | 22.0 | 0.002 | 14.8 |
-  | 2 | 8 | unpinned | 58.2 | 53.0 | 52.2 | 49.8 | 52.1 | 25.2 | 0.012 | 39.6 |
-  | 2 | 64 | own cores near | 54.9 | 49.3 | 52.6 | 48.4 | 52.5 | 22.8 | 0.001 | 38.9 |
-  | 2 | 64 | own cores x-L3 | 113.6 | 70.8 | 82.3 | 66.2 | 76.5 | 78.7 | 0.001 | 8.6 |
-  | 2 | 64 | shared cores | 41.2 | 26.6 | 27.3 | 25.6 | 27.9 | 30.1 | 0.001 | 7.2 |
-  | 2 | 64 | unpinned | 54.6 | 51.2 | 47.9 | 49.1 | 49.7 | 22.3 | 0.003 | 35.5 |
-  | 4 | 8 | own cores near | 224.9 | 160.2 | 163.2 | 168.4 | 150.6 | 155.3 | 0.042 | 42.7 |
-  | 4 | 8 | own cores x-L3 | 224.7 | 164.6 | 161.6 | 167.1 | 156.9 | 156.6 | 0.095 | 32.8 |
-  | 4 | 8 | shared cores | 76.2 | 51.1 | 48.5 | 48.4 | 47.4 | 47.0 | 0.003 | 37.7 |
-  | 4 | 8 | unpinned | 223.4 | 164.8 | 156.7 | 170.9 | 154.2 | 162.8 | 0.057 | 41.0 |
-  | 4 | 64 | own cores near | 213.2 | 145.8 | 150.0 | 161.6 | 139.2 | 157.3 | 0.003 | 36.9 |
-  | 4 | 64 | own cores x-L3 | 203.2 | 157.0 | 147.1 | 165.4 | 144.6 | 153.3 | 0.000 | 27.3 |
-  | 4 | 64 | shared cores | 72.7 | 40.6 | 40.3 | 39.1 | 40.0 | 47.4 | 0.000 | 20.8 |
-  | 4 | 64 | unpinned | 211.5 | 156.1 | 150.8 | 164.2 | 142.8 | 169.0 | 0.004 | 36.7 |
-  | 10 | 8 | own cores near | 347.0 | 239.4 | 282.1 | 297.3 | 255.5 | 279.4 | 0.033 | 54.4 |
-  | 10 | 8 | shared cores | 215.4 | 122.5 | 128.5 | 115.5 | 127.3 | 133.8 | 0.091 | 29.0 |
-  | 10 | 8 | unpinned | 338.1 | 241.8 | 281.1 | 287.8 | 260.1 | 279.0 | 0.050 | 54.6 |
-  | 10 | 64 | own cores near | 350.4 | 207.1 | 244.6 | 289.0 | 216.7 | 253.5 | 0.004 | 46.0 |
-  | 10 | 64 | shared cores | 202.0 | 78.0 | 76.1 | 79.5 | 75.9 | 104.6 | 0.003 | 11.6 |
-  | 10 | 64 | unpinned | 344.2 | 208.8 | 254.6 | 303.4 | 222.3 | 255.5 | 0.022 | 47.3 |
+  | 1 | 8 | 11,10 CCX | 36.0 | 11.7 | 10.6 | 10.9 | 10.9 | 11.2 | 0.002 | 0.1 |
+  | 1 | 8 | 11,8 x-CCX | 110.2 | 32.0 | 31.5 | 31.0 | 32.1 | 31.6 | 0.023 | 0.043 |
+  | 1 | 8 | 11,23 SMT | 15.7 | 12.2 | 10.6 | 10.1 | 13.0 | 10.4 | 0.001 | 0.025 |
+  | 1 | 8 | unpinned | 30.7 | 9.9 | 9.1 | 10.1 | 10.4 | 9.4 | 0.005 | 0.2 |
+  | 1 | 64 | 11,10 CCX | 25.1 | 14.2 | 9.1 | 14.4 | 14.5 | 10.8 | 0.007 | 0.7 |
+  | 1 | 64 | 11,8 x-CCX | 84.1 | 16.0 | 14.8 | 13.9 | 17.0 | 14.7 | 0.001 | 0.007 |
+  | 1 | 64 | 11,23 SMT | 15.4 | 12.2 | 10.6 | 10.1 | 12.5 | 10.4 | 0.000 | 0.025 |
+  | 1 | 64 | unpinned | 21.9 | 12.7 | 9.1 | 11.6 | 12.6 | 8.6 | 0.021 | 1.4 |
+  | 2 | 8 | own cores near | 59.8 | 42.0 | 43.3 | 39.8 | 46.9 | 19.0 | 0.044 | 31.3 |
+  | 2 | 8 | own cores x-L3 | 134.7 | 87.8 | 71.7 | 72.9 | 73.4 | 68.9 | 0.9 | 8.4 |
+  | 2 | 8 | shared cores | 43.1 | 28.0 | 25.0 | 24.5 | 27.0 | 14.5 | 0.003 | 13.3 |
+  | 2 | 8 | unpinned | 66.6 | 52.3 | 51.1 | 51.1 | 54.1 | 19.2 | 0.062 | 43.0 |
+  | 2 | 64 | own cores near | 52.6 | 41.2 | 40.9 | 43.3 | 42.3 | 20.6 | 0.1 | 28.3 |
+  | 2 | 64 | own cores x-L3 | 114.0 | 70.6 | 66.1 | 66.4 | 66.4 | 59.0 | 0.001 | 4.8 |
+  | 2 | 64 | shared cores | 40.2 | 26.8 | 25.7 | 24.9 | 26.4 | 19.1 | 0.001 | 8.3 |
+  | 2 | 64 | unpinned | 53.4 | 51.1 | 49.6 | 49.9 | 48.8 | 20.1 | 0.002 | 40.4 |
+  | 4 | 8 | own cores near | 224.9 | 173.8 | 168.3 | 170.8 | 160.0 | 128.5 | 0.045 | 45.8 |
+  | 4 | 8 | own cores x-L3 | 225.0 | 168.5 | 166.6 | 165.6 | 160.9 | 138.2 | 0.1 | 33.6 |
+  | 4 | 8 | shared cores | 76.1 | 51.0 | 48.3 | 48.9 | 48.2 | 31.2 | 0.007 | 34.7 |
+  | 4 | 8 | unpinned | 223.5 | 165.4 | 165.2 | 163.2 | 164.9 | 125.8 | 0.063 | 45.0 |
+  | 4 | 64 | own cores near | 215.8 | 156.8 | 163.7 | 162.0 | 145.8 | 124.3 | 0.002 | 41.9 |
+  | 4 | 64 | own cores x-L3 | 202.9 | 163.8 | 158.9 | 165.5 | 156.1 | 128.5 | 0.000 | 29.9 |
+  | 4 | 64 | shared cores | 73.3 | 40.5 | 40.7 | 40.2 | 40.3 | 31.5 | 0.001 | 20.4 |
+  | 4 | 64 | unpinned | 202.5 | 166.0 | 151.4 | 159.1 | 137.9 | 127.8 | 0.001 | 40.3 |
+  | 10 | 8 | own cores near | 344.5 | 249.7 | 291.6 | 293.3 | 252.0 | 278.2 | 0.034 | 55.0 |
+  | 10 | 8 | shared cores | 214.4 | 118.5 | 127.7 | 115.1 | 130.4 | 133.7 | 0.086 | 29.3 |
+  | 10 | 8 | unpinned | 342.2 | 252.5 | 312.4 | 290.0 | 296.2 | 280.4 | 0.1 | 57.9 |
+  | 10 | 64 | own cores near | 346.9 | 239.5 | 278.4 | 290.8 | 206.7 | 283.0 | 0.001 | 52.6 |
+  | 10 | 64 | shared cores | 203.2 | 77.8 | 77.1 | 80.2 | 77.7 | 105.0 | 0.001 | 11.8 |
+  | 10 | 64 | unpinned | 360.0 | 261.5 | 290.1 | 312.0 | 208.7 | 280.6 | 0.030 | 53.5 |
 
 - The ring is empty, not full, under contention: with two producers or more v3's consumer finds
-  it empty on 7 to 55 percent of its reads, and its sends find it full on 0.5 percent at most,
-  under 0.1 in every other cell. The consumer drains faster than contending producers claim, and
-  the producers' time goes to the claim word, 1 to 19 cross-core fills a message.
-- Shared cores are the fastest placement at every count, v3 at depth 8 28.8 ns at two producers
-  against 54.6 on own cores near, and about 120 against 275 at ten, since a claim word moving between a core's two cpus
-  moves through the L1 and L2 they share.
-- Backoff after a lost race, `policy::backoff`, doubles the rate at two producers on own cores
-  near and unpinned, 24.8 against 54.7 ns at depth 8, helps on shared cores at two and depth 8,
-  22.0 against 28.8, does nothing across L3s, is about even at four, and is slower at ten and on
-  shared cores at depth 64. Where it wins, the consumer's empty share falls from 41 to 15
-  percent. A fixed doubling to 64 spins suits two contenders and overshoots more, the start the
-  Todo `MPSC claim contention` weighs its protocol changes against.
+  it empty on 5 to 58 percent of its reads, and its sends find it full on 0.9 percent at most,
+  under 0.2 in every other cell. The consumer drains faster than contending producers claim, and
+  the producers' time goes to the claim word.
+- Shared cores are the fastest placement at every count, v3 at depth 8 25.0 ns at two producers
+  against 43.3 on own cores near, 48.3 against 168.3 at four, and 127.7 against 291.6 at ten, since a
+  claim word moving between a core's two cpus moves through the L1 and L2 they share.
+- Backoff after a lost race, `policy::backoff`, more than doubles the rate at two producers on own
+  cores near and unpinned, 19.0 against 43.3 ns at depth 8, and helps at four, 128.5 against 168.3,
+  and on shared cores, but is even or slower at ten, where a fixed doubling to 64 spins
+  overshoots, the start the Todo `MPSC claim contention` weighs its protocol changes against.
 - Across versions, v1's shared index is the slowest everywhere, and v2 and v3 are within about 15
-  percent of each other at two and four producers, neither ahead everywhere. At ten on own cores near, v3 trails v2, 272 to 282 against 239
-  to 243 at depth 8 and 242 to 245 against 207 at depth 64, and `Single` trails both, the order
-  the one-producer gap between `Multi` and `Single` does not predict.
-- At one producer, v3's `Multi` consumer finds the ring empty on 4.5 percent of its reads on the
-  CCX pair where `Single`'s finds it on 0.3 and v2's on 0.7, a lead for the rung `fix: mpsc v3
-  multi matches single without a switch`.
-- Verdict (2026-09-27): v3 does what it is for, an MPSC ring processes join and leave, and
-  `Single` is the MPSC ring to use where one segment holds the traffic. `Multi`'s gap to v2 in
-  tp-stream, three times across CCXs at depth 1024, and the futex flavor's cost there and on the
-  SMT pair are the Todo `MPSC v3 message path gaps`, and until it runs `Multi` is for rings that
-  need more than one segment. The default `MpscRing` stays v1.
+  percent at two and four producers, v3 ahead across L3s. At ten on own cores near and unpinned,
+  v3 and `Single` trail v2, 292 against 250 ns at depth 8, and the futex flavor leads at depth 64,
+  207 against v2's 240, which the Todo `MPSC v3 message path gaps` also takes.
+- Verdict (2026-09-27): v3 does what it is for, an MPSC ring processes join and leave, and with
+  its switch kept out of line `Multi` runs as `Single` does until it switches, matching or beating
+  v2 at one producer. `Single` is the ring for traffic one segment holds, `Multi` for traffic
+  that needs more. Under many producers every MPSC ring is bound by its claim word, the Todo `MPSC
+  claim contention`. The default `MpscRing` stays v1 until the Todo `MPSC v2 as the default`
+  weighs v3 with it.
 
 ### MPSC v3 long-term possibilities
 

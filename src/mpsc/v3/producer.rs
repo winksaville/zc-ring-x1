@@ -6,7 +6,7 @@
 //! counted producer role, given back by `release`.
 
 use core::marker::PhantomData;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU32, Ordering};
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
 use super::{
@@ -40,6 +40,14 @@ unsafe impl<M: Mode, W: Wake> Send for MpscProducer<'_, M, W> {}
 // SAFETY: send_with is &self and every access is protected as
 // above, so shared references across threads are equally fine.
 unsafe impl<M: Mode, W: Wake> Sync for MpscProducer<'_, M, W> {}
+
+/// Wake the consumer asleep on the claim word, out of line and
+/// cold, so the send loop compiles as it does without a wake.
+#[cold]
+#[inline(never)]
+fn wake_consumer<W: Wake>(claim: &AtomicU32) {
+    W::wake(claim);
+}
 
 /// Why a switch attempt did not move the ring.
 enum NoSwitch {
@@ -267,7 +275,7 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
         // The claim CAS returned the word it replaced, flag and
         // all, so learning the consumer sleeps costs nothing.
         if W::WAKES && w & WAITING != 0 {
-            W::wake(claim);
+            wake_consumer::<W>(claim);
         }
         Ok(())
     }
@@ -324,6 +332,12 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     /// - On a lost claim CAS, restore the seal and clear the bit:
     ///   the ring moved under the attempt, and the caller retries
     ///   with the fresh word.
+    /// - Out of line and cold: inlined into the send loop it made a
+    ///   ring that never switches run up to three times slower than
+    ///   `Single` (design note, MPSC v3 measured), a path taken only
+    ///   on a full ring costing every message.
+    #[cold]
+    #[inline(never)]
     fn switch(&self, w: u32) -> Result<(), NoSwitch> {
         let segs = &self.segs;
         let in_use = segs.in_use();

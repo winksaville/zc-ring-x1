@@ -79,7 +79,7 @@ no side can sleep until the other acts.
 - [docs: mpsc v3 in the design note and guide][31] (done)
 - [perf: mpsc v3 in the demo and multi-producer][33] (done)
 - [perf: pin every producer][34] (done)
-- [fix: mpsc v3 multi matches single without a switch][35]
+- [fix: mpsc v3 multi matches single without a switch][35] (done)
 - [feat: attachable MPSC v3 closing][32]
 
 #### Deliberation
@@ -337,6 +337,22 @@ back off, measured beside plain spinning.
 1024, where the contract is that a ring of several segments runs, while it does not switch, as a
 ring of one does. Find the cause and remove it.
 
+- Probes at one segment, one side at a time: the consumer's seal load disabled left `Multi` slow,
+  the producer's switch attempt disabled made it match `Single`. The ring is almost never full in
+  these streams, so the attempt's cost was its presence: `switch` inlined into the send loop.
+- The fix is `#[cold]` and `#[inline(never)]` on `switch`, and on a new `wake_consumer` holding
+  the producer's futex wake, the same rule for the other rare path in the send.
+- After it, `Multi` matches or beats `Single` at depths 8 to 1024 at every placement, 8.7 against
+  8.3 ns across CCXs at depth 1024 where it was 39, and beats v2. Depth 1 still favors `Single`,
+  whose ring never switches where `Multi`'s switches on nearly every message, the switch's cost
+  the contract allows.
+- The pinned multi-producer set was re-run on the fixed code, and the design note's table and
+  bullets are its rows: plain v3 at two producers on own cores near went from 54.7 to 43.3 ns,
+  and backoff now helps at four producers too.
+- A slip: a probe that disabled the seal load ran with two segments, where the consumer then
+  cannot follow a switch, and hung in the background, loading the machine until it was stopped,
+  so the probe's first rows were discarded and re-run at one segment.
+
 ##### feat: attachable MPSC v3 closing
 
 Closing out the cycle.
@@ -581,21 +597,19 @@ message against v2's 7.5.
 
 ### MPSC v3 message path gaps
 
-MPSC v3's `Multi` mode trails v2 on the CCX pair's no-switch stream, 12.8 to 13.0 ns/msg against
-10.8 to 10.9 at depth 8, with more cross-core fills, and its send is 4 ns slower on the SMT pair,
-though its message paths are v2's by construction. Its futex flavor costs about 3 ns/msg streaming
-on the SMT pair, more than a fence every half segment explains. The design note's [MPSC v3
-measured](notes/ring-buffer-design.md#mpsc-v3-measured) has the rows.
+`Multi` trailed `Single` in streams that never switch until `fix: mpsc v3 multi matches single without
+a switch` kept the switch attempt out of the send loop. What that left is on the futex flavor and at
+many producers. The design note's [MPSC v3 measured](notes/ring-buffer-design.md#mpsc-v3-measured)
+has the rows.
 
-- First, depth 1024 across CCXs: `Multi` streams at 39 ns/msg against v2's 12.9 and `Single`'s
-  8.9, the futex flavor at 107, with 0.8 cross-core fills a message. It follows `Multi`'s code at
-  one segment over a one-buffer pool, grows with depth, and is not the seal sharing a prefetch
-  pair with the claim word, a reordered header having left it as it was.
-- Look for what the code delta does not show, as the table copy was for SPSC v4: the harness's
-  endpoint structs sharing a line across threads, since the demo's own loop shows no gap where
-  tp-stream does, and the monomorphized code's layout.
-- A mark to beat: the rows in the design note, `tp-stream -d 1 --depth 1,8,64`, 3900X, 2026-09-27.
-- From `perf: mpsc v3 in the measurement tools`, in the cycle `feat: attachable MPSC v3`.
+- The futex flavor trails `mpsc-v3` by 2 to 4 ns/msg at one producer, 12.5 against 10.6 on the SMT
+  pair, with nothing asleep, more than a fence every half segment and a flag test explain. The
+  producer's wake is already out of line, so the consumer's release check is the next to look at.
+- At ten producers on own cores v3 and `Single` trail v2, 292 against 250 ns/msg at depth 8, and the
+  futex flavor leads at depth 64, 207 against v2's 240, an order the one-producer rows do not
+  predict.
+- A mark to beat: the rows in the design note, `tp-stream`, 3900X, 2026-09-27, 0.18.5-13.
+- From `feat: attachable MPSC v3`.
 
 ### MPSC claim contention
 
