@@ -2060,6 +2060,354 @@ The two rings differ in three mechanics, none of which changes the lifecycle abo
 | When the segment is given back | at the release of the MOVED message, one poll earlier | at the reserve after the last release, when the consumer reads the seal |
 | The free set | two words, the producer's taken bits and the consumer's given bits, free where they agree, no CAS | one in-use word, `fetch_or` to take and a clear to give back, since the parity trick is unsound for several producers |
 
+## MPSC v3: attachable segments with counted roles
+
+The fourth MPSC protocol, `mpsc::v3`, a sibling of v0 through v2 built in the cycle `feat:
+attachable MPSC v3`: v2's claim and seq protocol, unchanged as a protocol, over a ring that
+describes itself in the region, as [SPSC v4](#spsc-v4-attachable-segments) does for SPSC v3. The
+MPSC rings were in-process only, `split` handing out the endpoints, so no second process could join
+one, producers could not come and go, and a full or empty ring could only be polled. v3 is the
+multi-producer ring a process can join, with a simpler role model than v4's, chosen after [What
+recovery does not guarantee](#spsc-v4-attachable-segments) found v4's takeover uncertain: a holder
+that dies is recovered by a restart, not a takeover.
+
+### MPSC v3 design
+
+The design as the cycle built it, with its measurements in [MPSC v3 measured](#mpsc-v3-measured).
+
+- The control block: every segment opens with seven header lines, so every segment's slots start
+  at one offset.
+  - Line 0, the info line: magic (`"ZCM3"`), layout version, `slot_size`, `seg_capacity`,
+    `seg_count`, the segment's own number, the mode, the most producers, and the consumer's resume
+    position in this segment, written by the consumer's `release`.
+  - Line 1, the seal, v2's, alone as v2 has it.
+  - Line 2, segment 0's claim word, the contended line, alone.
+  - Line 3, segment 0's in-use word and switch count, v2's.
+  - Line 4, segment 0's claims line: the roles word, the consumer's checkpoint, segment and
+    position, and the producers' wait words.
+  - Lines 5 and 6, segment 0's table: the pool buffer index of segment `i` at entry `i`,
+    `u32::MAX` past `seg_count`, v4's table.
+  - `init` stores the magic last, with Release, and `attach` validates as v4's does, every table
+    entry against the pool and every segment's own header against the block, the mode included.
+- The roles word: bit 31 closed, bit 30 the consumer held, and the low 16 bits the count of
+  producers held. The most producers is set at `init`, `u16::MAX` by default.
+  - `claim_consumer()` CASes the consumer bit on, `claim_producer()` the count up by one while it
+    is under the most, and both fail on a closed ring. Each is one CAS on one word, so no claim can
+    land in a ring being released.
+  - No holder ids: without a takeover nothing replaces a live holder, and `release(self)` consumes
+    the endpoint, so no stale holder can release a role it no longer holds.
+  - A producer keeps no state of its own: each send claims its slot by CAS on the shared claim
+    word, as v2's does. So a producer's claim is only a count, and producers come and go freely.
+  - The consumer's state is its segment, its position, and its resume position per segment.
+    `release` writes them, and a claim loads them, so the next consumer continues exactly where
+    the last one stopped. A ring never consumed has them all at zero, which is where a new ring
+    starts, so every claim loads.
+  - Neither endpoint has a `Drop`, by [Destructors never touch shared
+    memory](#destructors-never-touch-shared-memory): a dropped endpoint leaves its role held.
+  - The producer is not `Clone`. Each producer is a counted claim, and one handle may still be
+    shared by reference, `send_with` taking `&self`.
+- The ring's release: `release_ring(self, &pool)` CASes the roles word from no role held to
+  closed, else `Err(RingInUse)`. It then clears every segment's magic, so a later `attach` is
+  `Err(BadMagic)`, and frees the segments to the pool. Anyone holding the ring may call it, and
+  when is the creator's call. Any process may free to a pool ([Pool topology and
+  phasing](#pool-topology-and-phasing)), so it needs no shared allocation.
+- Two hot paths chosen at compile time: the ring and its endpoints take a mode type, `Single` or
+  `Multi`.
+  - `Single`: one segment. A full segment goes straight to the policy, and the consumer never
+    loads a seal, so the ring is v1's protocol in v3's layout.
+  - `Multi`: v2's switching, up to 32 segments.
+  - The mode is in the control block, and `attach` of the other mode is an error, so a process
+    cannot join a ring with the wrong code.
+- Waiting: a full producer or an empty consumer can sleep until the other side acts. Error and
+  spin stay the `_with` policies they are, and waiting is `send_wait` and `reserve_slot_wait`,
+  which sleep between attempts and call the same policy after each wake.
+  - The sleep and the wake are a trait the crate calls, `Wake`, with `NoWake`, which spins and
+    wakes nothing, and `Futex` on Linux, whose sleep carries a timeout, since a peer can die while
+    another sleeps. The crate stays `no_std`, and the futex is a syscall through `libc`.
+  - The consumer sleeps on the claim word itself, bit 31 of which is a waiting flag. It sets the
+    flag with a `fetch_or` and sleeps only if the word, flag aside, still names its own segment and
+    position, so nothing has been claimed past what it read. A producer's claim CAS returns the
+    word with the flag, so a producer learns the consumer waits at no cost, and wakes it after its
+    commit. The consumer clears the flag when it wakes.
+  - A producer that finds the ring full counts itself into the producers' waiting word, looks
+    again, and sleeps on a wake sequence word. The consumer checks the waiting count behind a
+    SeqCst fence at every half segment of releases, at each segment it gives back, and before it
+    sleeps itself, and bumps the sequence and wakes them all. So a sleeping producer is woken
+    within half a segment of releases, not at the first, a fence paid every half segment rather
+    than every message. A producer sleeps only on a full ring, and draining a full segment crosses
+    a half-segment mark, so the checks miss no sleeper.
+  - Every process attached to one ring uses the same `Wake`. A mismatch is not detected, and costs
+    only latency, since the futex sleep times out.
+- No unwind guard: v2's `TombstoneOnUnwind` does not carry over. A panic inside the fill closure
+  leaves its slot claimed and never committed, the same as a producer killed there, and both are
+  recovered by a restart. v0 through v2 keep theirs, in-process baselines left as built.
+- What a dead holder costs, the accepted price:
+  - A dead consumer leaves its bit set, so the ring cannot be released and nothing reads it. The
+    creator's set restarts, and the producers, whose waits time out, find the ring gone and join
+    the replacement's.
+  - A dead producer leaves its count, so the ring cannot be released. One that died between claim
+    and commit leaves its slot claimed, the consumer waits there, and the ring jams, so the
+    consumer's set restarts too.
+
+### MPSC v3 measured
+
+The first measurements, `tp-stream -d 1 --depth 1,8,64` and `tp-matrix -d 1 --depth 1,8`, 3900X, 2026-09-27,
+0.18.5-9, two segments, each run twice, after the rung `perf: mpsc v3 in the measurement tools`
+moved the consumer's first-empty wake check to its sleep. Three flavors: `mpsc-v3` (`Multi`,
+`NoWake`), `mpsc-v3-single`, and `mpsc-v3-futex` (`Multi` over `Futex<10>`, whose checks run
+though nothing sleeps). The unpinned rows and v0 and v1 are in the runs, left out here.
+
+- Streaming, sorted by depth, placement, and flavor, the msgs, xfills, and switches from run 1:
+
+  | depth | placement | flavor | ns/msg run 1 | ns/msg run 2 | msgs | xfills/msg | switches/msg |
+  |---:|---|---|---:|---:|---:|---:|---:|
+  | 1 | 11,10 CCX | mpsc-v2 | 99.3 | 99.4 | 10.1M | 7.995 | 0.996 |
+  | 1 | 11,10 CCX | mpsc-v3 | 102.1 | 101.6 | 9.8M | 7.921 | 0.882 |
+  | 1 | 11,10 CCX | mpsc-v3-single | 66.7 | 66.7 | 15.0M | 2.000 | - |
+  | 1 | 11,10 CCX | mpsc-v3-futex | 102.7 | 102.7 | 9.7M | 7.999 | 0.998 |
+  | 1 | 11,8 x-CCX | mpsc-v2 | 415.1 | 415.3 | 2.4M | 7.340 | 0.736 |
+  | 1 | 11,8 x-CCX | mpsc-v3 | 426.7 | 427.0 | 2.3M | 7.594 | 0.768 |
+  | 1 | 11,8 x-CCX | mpsc-v3-single | 204.7 | 204.7 | 4.9M | 2.000 | - |
+  | 1 | 11,8 x-CCX | mpsc-v3-futex | 378.2 | 382.2 | 2.6M | 6.962 | 0.688 |
+  | 1 | 11,23 SMT | mpsc-v2 | 32.1 | 32.5 | 31.1M | 0.0000 | 0.654 |
+  | 1 | 11,23 SMT | mpsc-v3 | 37.4 | 37.4 | 26.8M | 0.0000 | 0.783 |
+  | 1 | 11,23 SMT | mpsc-v3-single | 41.4 | 41.6 | 24.2M | 0.0000 | - |
+  | 1 | 11,23 SMT | mpsc-v3-futex | 32.0 | 31.6 | 31.3M | 0.0000 | 0.953 |
+  | 8 | 11,10 CCX | mpsc-v2 | 10.8 | 10.9 | 92.2M | 0.753 | 0.000 |
+  | 8 | 11,10 CCX | mpsc-v3 | 13.0 | 12.8 | 76.8M | 0.885 | 0.000 |
+  | 8 | 11,10 CCX | mpsc-v3-single | 9.4 | 9.3 | 106.0M | 0.796 | - |
+  | 8 | 11,10 CCX | mpsc-v3-futex | 13.6 | 13.6 | 73.3M | 0.829 | 0.000 |
+  | 8 | 11,8 x-CCX | mpsc-v2 | 32.0 | 31.9 | 31.2M | 1.032 | 0.001 |
+  | 8 | 11,8 x-CCX | mpsc-v3 | 31.8 | 31.7 | 31.5M | 0.741 | 0.001 |
+  | 8 | 11,8 x-CCX | mpsc-v3-single | 30.9 | 30.3 | 32.4M | 0.897 | - |
+  | 8 | 11,8 x-CCX | mpsc-v3-futex | 32.5 | 32.6 | 30.7M | 0.744 | 0.001 |
+  | 8 | 11,23 SMT | mpsc-v2 | 11.9 | 11.9 | 84.0M | 0.0000 | 0.000 |
+  | 8 | 11,23 SMT | mpsc-v3 | 12.2 | 12.2 | 82.1M | 0.0000 | 0.000 |
+  | 8 | 11,23 SMT | mpsc-v3-single | 9.4 | 9.4 | 106.8M | 0.0000 | - |
+  | 8 | 11,23 SMT | mpsc-v3-futex | 15.6 | 15.6 | 64.1M | 0.0000 | 0.000 |
+  | 64 | 11,10 CCX | mpsc-v2 | 13.5 | 13.7 | 74.2M | 0.591 | 0.000 |
+  | 64 | 11,10 CCX | mpsc-v3 | 15.5 | 15.3 | 64.4M | 0.902 | 0.000 |
+  | 64 | 11,10 CCX | mpsc-v3-single | 12.1 | 9.3 | 82.5M | 0.476 | - |
+  | 64 | 11,10 CCX | mpsc-v3-futex | 15.3 | 15.4 | 65.4M | 0.878 | 0.000 |
+  | 64 | 11,8 x-CCX | mpsc-v2 | 15.2 | 14.1 | 65.9M | 0.090 | 0.000 |
+  | 64 | 11,8 x-CCX | mpsc-v3 | 16.5 | 15.0 | 60.6M | 0.101 | 0.000 |
+  | 64 | 11,8 x-CCX | mpsc-v3-single | 14.6 | 14.2 | 68.4M | 0.090 | - |
+  | 64 | 11,8 x-CCX | mpsc-v3-futex | 17.7 | 17.4 | 56.6M | 0.104 | 0.000 |
+  | 64 | 11,23 SMT | mpsc-v2 | 11.9 | 11.9 | 84.1M | 0.0000 | 0.000 |
+  | 64 | 11,23 SMT | mpsc-v3 | 12.2 | 12.2 | 82.1M | 0.0000 | 0.000 |
+  | 64 | 11,23 SMT | mpsc-v3-single | 9.4 | 9.4 | 106.8M | 0.0000 | - |
+  | 64 | 11,23 SMT | mpsc-v3-futex | 15.3 | 15.3 | 65.5M | 0.0000 | 0.000 |
+
+- Round trips, `mean/stdev` ns per phase from run 1:
+
+  | depth | placement | flavor | m.send | w.recv | m.recv | RTs run 1 | RTs run 2 |
+  |---:|---|---|---:|---:|---:|---:|---:|
+  | 1 | 11,10 CCX | mpsc-v2 | 9.7/1.8 | 90.9/2.5 | 73.9/4.8 | 6.5M | 6.5M |
+  | 1 | 11,10 CCX | mpsc-v3 | 10.4/1.9 | 88.0/4.1 | 70.7/2.8 | 6.3M | 6.3M |
+  | 1 | 11,10 CCX | mpsc-v3-single | 9.3/2.5 | 86.9/4.7 | 72.4/4.2 | 6.6M | 6.6M |
+  | 1 | 11,10 CCX | mpsc-v3-futex | 11.1/3.1 | 89.9/2.2 | 74.1/4.9 | 6.1M | 6.1M |
+  | 1 | 11,8 x-CCX | mpsc-v2 | 9.8/1.6 | 211.2/61.4 | 201.0/73.0 | 2.1M | 2.1M |
+  | 1 | 11,8 x-CCX | mpsc-v3 | 10.3/1.8 | 217.1/57.4 | 196.1/49.8 | 2.1M | 2.1M |
+  | 1 | 11,8 x-CCX | mpsc-v3-single | 9.0/2.9 | 266.3/82.9 | 240.1/83.2 | 2.1M | 2.1M |
+  | 1 | 11,8 x-CCX | mpsc-v3-futex | 10.7/2.5 | 206.8/23.3 | 191.6/24.0 | 2.1M | 2.1M |
+  | 1 | 11,23 SMT | mpsc-v2 | 12.3/4.2 | 85.7/10.7 | 70.3/6.9 | 6.7M | 6.7M |
+  | 1 | 11,23 SMT | mpsc-v3 | 16.6/4.8 | 88.1/7.7 | 69.8/8.9 | 6.6M | 6.6M |
+  | 1 | 11,23 SMT | mpsc-v3-single | 9.0/2.9 | 83.7/7.3 | 71.6/9.7 | 6.9M | 6.9M |
+  | 1 | 11,23 SMT | mpsc-v3-futex | 16.9/4.7 | 100.2/10.6 | 83.1/8.5 | 6.1M | 6.1M |
+  | 8 | 11,10 CCX | mpsc-v2 | 9.5/2.3 | 109.1/10.9 | 97.6/12.3 | 5.7M | 5.7M |
+  | 8 | 11,10 CCX | mpsc-v3 | 10.6/2.6 | 106.0/11.5 | 89.6/13.2 | 5.7M | 5.7M |
+  | 8 | 11,10 CCX | mpsc-v3-single | 9.3/2.6 | 104.5/13.1 | 90.4/15.7 | 5.9M | 5.9M |
+  | 8 | 11,10 CCX | mpsc-v3-futex | 11.5/3.6 | 105.6/11.1 | 93.5/13.5 | 5.6M | 5.6M |
+  | 8 | 11,8 x-CCX | mpsc-v2 | 10.4/10.0 | 364.8/68.7 | 410.1/54.7 | 1.9M | 1.9M |
+  | 8 | 11,8 x-CCX | mpsc-v3 | 10.9/3.0 | 337.0/50.6 | 349.3/62.2 | 2.0M | 2.0M |
+  | 8 | 11,8 x-CCX | mpsc-v3-single | 8.9/3.1 | 366.4/59.7 | 346.1/57.8 | 2.0M | 2.0M |
+  | 8 | 11,8 x-CCX | mpsc-v3-futex | 11.2/3.2 | 373.4/58.9 | 337.2/54.2 | 2.0M | 2.0M |
+  | 8 | 11,23 SMT | mpsc-v2 | 12.3/4.2 | 85.7/10.7 | 70.3/7.0 | 6.7M | 6.7M |
+  | 8 | 11,23 SMT | mpsc-v3 | 16.6/4.7 | 89.3/8.7 | 71.8/11.0 | 6.5M | 6.5M |
+  | 8 | 11,23 SMT | mpsc-v3-single | 9.0/2.9 | 83.7/7.3 | 71.7/9.8 | 6.9M | 6.9M |
+  | 8 | 11,23 SMT | mpsc-v3-futex | 16.9/4.6 | 98.0/11.5 | 81.0/12.9 | 6.2M | 6.2M |
+
+- `Single` is the fastest MPSC ring wherever the ring has slack: 9.3 to 9.4 ns/msg streaming at
+  depths 8 and 64 on the CCX and SMT pairs, one run's 12.1 at depth 64 on the CCX pair aside,
+  against v2's 10.8 to 13.7, and its round trips lead v2 and the other v3 flavors on the CCX and
+  SMT pairs, v1 leading it on the SMT pair. At depth 1 it streams at 66.7 ns on the CCX pair
+  against v2's 99.4, since it never switches, and on the SMT pair it trails, 41.5 against 32.3,
+  where v2's switching spreads the two threads over two segments' lines.
+- `Multi` matches v2 on the x-CCX pair and the SMT pair streaming at depths 8 and 64, and trails
+  it on the CCX pair, 12.8 to 13.0 against 10.8 to 10.9 at depth 8 and 15.3 to 15.5 against 13.5
+  to 13.7 at depth 64, with more cross-core fills per message, 0.89 against 0.75 at depth 8. Its
+  message paths are v2's by construction, the mode's branches folded and the wake's compiled out,
+  so the delta does not explain the gap, as v4's did not explain its gap to v3 before the table
+  copy was found. The guess on record then was layout, and the cause proved to be the switch
+  attempt inlined into the send loop, fixed below. Its round trips are within 3 percent of v2's, and its send on the SMT
+  pair is slower, 16.6 against 12.3 ns.
+- The futex flavor costs about 3 ns/msg streaming on the SMT pair at depths 8 and 64, 15.3 to 15.6
+  against `mpsc-v3`'s 12.2, and 5 to 8 percent of round trips there, more than a fence every half
+  segment explains. Elsewhere it is within a nanosecond or two of `mpsc-v3`.
+- Found by the first run and fixed in the same rung: the consumer checked for sleeping producers
+  at its first empty look of every reserve, which in a round trip is every message, costing the
+  futex flavor 10 to 14 ns a receive on the SMT pair. Draining a full segment crosses a
+  half-segment check, so the first-empty check was redundant on the polling path and moved to
+  just before the consumer sleeps.
+- The demo, `zc-ring-x1-demo`, 0.18.5-11, two runs, from the rung `perf: mpsc v3 in the demo and
+  multi-producer`, v3 beside v2 in its one-message lines, depth sweep, and segment stress, the
+  segmented rings at one segment in the lines and the sweep:
+  - Single-threaded on core 11, v3 in both modes moves a message in 13.3 to 13.4 ns against v2's
+    13.8 to 13.9, at every depth.
+  - Two threads at depth 64, ns/msg, run 1 then run 2, v3, `Single`, and v2 in that order:
+    - on the CCX pair, 14.1 and 14.5, 7.9 and 9.7, and 14.7 and 15.5
+    - across CCXs, 16.6 and 15.4, 14.6 and 15.4, and 16.7 and 17.6
+    - on the SMT pair, 12.1 and 12.1, 10.6 and 10.7, and 13.9 and 13.9
+  - The demo's own loop shows no gap between v3 and v2, where tp-stream's shows v3 behind on the
+    CCX pair, a sign the gap is in the harness's layout rather than the ring.
+  - The segment stress, v3 at four segments of 64 beside v2: the burst 13.7 ns/msg against 14.6
+    to 14.7, the lagging consumer's switches the same, 15,624, and the cost of one switch 15.2 ns
+    single-threaded against v2's 15.6, and 263.6 to 263.8 ns streaming across CCXs against 275.6
+    to 288.2. The control block moved nothing on the switch path.
+  - Two producers and one consumer, unpinned, ns/msg: v1 74.4 and 90.9, v2 48.3 and 175.3, v3
+    59.1 and 177.4, `Single` 60.5 and 166.9. The runs differ by three times, the scheduler's
+    placement of three spinning threads deciding it, so the line shows the shape runs and little
+    of its cost.
+- Depth 1024 and past, tp-stream, one producer, run 1 then run 2, ns/msg:
+
+  | placement | mpsc-v2 | mpsc-v3 | mpsc-v3-single | mpsc-v3-futex |
+  |---|---:|---:|---:|---:|
+  | 11,10 CCX | 12.5, 12.3 | 15.0, 14.8 | 10.5, 10.3 | 15.1, 15.0 |
+  | 11,8 x-CCX | 12.9, 11.5 | 39.1, 39.2 | 8.9, 8.6 | 107.5, 107.4 |
+  | 11,23 SMT | 11.8, 11.8 | 12.4, 12.5 | 9.4, 9.4 | 15.1, 15.1 |
+
+  - Across CCXs `Multi` is three times v2 at depth 1024, with 0.82 cross-core fills a message
+    against v2's 0.11, and the futex flavor eight times. A probe the same day: at one segment,
+    over a pool of one buffer as `Single`'s is, `Multi` still takes 38.0 ns where `Single` takes
+    8.7, so the gap follows `Multi`'s code, not the pool's layout, and it grows with depth, 19.6
+    at 512 and 40.5 to 41.4 at 1024 and 2048. A header reordered so the seal and the claim word
+    never share a 128-byte prefetch pair left it at 40.5 and was reverted. Found in the next
+    bullet: the switch attempt inlined into the send loop.
+- The `Multi` gap, found and fixed in the rung `fix: mpsc v3 multi matches single without a
+  switch`, 2026-09-27: `Multi` ran slower than `Single` in streams that never switch, three times
+  across CCXs at depth 1024, and the cause was code, not memory.
+  - Probes at one segment located it: with the consumer's seal load disabled `Multi` stayed slow,
+    with the producer's segment index and switch attempt disabled it matched `Single`, and with
+    only the switch attempt disabled it matched too.
+  - The switch attempt runs only on a full ring, almost never in these streams, so its cost was
+    its presence: the compiler inlined `switch`, a loop of read-modify-writes, into the send loop,
+    and the send loop compiled worse around it. v2 carries the same code and did not show it, so
+    the inlining decision is what differed.
+  - The fix is `#[cold]` and `#[inline(never)]` on `switch`, and on the producer's wake of a
+    sleeping consumer by the same rule, a path rarely taken kept out of the loop that runs every
+    message. One producer, depth 1024 across CCXs, ns/msg, run 1 and run 2: `Multi` 8.7 and 8.6,
+    `Single` 8.3 and 8.3, v2 16.0 and 15.3. At depths 8 and 64 `Multi` now matches or beats
+    `Single` at every placement. At depth 1 it switches on nearly every message, so `Single`'s
+    lead there, 66.8 against 109.1 on the CCX pair, is the switch's cost, which the contract
+    allows.
+  - The futex flavor still trails `mpsc-v3` by 2 to 4 ns/msg, 12.5 against 10.6 on the SMT pair,
+    more than its checks explain, the Todo `MPSC v3 message path gaps`.
+- Several producers, tp-stream's `--producers N` with every thread pinned, from the rungs `perf:
+  pin every producer` and, re-run after it, `fix: mpsc v3 multi matches single without a switch`,
+  0.18.5-13, depths 8 and 64, two runs each. The first multi-producer runs pinned one producer
+  and left the rest to the scheduler, whose layout changed from run to run, so their rows are
+  superseded. Each thread now has a cpu of its own, the consumer on the base cpu 11:
+  - own cores near: each producer on a core of its own, the base's L3 first, 10,9 at two and
+    10,9,8,7 at four
+  - own cores x-L3: each producer on a core outside the base's L3, 8,7 at two, none at ten, the
+    3900X having nine
+  - shared cores: producers two to a core on both of its cpus, 10 and 22, then 9 and 21
+  - unpinned, every thread the scheduler's.
+- ns/msg from run 1, run 2 within a few percent on every pinned cell, and how often v3's sides
+  waited, the sends that found the ring full and the reads that found it empty, new columns:
+
+  | producers | depth | placement | v1 | v2 | v3 | v3-single | v3-futex | v3-backoff | v3 full % | v3 empty % |
+  |---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+  | 1 | 8 | 11,10 CCX | 36.0 | 11.7 | 10.6 | 10.9 | 10.9 | 11.2 | 0.002 | 0.1 |
+  | 1 | 8 | 11,8 x-CCX | 110.2 | 32.0 | 31.5 | 31.0 | 32.1 | 31.6 | 0.023 | 0.043 |
+  | 1 | 8 | 11,23 SMT | 15.7 | 12.2 | 10.6 | 10.1 | 13.0 | 10.4 | 0.001 | 0.025 |
+  | 1 | 8 | unpinned | 30.7 | 9.9 | 9.1 | 10.1 | 10.4 | 9.4 | 0.005 | 0.2 |
+  | 1 | 64 | 11,10 CCX | 25.1 | 14.2 | 9.1 | 14.4 | 14.5 | 10.8 | 0.007 | 0.7 |
+  | 1 | 64 | 11,8 x-CCX | 84.1 | 16.0 | 14.8 | 13.9 | 17.0 | 14.7 | 0.001 | 0.007 |
+  | 1 | 64 | 11,23 SMT | 15.4 | 12.2 | 10.6 | 10.1 | 12.5 | 10.4 | 0.000 | 0.025 |
+  | 1 | 64 | unpinned | 21.9 | 12.7 | 9.1 | 11.6 | 12.6 | 8.6 | 0.021 | 1.4 |
+  | 2 | 8 | own cores near | 59.8 | 42.0 | 43.3 | 39.8 | 46.9 | 19.0 | 0.044 | 31.3 |
+  | 2 | 8 | own cores x-L3 | 134.7 | 87.8 | 71.7 | 72.9 | 73.4 | 68.9 | 0.9 | 8.4 |
+  | 2 | 8 | shared cores | 43.1 | 28.0 | 25.0 | 24.5 | 27.0 | 14.5 | 0.003 | 13.3 |
+  | 2 | 8 | unpinned | 66.6 | 52.3 | 51.1 | 51.1 | 54.1 | 19.2 | 0.062 | 43.0 |
+  | 2 | 64 | own cores near | 52.6 | 41.2 | 40.9 | 43.3 | 42.3 | 20.6 | 0.1 | 28.3 |
+  | 2 | 64 | own cores x-L3 | 114.0 | 70.6 | 66.1 | 66.4 | 66.4 | 59.0 | 0.001 | 4.8 |
+  | 2 | 64 | shared cores | 40.2 | 26.8 | 25.7 | 24.9 | 26.4 | 19.1 | 0.001 | 8.3 |
+  | 2 | 64 | unpinned | 53.4 | 51.1 | 49.6 | 49.9 | 48.8 | 20.1 | 0.002 | 40.4 |
+  | 4 | 8 | own cores near | 224.9 | 173.8 | 168.3 | 170.8 | 160.0 | 128.5 | 0.045 | 45.8 |
+  | 4 | 8 | own cores x-L3 | 225.0 | 168.5 | 166.6 | 165.6 | 160.9 | 138.2 | 0.1 | 33.6 |
+  | 4 | 8 | shared cores | 76.1 | 51.0 | 48.3 | 48.9 | 48.2 | 31.2 | 0.007 | 34.7 |
+  | 4 | 8 | unpinned | 223.5 | 165.4 | 165.2 | 163.2 | 164.9 | 125.8 | 0.063 | 45.0 |
+  | 4 | 64 | own cores near | 215.8 | 156.8 | 163.7 | 162.0 | 145.8 | 124.3 | 0.002 | 41.9 |
+  | 4 | 64 | own cores x-L3 | 202.9 | 163.8 | 158.9 | 165.5 | 156.1 | 128.5 | 0.000 | 29.9 |
+  | 4 | 64 | shared cores | 73.3 | 40.5 | 40.7 | 40.2 | 40.3 | 31.5 | 0.001 | 20.4 |
+  | 4 | 64 | unpinned | 202.5 | 166.0 | 151.4 | 159.1 | 137.9 | 127.8 | 0.001 | 40.3 |
+  | 10 | 8 | own cores near | 344.5 | 249.7 | 291.6 | 293.3 | 252.0 | 278.2 | 0.034 | 55.0 |
+  | 10 | 8 | shared cores | 214.4 | 118.5 | 127.7 | 115.1 | 130.4 | 133.7 | 0.086 | 29.3 |
+  | 10 | 8 | unpinned | 342.2 | 252.5 | 312.4 | 290.0 | 296.2 | 280.4 | 0.1 | 57.9 |
+  | 10 | 64 | own cores near | 346.9 | 239.5 | 278.4 | 290.8 | 206.7 | 283.0 | 0.001 | 52.6 |
+  | 10 | 64 | shared cores | 203.2 | 77.8 | 77.1 | 80.2 | 77.7 | 105.0 | 0.001 | 11.8 |
+  | 10 | 64 | unpinned | 360.0 | 261.5 | 290.1 | 312.0 | 208.7 | 280.6 | 0.030 | 53.5 |
+
+- The ring is empty, not full, under contention: with two producers or more v3's consumer finds
+  it empty on 5 to 58 percent of its reads, and its sends find it full on 0.9 percent at most,
+  under 0.2 in every other cell. The consumer drains faster than contending producers claim, and
+  the producers' time goes to the claim word.
+- Shared cores are the fastest placement at every count, v3 at depth 8 25.0 ns at two producers
+  against 43.3 on own cores near, 48.3 against 168.3 at four, and 127.7 against 291.6 at ten, since a
+  claim word moving between a core's two cpus moves through the L1 and L2 they share.
+- Backoff after a lost race, `policy::backoff`, more than doubles the rate at two producers on own
+  cores near and unpinned, 19.0 against 43.3 ns at depth 8, and helps at four, 128.5 against 168.3,
+  and on shared cores, but is even or slower at ten, where a fixed doubling to 64 spins
+  overshoots, the start the Todo `MPSC claim contention` weighs its protocol changes against.
+- Across versions, v1's shared index is the slowest everywhere, and v2 and v3 are within about 15
+  percent at two and four producers, v3 ahead across L3s. At ten on own cores near and unpinned,
+  v3 and `Single` trail v2, 292 against 250 ns at depth 8, and the futex flavor leads at depth 64,
+  207 against v2's 240, which the Todo `MPSC v3 message path gaps` also takes.
+- Verdict (2026-09-27): v3 does what it is for, an MPSC ring processes join and leave, and with
+  its switch kept out of line `Multi` runs as `Single` does until it switches, matching or beating
+  v2 at one producer. `Single` is the ring for traffic one segment holds, `Multi` for traffic
+  that needs more. Under many producers every MPSC ring is bound by its claim word, the Todo `MPSC
+  claim contention`. The default `MpscRing` stays v1 until the Todo `MPSC v2 as the default`
+  weighs v3 with it.
+
+### MPSC v3 long-term possibilities
+
+Where the restart contract leads, recorded 2026-09-27 as possibilities, none of them built.
+
+- Restart domains: a robust system is distributed and redundant, and each unit that restarts as a
+  whole is a restart domain. The granularity varies, each restartable, each possibly redundant:
+  - a defined set of actors, with a known set of pools and rings, restarted together
+  - a set on one thread
+  - a set of threads
+  - a process
+  - a set of processes
+  - a computer
+  - a set of computers
+- A ring inside one domain costs nothing on a restart: it is recreated with the domain.
+- A ring crossing a domain boundary couples the two. A producer that dies mid-send jams the
+  consumer's ring, so the producer's failure restarts the consumer's domain, and two domains
+  joined by such a ring are one for failure. Containment would take a `Contained` ring: a consumer
+  that has waited past a timeout on a claimed, uncommitted position CASes it to a tombstone and
+  moves on, and a producer's commit becomes a CAS that fails if its slot was tombstoned, so a slow
+  producer learns it lost rather than corrupting the ring. The cost is a CAS in place of a store
+  per commit.
+- A pool per domain: a pool shared across domains leaks what a dead holder held, the Todo `Pool
+  buffers survive their holders`, where a pool that restarts with its domain leaks nothing. So
+  zero-copy is within a domain, and a message crossing a boundary is copied into a slot or into a
+  buffer of the receiver's pool.
+- Incarnations: after a restart the domain's rings are new, and a peer still pointing at an old
+  one must notice and look again. An epoch in the control block, the closed state, and the waits'
+  timeouts let a peer see a dead incarnation, and naming, the Todo `Find a ring by name`, resolves
+  a name to the current one.
+- One machine: the crate reaches as far as shared memory, threads and processes on one computer.
+  A computer or a set of them is the same model over a transport, a bridge actor that drains a
+  ring and forwards, the ring on each end the crate's.
+- Delivery: a restart loses what was in flight, and redundant receivers or retries duplicate it,
+  so exactly-once is the application protocol's, sender sequence numbers or idempotent handling,
+  above the crate. The crate states at-most-once and at-least-once where they hold and promises
+  no more.
+
 ## Generic Queue (idea)
 
 SPSC v3 and MPSC v2 share their setup, `init(pool, slot_size, seg_capacity, seg_count)` and
@@ -2552,15 +2900,16 @@ Shared state changes only through protocol operations, never in a `Drop`.
   ring that had run, and hung. They now have none.
 - So teardown and handoff are calls, `release`, and recovery is a call, a takeover, each one
   deliberate. The rule holds for the next attachable ring, an MPSC, from its first design.
-- One kind of destructor breaks it, and whether it stays is open: the MPSC rings' producers,
+- One kind of destructor breaks it, in the in-process rings only: the MPSC rings' producers,
   v0 through v2, arm `TombstoneOnUnwind` while the fill closure runs, a `Drop` that publishes a
   tombstoned commit into the claimed slot's seq word if a panic unwinds through `send_with`, so
   the consumer is not left waiting on a slot no one will commit. It runs only on the unwind
   path, in a process that survives the panic, and finishes a protocol step rather than undoing
   one. A death it cannot see, an abort or a kill, leaves that slot claimed and the ring stuck,
-  which is the MPSC's own takeover question. Found on 2026-09-26 writing this rule. Narrowing
-  the rule to allow unwind-only guards, or removing the guard, is decided in the attachable
-  MPSC cycle, the Todo entry `### Attachable MPSC with claimed roles`.
+  which is the MPSC's own takeover question. Found on 2026-09-26 writing this rule, and decided
+  in `feat: attachable MPSC v3` on 2026-09-27: the attachable ring has no guard, a panic
+  mid-send being a failure recovered by a restart as a kill is, and v0 through v2 keep theirs,
+  in-process baselines left as built ([MPSC v3 design](#mpsc-v3-design)).
 
 #### The inbox model
 

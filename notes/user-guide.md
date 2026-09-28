@@ -28,7 +28,9 @@ a producer that runs ahead, so the ring never reports Full until every segment i
 Both are `no_std`, allocate nothing after `init`, and are in-process only: neither has an
 `attach`, since a ring's state spans a pool and its segments. **SPSC v4**, `zc_ring_x1::spsc::v4`,
 is SPSC v3 with an `attach`, for a ring shared between processes, in [Joining from another
-process](#joining-from-another-process) below. The single-region rings, `spsc::v0` to `v2` and
+process](#joining-from-another-process) below, and **MPSC v3**, `zc_ring_x1::mpsc::v3`, is MPSC v2
+with an `attach`, counted roles, and waiting, in [MPSC v3: joining, counted roles, and
+waiting](#mpsc-v3-joining-counted-roles-and-waiting). The single-region rings, `spsc::v0` to `v2` and
 `mpsc::v0` and `v1`, keep `attach` as well and are outside this guide.
 
 ## The message type
@@ -302,6 +304,56 @@ let mut consumer = ring.take_over_consumer(new_id)?;
 Everything after the claim, sending, receiving, the policies, and the segment lifecycle, is SPSC
 v3's, and the rows for both are in the measurement tools.
 
+## MPSC v3: joining, counted roles, and waiting
+
+`mpsc::v3::MpscRing` is MPSC v2 with v4's control block, so a process can join it, and with a
+simpler contract for its holders: one consumer and any number of producers up to a most, each role
+claimed and released by count, and a holder that dies recovered by restarting its set, not by a
+takeover. The design and its measurements are the design note's [MPSC
+v3](ring-buffer-design.md#mpsc-v3-attachable-segments-with-counted-roles).
+
+```rust
+use zc_ring_x1::mpsc::v3::{MpscRing, Multi};
+use zc_ring_x1::wake::Futex;
+
+// The process that reads builds the ring and claims its consumer.
+let ring = MpscRing::<Multi, Futex>::init(&mut pool, SLOT, DEPTH, SEGMENTS)?;
+let mut consumer = ring.claim_consumer()?;
+let first = ring.first_segment(); // hand this to the producers' processes
+
+// A producer's process joins over the same region.
+let ring = unsafe { MpscRing::<Multi, Futex>::attach(&pool, first) }?;
+let producer = ring.claim_producer()?;
+producer.send_wait::<Msg>(|_| true, |m| m.seq = 1)?; // sleeps while the ring is full
+producer.release();
+
+// The consumer sleeps while the ring is empty, bounded by its policy.
+let msg = consumer.reserve_slot_wait::<Msg>(|attempt| attempt < 100)?;
+```
+
+- Two type parameters, named where the ring is made: the mode, `Multi` for up to 32 segments or
+  `Single` for one, whose paths compile without the segment switch, and the wake, `NoWake` by
+  default or `Futex` on Linux. `attach` of the other mode is `Error::BadMode`, and every process
+  on one ring uses the same wake.
+- Roles are counted: `claim_producer()` and `claim_consumer()` take no id. At most one consumer,
+  and producers up to the ring's most, `u16::MAX` unless `init_with_max_producers` sets fewer,
+  past which a claim is `Error::RoleTaken`. A producer keeps no state, so producers come and go
+  freely, and the producer is not `Clone`: claim one per thread, or share one by reference.
+- `release()` gives a role back. The consumer's release saves where it stopped, and the next
+  consumer, in any process, continues there. Dropping an endpoint writes nothing and keeps its
+  role held.
+- Waiting: `send_wait` and `reserve_slot_wait` sleep on a full or empty ring where `send_with` and
+  `reserve_slot_with` spin or give up, and call the policy after each wake, a futex's timeout
+  included, so `|_| true` waits until the other side acts and a bounded policy bounds the wait.
+  A sleeping producer is woken within half a segment of the consumer's releases.
+- `release_ring(pool)` closes a ring no role holds and gives its segments back to the pool, so a
+  later `attach` is `Error::BadMagic`. A role held is `Error::RingInUse`. Anyone holding the ring
+  may call it, and the creator decides when.
+- There is no takeover and no unwind guard: a producer that dies, or panics, between its claim and
+  its commit leaves its slot claimed, and the consumer waits there. The recovery is restarting the
+  set the ring belongs to. `zcr-test-ipm`'s MPSC mode and `tests/ipm.rs` show roles coming and
+  going between processes.
+
 ## Errors and panics
 
 | Where | What | Meaning |
@@ -316,6 +368,10 @@ v3's, and the rows for both are in the measurement tools.
 | `spsc::v4::Ring::take_over_*` | `Error::RoleTaken` | another takeover or claim won the role first |
 | `spsc::v4::Ring::take_over_*` | `Error::BadCapacity` | a held role on a ring of one-slot segments |
 | `spsc::v4::Ring::claim_*`, `take_over_*` | `Error::BadCheckpoint` | the role's saved state names no segment of the ring, or the seq words are not ones the ring wrote |
+| `mpsc::v3::MpscRing::init` | `Error::BadMaxProducers`, `BadSegmentCount` | a most producers of `0`, or `Single` with more than one segment |
+| `mpsc::v3::MpscRing::attach` | `Error::BadMode`, and v4's attach errors | the ring was built for the other mode, or as v4's |
+| `mpsc::v3::MpscRing::claim_*` | `Error::RoleTaken`, `RingClosed`, `BadCheckpoint` | the consumer is held or the producers are at the most, the ring is released, or the consumer's saved state names no segment |
+| `mpsc::v3::MpscRing::release_ring` | `Error::RingInUse`, `RingClosed`, `BadSegment` | a role is held, the ring is already released, or the pool is another region's |
 | producer reserve or send | `Full` | the policy gave up with every segment full |
 | consumer reserve | `Empty` | the policy gave up with nothing committed |
 | first reserve or send | panic | `T` larger than the slot body or aligned beyond 16 |

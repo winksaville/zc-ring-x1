@@ -52,31 +52,6 @@ acceptance check, deliberation, then `#### Ladder` directly above the rung subse
 - A single-step cycle's block already takes the order, from `feat: test inter-process message`,
   where the user moved it by hand.
 
-### Attachable MPSC with claimed roles
-
-The MPSC rings are in-process only: `split` hands out the endpoints, and no control block lets a
-second process find a ring or claim a role in it. The attachable MPSC is the multi-producer
-sibling of `spsc::v4`, built on its model, which `feat: test inter-process message` showed
-working between processes.
-
-- Roles as v4's: `claim_consumer(id)` once, `claim_producer(id)` into one of N producer role
-  slots, each with its checkpoint, `release`, and `take_over_*`, and the claims line laid out
-  for the slots from the start, as the design note's Pool topology and phasing asks.
-- Destructors never touch shared memory, from its first design (the design note's Holders and
-  recovery).
-- The unwind guard: the MPSC producers, v0 through v2, arm `TombstoneOnUnwind` while the fill
-  closure runs, a `Drop` that publishes a tombstoned commit into the claimed slot when a panic
-  unwinds through `send_with`, releasing what the producer holds so the consumer is not left
-  waiting on a slot no one will commit. Reasonable in a process that survives the panic, the
-  user's reading on 2026-09-26, and the one `Drop` in `src/` that writes shared memory. Decide
-  here, one of:
-  - Narrow the rule and its check: a guard that runs only on unwind and finishes a protocol step
-    is allowed, and an ordinary drop still writes nothing.
-  - Remove it: a producer's takeover must already repair a slot claimed and never committed,
-    since an abort or a kill runs no guard, and that repair may cover a panic too.
-- Found in `fix: spsc v4 roles survive their holders`, whose acceptance check's no-`Drop` clause
-  it fails, and placed here by the user on 2026-09-26, the cycle after multi-process SPSC v4.
-
 ### Find a ring by name
 
 A process that reads a ring owns it, and every producer joins it, but how a producer finds the
@@ -286,6 +261,90 @@ message against v2's 7.5.
   14.6 to 10.0 ns on the CCX pair and from 19.1 to 12.5 on the SMT pair, under v3's 13.7 and
   17.1 in the same run. The gap was the copy. v3 still copies, and this entry is what changes it.
 
+### MPSC v3 message path gaps
+
+`Multi` trailed `Single` in streams that never switch until `fix: mpsc v3 multi matches single without
+a switch` kept the switch attempt out of the send loop. What that left is on the futex flavor and at
+many producers. The design note's [MPSC v3 measured](notes/ring-buffer-design.md#mpsc-v3-measured)
+has the rows.
+
+- The futex flavor trails `mpsc-v3` by 2 to 4 ns/msg at one producer, 12.5 against 10.6 on the SMT
+  pair, with nothing asleep, more than a fence every half segment and a flag test explain. The
+  producer's wake is already out of line, so the consumer's release check is the next to look at.
+- At ten producers on own cores v3 and `Single` trail v2, 292 against 250 ns/msg at depth 8, and the
+  futex flavor leads at depth 64, 207 against v2's 240, an order the one-producer rows do not
+  predict.
+- A mark to beat: the rows in the design note, `tp-stream`, 3900X, 2026-09-27, 0.18.5-13.
+- From `feat: attachable MPSC v3`.
+
+### Producer work in the streams
+
+The streams' producers do nothing between sends, so every MPSC measurement is of the claim word
+alone, and a second producer costs more than it adds: 108M messages a second from one producer,
+19M from two on cores of their own, 5.6M from three, the user's runs of 2026-09-28. Real producers
+work between sends, and the more work, the more producers should pay, until the claim word or the
+consumer binds.
+
+- Real work, not a timed spin: `--work-bytes K`, each producer fills a K-byte payload in place and
+  checksums it, the zero-copy write doing the work, with `--slot-lines` for slots big enough to
+  hold it.
+- `--verify on|off`: the consumer recomputes each checksum or only reads the message, so the
+  consumer can be kept fast to show the producers' scaling, or made to bind, where `full %` rises
+  and spin-then-sleep on a full ring finally has a case.
+- A model to test: per message, W the producer's work, C its claim and commit, T the claim word's
+  handoff, a cache line's transfer, and R the consumer's cost. Throughput is about the least of
+  N / (W + C), 1 / T, and 1 / R, so producers pay until N times T reaches W + C.
+- Predictions, on record before measuring: at small K more producers still lose, at a few hundred
+  bytes two to four beat one, at large K throughput scales with N until the claim word binds,
+  sooner across L3s than within one, shared cores best, and with `--verify on` the consumer binds
+  first.
+- Placements named by where the producers sit, all in one L3 or split across L3s: at three
+  producers `own cores near` turned mixed, two in the consumer's L3 and one outside, and ran
+  slower than `own cores x-L3`, all three in one other L3, 179 against 87 ns a message, since
+  what matters is whether the producers share an L3 with each other.
+- With the consumer binding, producers finally sleep on a full ring, so measure the wake there:
+  `wake_producers` wakes every sleeper at each half segment of releases, `FUTEX_WAKE` at
+  `i32::MAX`, and most go back to sleep, against waking one producer per freed slot, a count
+  passed through `Wake::wake`, a stranded sleeper covered by the next check or its timeout. Under
+  producers that do no work the ring never fills, so the wake has not been measured.
+- Then the same workload in `zcr-test-ipm`'s MPSC mode, the scaling shown between processes.
+- Ranked ahead of `MPSC claim contention`, whose weight it decides: if producers with real work
+  scale, the claim word matters only at small messages.
+- From `feat: attachable MPSC v3`, on 2026-09-28.
+
+### MPSC claim contention
+
+Every MPSC ring, v0 through v3, claims a slot by a CAS loop on one shared word, and with producers
+sending flat out the word decides everything: ten producers move 3 to 4M messages a second between
+them where one moves 75 to 110M, 10 to 21 cross-core line transfers a message, the ring near empty
+and the consumer waiting on the producers. The rows are the design note's [MPSC v3
+measured](notes/ring-buffer-design.md#mpsc-v3-measured) and the user's `-p 10` run of 2026-09-27.
+
+- Claim by `fetch_add`: no failed attempt, about one transfer a claim, but a producer claims before
+  knowing its slot is free and cannot take the claim back, so giving up on a full ring needs a
+  tombstone or a claim that cannot fail. It is also fair: the ticket fixes each producer's place
+  at the claim, so waiting, spinning or asleep, can delay a producer but never let another pass
+  it, where the CAS loop hands each slot to whoever wins the race.
+- Fairness, the property that matters, whatever it is defined as: no producer should always lose.
+  A CAS loop has no fairness at all, the next slot going to the core nearest the claim word's
+  line, so a producer farther away, across an L3 or behind an SMT pair, can lose nearly every
+  race, the user's concern of 2026-09-28. Arrival order is hard to define across cores, so the
+  working definitions to weigh are a bounded wait, no producer waiting past K claims by others,
+  and a share, each producer's messages within some ratio of the others' when all send flat out.
+- Measure it before choosing: the streams check each producer's order and count its messages,
+  and do not report the counts. Each producer's share of the messages, and its longest wait in
+  claims, per placement, says whether a producer starves today and which fix a definition asks
+  for. Waking one sleeper instead of all changes none of it, since a producer that never slept
+  can still win the slot first.
+- Claim several slots at once: contention divided by the batch, for producers that send in bursts.
+- One SPSC ring per producer and a consumer that fans in, the design note's [Fan-in (composition, not
+  a mode)](notes/ring-buffer-design.md#fan-in-composition-not-a-mode): nothing written by two
+  producers, so the count of producers scales until the consumer saturates, at the price of
+  polling N rings and of order only per producer.
+- Backoff after a lost race is measured first, in `perf: pin every producer`, as the cheap measure
+  the others are weighed against.
+- A protocol change, so its own cycle, from `feat: attachable MPSC v3` on 2026-09-27.
+
 ### MPSC v2 as the default
 
 `MpscRing` is v1 while `Ring` is v3, so the crate's SPSC default is segmented and its MPSC default
@@ -301,12 +360,6 @@ every path that never needs a second segment.
   unwatched and stores the seq beside it. The one-thread loop also carries 3 ns over v1 not yet
   found. Both are the fast-path work this entry waits on, and the switch's own cost is the entry
   `Cheaper segment switches`.
-
-### Multi-producer measurement
-
-The tools run every MPSC flavor at one producer and one consumer, so a claim word contended by
-several producers is never measured. A `--producers N` flag for `tp-matrix` and `tp-stream` would
-run N pinned producers into one consumer, and v2's switch would then be measured under contention.
 
 ### Cheaper segment switches
 
@@ -483,56 +536,399 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### docs: spsc v4 not perfect
+### feat: attachable MPSC v3
 
 #### Problem
 
-`spsc::v4` recovers a role whose holder crashed, by a takeover from its last checkpoint and a scan
-of one segment's seq words, and the design note stated what a takeover loses without stating when
-it fails. Reviewed the day after it landed, the recovery is not certain: it rests on the app
-knowing the holder is dead, and several cases lose more than in-progress work or cannot recover at
-all.
+The MPSC rings are in-process only: `split` hands out the endpoints, no control block lets a second
+process find a ring, and producers cannot come and go. A full or empty ring can only be polled, as
+no side can sleep until the other acts.
 
 #### Solution
 
-A bullet in the design note's SPSC v4 section, `What recovery does not guarantee`, after `Resume
-and takeover`, records the limits.
+`mpsc::v3`, v2's claim and seq protocol over a ring that describes itself in the region, as
+`spsc::v4` does, with a simpler role model than v4's, built, measured, and fixed where the
+measurements found it wrong.
 
-- What a takeover guarantees: after a holder that is truly dead, at depth 2 or more, with the
-  shared words intact, it loses at most one uncommitted producer message or repeats one unreleased
-  consumer message.
-- Where it fails or recovers only part: a hung holder taken over and waking, depth 1, delivery that
-  is at-least-once or at-most-once and never exactly-once, a region corrupted before the death, the
-  pool's buffers, and the machine.
-- The requirement of 2026-09-25 is met for a clean death of a holder known dead, and for the ring
-  only. A narrower contract on the inbox model, dropping takeover and keeping handoff, is recorded
-  as open, not decided.
+- One claims word: a closed bit, a consumer bit, and a producer count, the most producers set at
+  `init`, `u16::MAX` by default. Claiming a role, releasing it, and releasing the ring are each one
+  CAS on it.
+- No holder ids, no takeover, no intent words, and no scan: a holder that dies is recovered by a
+  restart, the narrower contract of `docs: spsc v4 not perfect`.
+- The consumer checkpoints its segment, position, and resume positions at `release`. Producers
+  keep no state, so a producer claim is a count.
+- `release_ring` fails while any role is held, and otherwise closes the ring, clears its magic, and
+  frees its segments to the pool. Anyone holding the ring may call it, and when is the creator's
+  call.
+- Two hot paths chosen at compile time: `Single`, one segment, where a full ring goes straight to
+  the policy, and `Multi`, v2's switching. The mode is in the control block and `attach` checks it.
+- Waiting: a full producer or an empty consumer can sleep until the other side acts, through a
+  small wake trait the crate calls, with a futex implementation on Linux, and error and spin stay
+  the `_with` policies they are.
+- No unwind guard: v2's `TombstoneOnUnwind` does not carry over, so a panic mid-send is a failure
+  like any other, recovered by a restart.
+- Proven between processes: `zcr-test-ipm`'s MPSC mode and `tests/ipm.rs`, producers and consumers
+  coming and going across processes, and the ring released.
+- Measured: v3 in tp_matrix, the demo, and a multi-producer stream with every thread pinned and
+  each side's waits counted, a backoff after a lost claim race beside plain spinning.
+- Fixed from the measurements: the consumer's wake check moved off the polling path, and the
+  producer's switch attempt kept out of the send loop, so a `Multi` ring runs as a `Single` one
+  until it switches.
+- Documented: the design note's MPSC v3 section, the user guide, and the README's versions, with
+  the next work in the Todos `Producer work in the streams`, `MPSC claim contention`, and `MPSC v3
+  message path gaps`.
 
 #### Acceptance check
 
-`notes/ring-buffer-design.md`'s SPSC v4 section names each limit above and what a takeover does
-guarantee, and `vc-x1 validate` passes. Pass: the bullet is at `What recovery does not guarantee`,
-and the full validation passed.
+- Two producer processes and one consumer process exchange messages over an attached v3 ring in
+  `/dev/shm`, every message checked.
+- Roles are claimed, released, and claimed again, in one process and across processes, and the
+  consumer resumes where it stopped.
+- `release_ring` refuses while a role is held and succeeds once none is, and a later `attach`
+  fails.
+- A consumer waiting on an empty ring and a producer waiting on a full one are woken by the other
+  side.
+- `Single` and `Multi` are measured beside v1 and v2 in the tp_matrix tables.
 
-#### Deliberation
-
-- A design-note bullet, not a code change: the limits are properties of the design, and whether
-  to narrow the contract is open, so the record comes first and any change is its own cycle.
-- Placed in the SPSC v4 section beside `Resume and takeover`, the user's call, rather than in
-  `Holders and recovery`, which states the requirement the bullet measures v4 against.
-- The lead is plain, the user's call at review, though the section's other leads are bold,
-  following [Leads are labels, unmarked](agent-data/prose.md#leads-are-labels-unmarked).
-- Single-step: one doc change and its record, the user's call.
-- Landed directly on `main`, no bookmark and no dev name, the user's explicit waiver at review on
-  2026-09-27 of [Cycles run on a bookmark](AGENTS.md#cycles-run-on-a-bookmark) and the opening's
-  rename.
-  - It covers this cycle's one commit and its push to `main`, which is the Land.
-  - It does not cover the per-push approval, the description review, or later cycles.
+Pass, 2026-09-28 at the closing: `cargo test --test ipm` passes the cross-process test, two
+producer processes, a consumer handoff between processes, the release refused while held, then
+released and a late producer refused `BadMagic`, and the v3 unit tests pass, 37 of them, the
+waiting tests among them. The tables are in the design note's `MPSC v3 measured`.
 
 #### Ladder
 
-- docs: spsc v4 not perfect (done)
+- [feat: attachable MPSC v3 opening][21] (done)
+- [docs: mpsc v3 design and restart domains][22] (done)
+- [feat: mpsc v3 as a copy of v2][23] (done)
+- [feat: mpsc v3 control block and attach][24] (done)
+- [feat: mpsc v3 claims word and roles][25] (done)
+- [feat: mpsc v3 ring release][26] (done)
+- [feat: mpsc v3 single and multi segment paths][27] (done)
+- [feat: mpsc v3 wait and wake][28] (done)
+- [feat: mpsc v3 inter-process test][29] (done)
+- [perf: mpsc v3 in the measurement tools][30] (done)
+- [docs: mpsc v3 in the design note and guide][31] (done)
+- [perf: mpsc v3 in the demo and multi-producer][33] (done)
+- [perf: pin every producer][34] (done)
+- [fix: mpsc v3 multi matches single without a switch][35] (done)
+- [docs: the ring versions explained][36] (done)
+- [feat: attachable MPSC v3 closing][32] (done)
+
+#### Deliberation
+
+- Restart, not takeover: a dead holder is recovered by restarting the set it belongs to, the user's
+  call on 2026-09-27, after `docs: spsc v4 not perfect` found v4's takeover uncertain.
+  - So no holder ids, since without takeover nothing can replace a live holder, and `release(self)`
+    consumes the endpoint.
+  - A producer that dies between claim and commit leaves its slot claimed and jams the ring, and
+    the consumer's set restarts. Accepted, the user's call.
+- The ring's release: only when no role is held, anyone may call it, and the creator decides when,
+  the user's call. Any process may free to a pool, so this needs no shared allocation.
+- `Single` and `Multi` as a compile-time choice, starting from v2 as it is, the user's call.
+- The unwind guard is removed, the user's call, which settles the open question the Todo entry
+  `Attachable MPSC with claimed roles` carried. v0 through v2 keep theirs, in-process baselines
+  left as built.
+- A `u16` producer count, the user's call.
+- Wait and wake in this cycle, as its own rung, the user's call.
+- The design section is the first rung after the opening, the user's call.
+- Run unattended, the user's explicit waiver on 2026-09-27, confirmed in the session.
+  - It covers: the per-rung work review and description review, and the approval of each push to
+    the `mpsc-v3` bookmark, from the opening through `docs: mpsc v3 in the design note and guide`.
+  - It does not cover: the closing, Land, any push to `main`, or any write to another repo.
+  - Where a question would stop the cycle, the agent takes the option that keeps the plan and
+    records it in the rung's subsection, and a change of scope stops the cycle.
+- `perf: mpsc v3 in the demo and multi-producer` inserted before the closing, the user's call on
+  2026-09-27 at review: the demo's depth sweep and segment stress had no v3, and the Todo entry
+  `Multi-producer measurement` joins the rung. The user's go covers the rung's push.
+- `perf: pin every producer` and `fix: mpsc v3 multi matches single without a switch` inserted
+  before the closing, the user's go on 2026-09-27 covering both rungs and their pushes.
+  - Every producer on its own cpu, the user's rule for a fair run, and a shared-core placement
+    beside it, read as producers paired on one core's two cpus, never the consumer's core.
+  - A backoff after a lost claim race joins the pinning rung as the first cheap measure against
+    the claim word's contention, which ten producers showed collapses throughput. The claim
+    design itself is the new Todo `MPSC claim contention`.
+  - The user's contract for the fix: a ring of several segments runs, while it does not switch,
+    no differently from a ring of one.
+- `docs: the ring versions explained` inserted before the closing, the user's call on
+  2026-09-28, with the Todo `Producer work in the streams`. The push is asked for, since no go
+  covers it yet.
+
+#### Ladder details
+
+##### feat: attachable MPSC v3 opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
+Todo entry into this block, bump the version-of-record, and rename to the dev names.
+
+##### docs: mpsc v3 design and restart domains
+
+The design note gains an `## MPSC v3` section: the initial design this cycle builds and the
+long-term possibilities, restart domains and what crossing one costs.
+
+- The design fixed what the plan left open, each the agent's call under the waiver:
+  - Seven header lines per segment: v2's seal, claim, and in-use lines, v4's info line and table,
+    and a claims line holding the roles word, the consumer's checkpoint, and the producers' wait
+    words.
+  - The consumer checkpoints at `release` only, every segment's resume position included, since
+    without a takeover nothing reads it between.
+  - Waiting keeps the policy closures: `send_wait` and `reserve_slot_wait` sleep between attempts
+    and call the same policy after each wake, so a caller bounds a wait as it bounds a spin.
+  - The consumer sleeps on the claim word, bit 31 its waiting flag, so a producer learns of it from
+    the claim CAS it already makes. Producers sleep on a sequence word, and the consumer checks
+    their count behind a fence every half segment of releases and when it first finds the ring
+    empty, not at every release, where the fence would cost every message.
+  - `Futex` goes through `libc`, already the package's Linux dependency.
+- The design note's Holders and recovery records the unwind guard's decision.
+
+##### feat: mpsc v3 as a copy of v2
+
+v2's files copied to `src/mpsc/v3/` unchanged but for the names, so each later rung's diff is only
+what v3 changes.
+
+- The copy keeps v2's tests, so v3 passes them as v2 does until the rungs after it change what it
+  is, and its module docs say so.
+
+##### feat: mpsc v3 control block and attach
+
+Segment 0 holds the ring's identity, geometry, mode, and table of segments, so a process holding
+the pool and the first segment's index can attach.
+
+- Six header lines for now: the info line and the table join v2's seal, claim, and in-use lines.
+  The claims line comes with the roles and the mode with the modes, each into the info line or a
+  line of its own, so the layout grows to the design note's seven lines by the rungs that use it.
+- The endpoints keep v2's per-process pointers rather than v4's offsets: each process builds its
+  own from the table's buffer indices and its pool's buffer array, so nothing process-local is
+  shared, and the message path is v2's.
+- `attach` validates as v4's does, and its tests are v4's, the pairing across handles done by
+  `split` until the roles land.
+
+##### feat: mpsc v3 claims word and roles
+
+The roles are claimed and released through one claims word, and `split`, producer `Clone`, and the
+unwind guard go.
+
+- The claims line joins the header as line 4, so the header is the design note's seven lines, and
+  the info line gains the most producers and the consumer's resume position per segment.
+- The consumer's switch count is its own since its claim, not checkpointed: the count is a
+  diagnostic, and the producers' shared count is the ring's.
+- New errors: `RingClosed` for a claim on a released ring, ready for the release rung, and
+  `BadMaxProducers` for a ring no producer could join. `RoleTaken` also covers a ring at its most
+  producers.
+- The unwind guard's two tests became `a_panicking_fill_jams_the_ring`, which pins the price: the
+  consumer stops at the panicked slot.
+- A finding: a ring of segments cannot hold its full `seg_count * seg_capacity` unread, since a
+  segment is given back only at the consumer's reserve after its last release. v2 is the same, and
+  the resume test keeps its unread count well under capacity.
+
+##### feat: mpsc v3 ring release
+
+`release_ring` closes a ring no role holds and returns its segments to the pool.
+
+- `release_ring(self, &pool)` consumes the handle, and on `RingInUse` or `RingClosed` the ring is
+  unchanged, so a caller re-attaches rather than getting the handle back, since an `Err` carrying
+  the ring would be a large error type.
+- The pool is checked to be the ring's by the address of segment 0, so a release to another
+  region's pool is `BadSegment` before anything is written.
+- The segments are freed through the pool's view, one guard minted per table entry, the way the
+  registry takes buffers back.
+- A handle kept past the release, in this process or another, reads a closed ring only until the
+  pool reuses the segments, the same contract `attach`'s safety states.
+
+##### feat: mpsc v3 single and multi segment paths
+
+The segment handling becomes a type parameter, so a one-segment ring compiles without the switch
+and seal paths.
+
+- A sealed `Mode` trait with an associated `const MULTI: bool`, implemented by `Single` and `Multi`,
+  rather than a const generic: the mode reads as a name at the call site, `MpscRing::<Single>`, and
+  the trait carries the control block's code beside the flag. Every `if M::MULTI` folds at compile
+  time.
+- The ring and both endpoints take the mode, `Multi` by default. A default does not apply to a
+  path in an expression, so `init` and `attach` are called as `MpscRing::<Multi>::init`, which
+  names the mode everywhere a ring is made.
+- `Single` needs `seg_count` 1, at `init` and at `attach`. Its producer takes segment 0 whatever the
+  claim word's segment bits hold and goes straight to the policy at a full ring, and its consumer
+  never loads a seal.
+- The mode joins the info line, and `attach` of the other mode is the new `Error::BadMode`, checked
+  in every segment's header as the geometry is.
+
+##### feat: mpsc v3 wait and wake
+
+A full producer and an empty consumer can sleep until woken, through a wake trait, with a futex
+implementation on Linux.
+
+- `crate::wake` holds `Wake`, `NoWake`, and `Futex<TIMEOUT_MS>`, crate-level rather than in `mpsc::v3`
+  so another ring can take them. `Wake` is static functions and a `WAKES` constant, so a ring over
+  `NoWake` compiles every check out.
+- `W` is a third type parameter of the ring, both endpoints, and the read slot, which needs it for
+  the release's check, `NoWake` by default.
+- The waiting entries are `send_wait` and `reserve_slot_wait`, beside `send_with` and
+  `reserve_slot_with`, sharing one inlined body with a `sleep` flag, and the policy is called after
+  each wake, a timeout included, so `|_| true` waits without end and a bounded policy bounds it.
+- The consumer's waiting flag is the claim word's bit 31, free there since MOVED lives in seals
+  only. Every producer CAS and the switch CAS carry it over, and only the consumer clears it.
+- Producers are also woken at each segment the consumer gives back, since in `Multi` a free
+  segment is room, and at the consumer's first empty look.
+- The tests prove a wake with a futex whose timeout is 5 s against a 2 s bound, and ran 15 times
+  clean.
+
+##### feat: mpsc v3 inter-process test
+
+`zcr-test-ipm` gains an MPSC mode, two producer processes into one consumer process.
+
+- Three subcommands over an `mpsc::v3` ring of `Multi` segments sleeping on `Futex<10>`, in its
+  own region file, `/dev/shm/zcr-test-ipm-mpsc`, so the SPSC round and this one never share a
+  file: `mpsc-consumer new|join <messages>`, `mpsc-producer <id> <count>`, and `mpsc-release`.
+- Each message carries its producer, its number in that producer's stream, a value, and a checksum
+  over the three, and the consumer checks every checksum and every producer's order, and prints
+  each producer's first and last number, so a test can check a second consumer continued where the
+  first stopped.
+- `tests/ipm.rs` runs the acceptance check's cross-process half in one test: a release refused
+  while the consumer holds its role, two producer processes of 20,000 messages each, the first
+  consumer reading half and releasing while they wait on the full ring, a second consumer process
+  continuing each stream exactly, a third producer after the others have gone, the ring released
+  with no role held, and a late producer refused with `BadMagic`. Ten runs clean.
+- By hand, a producer with no consumer to read waits out its 10 s deadline on a full ring and
+  exits 1, the timeout doing what a dead peer needs.
+
+##### perf: mpsc v3 in the measurement tools
+
+v3 in tp_matrix beside v1 and v2, both modes.
+
+- Three flavors: `mpsc-v3` (`Multi`, `NoWake`), `mpsc-v3-single`, and `mpsc-v3-futex` (`Multi` over a
+  futex, `NoWake` off Linux), so the wake checks' cost on the message path is measured though
+  nothing sleeps. tp-cell takes them by name, and the tools' help names v3 among the segmented
+  flavors.
+- A finding the measurement made, fixed in this rung: the consumer's wake check at its first empty
+  look ran a fence every time a reserve found the ring empty, which in a round trip is every
+  message, 10 to 14 ns on the SMT pair. It was redundant with the half-segment checks, since
+  draining a full segment crosses a mark, so it moved to just before the consumer's own sleep.
+- The measured results go into the design note in `docs: mpsc v3 in the design note and guide`:
+  `Single` is the fastest MPSC ring with slack, and `Multi` trails v2 on some no-switch streams by
+  more than its code delta explains, as v4 did v3. The futex flavor costs about 3 ns/msg streaming
+  on the SMT pair, also more than its checks explain.
+
+##### docs: mpsc v3 in the design note and guide
+
+The measured results in the design note, and v3 in the user guide.
+
+- The design note's MPSC v3 section gains `MPSC v3 measured`: both tools' rows for v2 and the three
+  v3 flavors, what they show, and a verdict, `Single` the MPSC ring to use where one segment holds
+  the traffic and the default `MpscRing` still v1.
+- The unexplained gaps became the Todo `MPSC v3 message path gaps`, placed before `MPSC v2 as the
+  default`, whose choice of default they bear on.
+- The user guide gains a section for v3's joining, counted roles, waiting, and release, with its
+  errors in the table, and the README a section with the MPSC mode's steps by hand.
+
+##### perf: mpsc v3 in the demo and multi-producer
+
+v3 in the demo's one-message lines, depth sweep, and segment stress, and a producer count for the
+streaming tool, so the claim word is measured under several producers, the Todo entry
+`Multi-producer measurement` moved here.
+
+- The demo: `mpsc3_` and `mpsc3s_` one-message lines, v3 in both modes in the depth sweep, v3
+  `Multi` in the segment stress beside v2, `Single` having no segment to switch, and two-producer
+  lines for v2 and both v3 modes beside v1's, over a shared body.
+- tp-stream's `--producers N`, 1 to 64: above 1 the SPSC flavors are skipped, each producer tags
+  its counter with its number in the high bits, the consumer checks each producer's order, and
+  one producer runs the check it ran before. v0 through v2 clone their producer, and v3 claims N
+  roles.
+- tp-stream again at depths 1, 8, 64, and 1024, the mark v4's cycle set, which found `Multi` three
+  times v2 across CCXs at depth 1024. A probe located it in `Multi`'s code, and a header reorder
+  testing a prefetch-pair theory changed nothing and was reverted. Recorded in the Todo `MPSC v3
+  message path gaps`.
+- The pinned multi-producer rows measure the scheduler, the extra producers unpinned beside two
+  spinning threads, so a placement that pins every producer is the new Todo `Pinned
+  multi-producer placements`.
+- tp_matrix's README names the v3 flavors and `--producers`, and says the unpinned rows are the
+  ones to compare.
+- A slip: the reverted header was restored with `git checkout`, where the rule is jj.
+
+##### perf: pin every producer
+
+tp-stream's multi-producer placements name every thread, each producer on a cpu of its own, a
+shared-core placement pairs producers on one core, and a producer that loses a claim race can
+back off, measured beside plain spinning.
+
+- Placements for several producers, `tp_runner::topo::discover_multi_placements`: the consumer on
+  the base cpu, and own cores near, own cores x-L3, shared cores, and unpinned, each producer's
+  cpu printed above the table, a placement the machine cannot give skipped with a note. One
+  producer keeps the two-thread placements, so its rows compare with every earlier run.
+- `run_stream` takes a `StreamPins`, each thread's cpu, in place of one pair and a count.
+- `MpscProducer::send_with_backoff` calls an `on_lost` closure after each lost claim race, the
+  hook `send_with` never had, since a lost race is no policy call, and `policy::backoff` spins
+  `2^lost` hints to 64. The flavor `mpsc-v3-backoff` wraps the producer so the cell and stream
+  bodies run it unchanged.
+- The user asked mid-rung how often each side waits, so the stream gained `full %` and `empty %`,
+  the sends that found the ring full and the reads that found it empty, counted in the spin
+  policy's first call, on the waiting path only. With several producers the ring is nearly always
+  empty, which answers it.
+- The design note's multi-producer bullets are rewritten from the pinned runs, the first runs'
+  one-pinned rows superseded, and tp_matrix's README describes the placements and the columns.
+
+##### fix: mpsc v3 multi matches single without a switch
+
+`Multi` runs slower than `Single` in streams that never switch, three times across CCXs at depth
+1024, where the contract is that a ring of several segments runs, while it does not switch, as a
+ring of one does. Find the cause and remove it.
+
+- Probes at one segment, one side at a time: the consumer's seal load disabled left `Multi` slow,
+  the producer's switch attempt disabled made it match `Single`. The ring is almost never full in
+  these streams, so the attempt's cost was its presence: `switch` inlined into the send loop.
+- The fix is `#[cold]` and `#[inline(never)]` on `switch`, and on a new `wake_consumer` holding
+  the producer's futex wake, the same rule for the other rare path in the send.
+- After it, `Multi` matches or beats `Single` at depths 8 to 1024 at every placement, 8.7 against
+  8.3 ns across CCXs at depth 1024 where it was 39, and beats v2. Depth 1 still favors `Single`,
+  whose ring never switches where `Multi`'s switches on nearly every message, the switch's cost
+  the contract allows.
+- The pinned multi-producer set was re-run on the fixed code, and the design note's table and
+  bullets are its rows: plain v3 at two producers on own cores near went from 54.7 to 43.3 ns,
+  and backoff now helps at four producers too.
+- A slip: a probe that disabled the seal load ran with two segments, where the consumer then
+  cannot follow a switch, and hung in the background, loading the machine until it was stopped,
+  so the probe's first rows were discarded and re-run at one segment.
+
+##### docs: the ring versions explained
+
+The README names every ring version with a sentence each, scattered through its overview, and
+nothing maps the measurement tools' flavor names to rings, so a reader cannot tell the versions
+apart or pick one.
+
+- The README gains `The ring versions`: a table per family, SPSC v0 to v4 and MPSC v0 to v3, what
+  each adds, its region, and whether another process joins it, then v3's mode and wake
+  parameters and its send entries, the tools' v3 flavors against their ring types, and which ring
+  to use from the measurements so far. The overview points at it.
+- The Todo `Producer work in the streams` records the next measurement: producers that do real
+  work between sends, where more producers should pay, ranked ahead of `MPSC claim contention`,
+  whose weight its results decide.
+
+##### feat: attachable MPSC v3 closing
+
+Closing out the cycle.
+
+- The acceptance check passed, recorded above, and the solution statement now says what was done.
+- Close-out shape: a trapezoid, the default.
+- What closing taught: the cycle's measurements kept finding what its plan had not foreseen, a
+  fence per empty look, a scheduler inside the multi-producer rows, and a switch inlined into the
+  send loop, each only once a measurement was pointed at it. The rungs the user inserted at review
+  are where the cycle's findings came from.
 
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
+[21]: #feat-attachable-mpsc-v3-opening
+[22]: #docs-mpsc-v3-design-and-restart-domains
+[23]: #feat-mpsc-v3-as-a-copy-of-v2
+[24]: #feat-mpsc-v3-control-block-and-attach
+[25]: #feat-mpsc-v3-claims-word-and-roles
+[26]: #feat-mpsc-v3-ring-release
+[27]: #feat-mpsc-v3-single-and-multi-segment-paths
+[28]: #feat-mpsc-v3-wait-and-wake
+[29]: #feat-mpsc-v3-inter-process-test
+[30]: #perf-mpsc-v3-in-the-measurement-tools
+[31]: #docs-mpsc-v3-in-the-design-note-and-guide
+[32]: #feat-attachable-mpsc-v3-closing
+[33]: #perf-mpsc-v3-in-the-demo-and-multi-producer
+[34]: #perf-pin-every-producer
+[35]: #fix-mpsc-v3-multi-matches-single-without-a-switch
+[36]: #docs-the-ring-versions-explained

@@ -17,16 +17,17 @@
 //!   L3, x-CCX, cores on different L3s, SMT, one core's two
 //!   cpus sharing its L1 and L2, and unpinned.
 //!   Every ring version runs beside it at each placement, the
-//!   `spsc1_` to `spsc4_` and `mpsc0_` to `mpsc2_` lines
-//!   (the MPSC ones by send_with closure fill), the segmented
-//!   rings at one segment, plus a 2-producer + 1-consumer
-//!   line: the shape only the MPSC ring can run.
+//!   `spsc1_` to `spsc4_`, `mpsc0_` to `mpsc3_`, and `mpsc3s_`
+//!   lines (the MPSC ones by send_with closure fill, `mpsc3s_`
+//!   v3's `Single` mode), the segmented rings at one segment,
+//!   plus 2-producer + 1-consumer lines for mpsc v1 to v3: the
+//!   shape only the MPSC rings can run.
 //! - The depth sweep: the ring flavors again at every
 //!   placement and at depths 1, 2, 8, and 64, one table per
 //!   placement, so depth and protocol can be told apart, the
 //!   segmented rings again at one segment.
 //! - The segment stress, last, one table with a legend: spsc-v3,
-//!   spsc-v4, and mpsc-v2 at four segments, a burst that fills every
+//!   spsc-v4, mpsc-v2, and mpsc-v3 at four segments, a burst that fills every
 //!   segment and drains on one thread, a lagging consumer at
 //!   each placement, and the cost of one switch measured at
 //!   depth 1 as a difference at equal capacity, 32 segments of
@@ -549,6 +550,8 @@ spsc_loops!(
 /// - `segmented $segments`: a v2 ring of `$segments` segments,
 ///   each `$depth` slots, over a pool holding exactly those
 ///   segments.
+/// - `v3 $mode, $segments`: a v3 ring of that mode, its roles
+///   claimed, over a pool holding exactly its segments.
 macro_rules! mpsc_pair {
     ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
      single $ring:path, $size:path) => {
@@ -570,6 +573,30 @@ macro_rules! mpsc_pair {
             zc_ring_x1::mpsc::v2::MpscRing::init(&mut $pool, slot, $depth, $segments)
                 .unwrap() // OK: the pool holds exactly the segments, sized by segment_size
                 .split();
+    };
+    ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
+     v3 $mode:ty, $segments:expr) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let segments: u32 = $segments;
+        let buf = zc_ring_x1::mpsc::v3::segment_size(slot, $depth);
+        let mut $store =
+            region(size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * segments as u64);
+        let mut $pool = Pool::init($store.as_mut_bytes(), buf as u32, segments)
+            .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
+        let ring = zc_ring_x1::mpsc::v3::MpscRing::<$mode>::init(&mut $pool, slot, $depth, segments)
+            .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
+        let $producer = ring.claim_producer().unwrap(); // OK: a fresh ring holds no role
+        let mut $consumer = ring.claim_consumer().unwrap(); // OK: a fresh ring holds no role
+    };
+}
+
+/// The v3 `Multi` pair under the stress macros' `segmented`
+/// spelling: the same arguments, bound through `mpsc_pair!`'s
+/// `v3` arm.
+macro_rules! mpsc3_pair {
+    ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
+     segmented $segments:expr) => {
+        mpsc_pair!($producer, $consumer, $store, $pool, $depth, v3 zc_ring_x1::mpsc::v3::Multi, $segments);
     };
 }
 
@@ -661,6 +688,18 @@ mpsc_loops!(
     mpsc2_ring_one_msg_2t,
     segmented SWEEP_SEGMENTS
 );
+mpsc_loops!(
+    mpsc3_ring_one_msg_1t,
+    mpsc3_ring_one_msg_2t,
+    v3 zc_ring_x1::mpsc::v3::Multi,
+    SWEEP_SEGMENTS
+);
+mpsc_loops!(
+    mpsc3s_ring_one_msg_1t,
+    mpsc3s_ring_one_msg_2t,
+    v3 zc_ring_x1::mpsc::v3::Single,
+    1
+);
 
 /// Move COUNT messages (COUNT/2 per producer) from two
 /// producer threads into one consumer, the line the SPSC
@@ -703,6 +742,92 @@ fn mpsc1_ring_one_msg_3t() -> f64 {
         });
     });
     start.elapsed().as_secs_f64()
+}
+
+/// Two producers, unpinned, each sending COUNT/2 messages by
+/// `send(producer, seq, p)`, into one consumer that reads COUNT by
+/// `recv`, which returns `(seq, p)` with its slot released, and
+/// asserts each producer's order. Returns elapsed seconds, the
+/// 3t lines' shared body.
+fn two_producers_3t<P: Send>(
+    producers: [P; 2],
+    send: fn(&P, u64, u64),
+    mut recv: impl FnMut() -> (u64, u64) + Send,
+) -> f64 {
+    let start = Instant::now();
+    std::thread::scope(|s| {
+        for (p, producer) in producers.into_iter().enumerate() {
+            s.spawn(move || {
+                for i in 0..COUNT / 2 {
+                    send(&producer, i, p as u64);
+                }
+            });
+        }
+        s.spawn(move || {
+            let mut next = [0u64; 2];
+            for _ in 0..COUNT {
+                let (seq, p) = recv();
+                assert_eq!(seq, next[p as usize], "per-producer order broken");
+                next[p as usize] += 1;
+            }
+        });
+    });
+    start.elapsed().as_secs_f64()
+}
+
+/// [`mpsc1_ring_one_msg_3t`]'s shape over MPSC v2 at one segment,
+/// its producer cloned.
+fn mpsc2_ring_one_msg_3t() -> f64 {
+    mpsc_pair!(producer, consumer, store, pool, DEPTH, segmented SWEEP_SEGMENTS);
+    two_producers_3t(
+        [producer.clone(), producer],
+        |producer, i, p| {
+            producer
+                .send_with::<Msg>(policy::spin, |m| {
+                    m.seq = i;
+                    m.val = p;
+                })
+                .unwrap(); // OK: policy::spin never gives up
+        },
+        || {
+            let msg = consumer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
+            let got = (msg.seq, msg.val);
+            msg.release();
+            got
+        },
+    )
+}
+
+/// [`mpsc1_ring_one_msg_3t`]'s shape over MPSC v3 in mode `M`,
+/// one segment, two producer roles claimed.
+fn mpsc3_ring_one_msg_3t<M: zc_ring_x1::mpsc::v3::Mode>() -> f64 {
+    let slot = CACHE_LINE_SIZE as u32;
+    let buf = zc_ring_x1::mpsc::v3::segment_size(slot, DEPTH);
+    let mut store = region(size_of::<zc_ring_x1::PoolHeader>() as u64 + buf);
+    let mut pool = Pool::init(store.as_mut_bytes(), buf as u32, 1).unwrap(); // OK: the region is sized for exactly the segment and line-aligned
+    let ring = zc_ring_x1::mpsc::v3::MpscRing::<M>::init(&mut pool, slot, DEPTH, 1).unwrap(); // OK: the pool holds exactly the segment, sized by segment_size
+    let producers = [
+        ring.claim_producer().unwrap(), // OK: a fresh ring holds no role
+        ring.claim_producer().unwrap(), // OK: the most producers is u16::MAX
+    ];
+    let mut consumer = ring.claim_consumer().unwrap(); // OK: a fresh ring holds no role
+    two_producers_3t(
+        producers,
+        |producer, i, p| {
+            producer
+                .send_with::<Msg>(policy::spin, |m| {
+                    m.seq = i;
+                    m.val = p;
+                })
+                .unwrap(); // OK: policy::spin never gives up
+        },
+        move || {
+            let msg = consumer.reserve_slot_with::<Msg>(policy::spin).unwrap(); // OK: policy::spin never gives up
+            let got = (msg.seq, msg.val);
+            msg.release();
+            got
+        },
+    )
 }
 
 /// The composed flow on one thread pinned to the base cpu: one pool
@@ -1059,7 +1184,7 @@ struct StreamFlavor {
 
 /// The flavors the sweep runs, in table order, named `xpsc-vN`
 /// after their module paths.
-const STREAM_FLAVORS: [StreamFlavor; 8] = [
+const STREAM_FLAVORS: [StreamFlavor; 10] = [
     StreamFlavor {
         name: "spsc-v0",
         min_depth: 1,
@@ -1107,6 +1232,18 @@ const STREAM_FLAVORS: [StreamFlavor; 8] = [
         min_depth: 1,
         one_t: mpsc2_ring_one_msg_1t,
         two_t: mpsc2_ring_one_msg_2t,
+    },
+    StreamFlavor {
+        name: "mpsc-v3",
+        min_depth: 1,
+        one_t: mpsc3_ring_one_msg_1t,
+        two_t: mpsc3_ring_one_msg_2t,
+    },
+    StreamFlavor {
+        name: "mpsc-v3-single",
+        min_depth: 1,
+        one_t: mpsc3s_ring_one_msg_1t,
+        two_t: mpsc3s_ring_one_msg_2t,
     },
 ];
 
@@ -1343,12 +1480,15 @@ macro_rules! spsc4_pair {
 burst_1t!(spsc3_burst_1t, spsc_send, ring_recv, spsc_pair);
 burst_1t!(spsc4_burst_1t, spsc_send, ring_recv, spsc4_pair);
 burst_1t!(mpsc2_burst_1t, mpsc_send, ring_recv, mpsc_pair);
+burst_1t!(mpsc3_burst_1t, mpsc_send, ring_recv, mpsc3_pair);
 lagging_2t!(spsc3_lagging_2t, spsc_send, ring_recv, spsc_pair);
 lagging_2t!(spsc4_lagging_2t, spsc_send, ring_recv, spsc4_pair);
 lagging_2t!(mpsc2_lagging_2t, mpsc_send, ring_recv, mpsc_pair);
+lagging_2t!(mpsc3_lagging_2t, mpsc_send, ring_recv, mpsc3_pair);
 stream_2t!(spsc3_stream_2t, spsc_send, ring_recv, spsc_pair);
 stream_2t!(spsc4_stream_2t, spsc_send, ring_recv, spsc4_pair);
 stream_2t!(mpsc2_stream_2t, mpsc_send, ring_recv, mpsc_pair);
+stream_2t!(mpsc3_stream_2t, mpsc_send, ring_recv, mpsc3_pair);
 
 /// The two shapes the switch cost is a difference between: the
 /// same 32 slots as one segment, which never switches, and as 32
@@ -1407,7 +1547,7 @@ fn legend(text: &str) {
 /// at depth 1, single-threaded and streaming across cores.
 fn segment_stress(placements: &[Placement]) {
     println!(
-        "segment stress: {} messages per line, spsc-v3, spsc-v4, and mpsc-v2 at {STRESS_SEGMENTS} segments \
+        "segment stress: {} messages per line, spsc-v3, spsc-v4, mpsc-v2, and mpsc-v3 at {STRESS_SEGMENTS} segments \
          of {DEPTH} slots, then the switch cost at depth 1",
         commas(COUNT)
     );
@@ -1421,6 +1561,7 @@ fn segment_stress(placements: &[Placement]) {
         ),
         ("spsc4 burst 1t", spsc4_burst_1t),
         ("mpsc2 burst 1t", mpsc2_burst_1t),
+        ("mpsc3 burst 1t", mpsc3_burst_1t),
     ] {
         let (secs, used, (sent, seen)) = run(STRESS_SEGMENTS, DEPTH);
         assert_eq!(sent, seen, "{line}: switch counts differ");
@@ -1446,6 +1587,7 @@ fn segment_stress(placements: &[Placement]) {
             ),
             ("spsc4 lagging 2t", spsc4_lagging_2t),
             ("mpsc2 lagging 2t", mpsc2_lagging_2t),
+            ("mpsc3 lagging 2t", mpsc3_lagging_2t),
         ] {
             let (used, (sent, seen)) = run(*pin, STRESS_SEGMENTS, DEPTH);
             assert_eq!(sent, seen, "{line}: switch counts differ");
@@ -1464,6 +1606,7 @@ fn segment_stress(placements: &[Placement]) {
     switch_cost(&mut rows, "spsc3 burst 1t", &one_t, spsc3_burst_1t);
     switch_cost(&mut rows, "spsc4 burst 1t", &one_t, spsc4_burst_1t);
     switch_cost(&mut rows, "mpsc2 burst 1t", &one_t, mpsc2_burst_1t);
+    switch_cost(&mut rows, "mpsc3 burst 1t", &one_t, mpsc3_burst_1t);
     // The stream across cores at the farthest placement the
     // machine has, x-CCX, else CCX, else unpinned.
     let Placement {
@@ -1492,6 +1635,12 @@ fn segment_stress(placements: &[Placement]) {
         "mpsc2 stream 2t",
         &placement,
         |segments, depth| mpsc2_stream_2t(pin, segments, depth),
+    );
+    switch_cost(
+        &mut rows,
+        "mpsc3 stream 2t",
+        &placement,
+        |segments, depth| mpsc3_stream_2t(pin, segments, depth),
     );
     stress_table(&rows);
     println!();
@@ -1545,7 +1694,7 @@ fn depth_sweep(two_t: &[Placement]) {
     }
     let depth_list: Vec<String> = DEPTHS.iter().map(|d| d.to_string()).collect();
     println!(
-        "depth sweep: {} messages per cell, ns/msg at depths {}, spsc-v3, spsc-v4, and mpsc-v2 with {SWEEP_SEGMENTS} segment(s)",
+        "depth sweep: {} messages per cell, ns/msg at depths {}, spsc-v3, spsc-v4, mpsc-v2, and mpsc-v3 with {SWEEP_SEGMENTS} segment(s)",
         commas(COUNT),
         depth_list.join(", ")
     );
@@ -1612,6 +1761,14 @@ fn two_t_lines(label: &str, pin: PinPair) {
     report(
         &format!("mpsc2_ring_one_msg_2t ({label}):"),
         mpsc2_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("mpsc3_ring_one_msg_2t ({label}):"),
+        mpsc3_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("mpsc3s_ring_one_msg_2t ({label}):"),
+        mpsc3s_ring_one_msg_2t(pin, DEPTH),
     );
     report(
         &format!("spsc_ring_one_pool_msg_2t ({label}):"),
@@ -1699,6 +1856,14 @@ fn main() {
         mpsc2_ring_one_msg_1t(DEPTH),
     );
     report(
+        &format!("mpsc3_ring_one_msg_1t (core {base}):"),
+        mpsc3_ring_one_msg_1t(DEPTH),
+    );
+    report(
+        &format!("mpsc3s_ring_one_msg_1t (core {base}):"),
+        mpsc3s_ring_one_msg_1t(DEPTH),
+    );
+    report(
         &format!("spsc_ring_one_pool_msg_1t (core {base}):"),
         spsc_ring_one_pool_msg_1t(),
     );
@@ -1714,10 +1879,22 @@ fn main() {
     }
 
     // Three threads (2 producers + 1 consumer): the
-    // multi-producer line only the MPSC ring can run.
+    // multi-producer lines only the MPSC rings can run.
     report(
         "mpsc1_ring_one_msg_3t (2p+1c unpinned):",
         mpsc1_ring_one_msg_3t(),
+    );
+    report(
+        "mpsc2_ring_one_msg_3t (2p+1c unpinned):",
+        mpsc2_ring_one_msg_3t(),
+    );
+    report(
+        "mpsc3_ring_one_msg_3t (2p+1c unpinned):",
+        mpsc3_ring_one_msg_3t::<zc_ring_x1::mpsc::v3::Multi>(),
+    );
+    report(
+        "mpsc3s_ring_one_msg_3t (2p+1c unpinned):",
+        mpsc3_ring_one_msg_3t::<zc_ring_x1::mpsc::v3::Single>(),
     );
 
     // The depth sweep, the ring flavors at every placement.

@@ -46,7 +46,17 @@ enum FlavorArg {
     /// The MPSC v2 ring of segments at 1p/1c (same surface,
     /// `--segments` per ring, the depth each segment's)
     MpscV2,
-    /// All seven, in that order
+    /// The MPSC v3 attachable ring, `Multi` mode, at 1p/1c (same
+    /// surface, `--segments` per ring)
+    MpscV3,
+    /// The MPSC v3 ring in its `Single` mode, one segment
+    MpscV3Single,
+    /// The MPSC v3 ring, `Multi` mode, waking with a futex
+    MpscV3Futex,
+    /// The MPSC v3 ring, `Multi` mode, backing off after a lost
+    /// claim race
+    MpscV3Backoff,
+    /// All of them, in that order
     All,
 }
 
@@ -107,6 +117,10 @@ fn main() {
         FlavorArg::MpscV0 => &[Flavor::MpscV0],
         FlavorArg::MpscV1 => &[Flavor::MpscV1],
         FlavorArg::MpscV2 => &[Flavor::MpscV2],
+        FlavorArg::MpscV3 => &[Flavor::MpscV3],
+        FlavorArg::MpscV3Single => &[Flavor::MpscV3Single],
+        FlavorArg::MpscV3Futex => &[Flavor::MpscV3Futex],
+        FlavorArg::MpscV3Backoff => &[Flavor::MpscV3Backoff],
         FlavorArg::All => &FLAVORS,
     };
     for &flavor in flavors {
@@ -157,7 +171,7 @@ fn main() {
             ("RTs", "round trips completed in the duration"),
             (
                 "segment switches",
-                "spsc-v3, spsc-v4, and mpsc-v2 only: switches across both rings, and per round trip",
+                "spsc-v3, spsc-v4, mpsc-v2, and mpsc-v3 only: switches across both rings, and per round trip",
             ),
         ],
     );

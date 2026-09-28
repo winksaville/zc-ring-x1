@@ -13,6 +13,20 @@
 //! - Everything is hard-coded, the path, the geometry, the ring's
 //!   first segment, and the holder ids, since the one aim is to
 //!   show a message crossing a process boundary intact.
+//! - The MPSC mode, over an `mpsc::v3` ring in its own region file,
+//!   shows producers and consumers coming and going across
+//!   processes:
+//!   - `zcr-test-ipm mpsc-consumer new|join <messages>` creates the
+//!     region and the ring (`new`) or attaches (`join`), claims the
+//!     consumer, prints `ready`, reads `messages` messages, sleeping
+//!     on an empty ring, checks each checksum and each producer's
+//!     order, releases the role, and prints each producer's first
+//!     and last sequence number.
+//!   - `zcr-test-ipm mpsc-producer <id> <count>` attaches, claims a
+//!     producer, sends `count` messages numbered from 0, sleeping on
+//!     a full ring, and releases.
+//!   - `zcr-test-ipm mpsc-release` attaches and releases the ring,
+//!     which fails while any role is held.
 
 #[cfg(target_os = "linux")]
 use std::process::ExitCode;
@@ -100,28 +114,34 @@ fn region_len() -> usize {
         + SEGMENTS as usize * zc_ring_x1::spsc::v4::segment_size(SLOT, DEPTH) as usize
 }
 
-/// Map the region file shared, creating it at its size when
-/// `create`, else opening the one the consumer made.
+/// Map the SPSC region file, as [`map_at`] does.
+#[cfg(target_os = "linux")]
+fn map(create: bool) -> Result<*mut u8, String> {
+    map_at(PATH, region_len(), create)
+}
+
+/// Map the region file at `path`, `len` bytes, shared, creating it
+/// at its size when `create`, else opening the one a consumer
+/// made.
 ///
 /// - The mapping is never unmapped: it lives until the process
 ///   exits, so the pool and ring over it may borrow it for
 ///   `'static`.
 #[cfg(target_os = "linux")]
-fn map(create: bool) -> Result<*mut u8, String> {
+fn map_at(path: &str, len: usize, create: bool) -> Result<*mut u8, String> {
     use std::os::fd::AsRawFd;
-    let len = region_len();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(create)
         .truncate(create)
-        .open(PATH)
-        .map_err(|e| format!("open {PATH}: {e}"))?;
+        .open(path)
+        .map_err(|e| format!("open {path}: {e}"))?;
     if create {
         file.set_len(len as u64)
-            .map_err(|e| format!("size {PATH}: {e}"))?;
+            .map_err(|e| format!("size {path}: {e}"))?;
     } else if (file.metadata().map_err(|e| e.to_string())?.len() as usize) < len {
-        return Err(format!("{PATH} is smaller than the region"));
+        return Err(format!("{path} is smaller than the region"));
     }
     // SAFETY: a fresh mapping of `len` bytes of an open file the
     // process may read and write, shared so the other process
@@ -137,7 +157,7 @@ fn map(create: bool) -> Result<*mut u8, String> {
         )
     };
     if base == libc::MAP_FAILED {
-        return Err(format!("mmap {PATH}: {}", std::io::Error::last_os_error()));
+        return Err(format!("mmap {path}: {}", std::io::Error::last_os_error()));
     }
     Ok(base as *mut u8)
 }
@@ -217,13 +237,201 @@ fn producer() -> Result<(), String> {
     Ok(())
 }
 
+/// The MPSC region file.
+#[cfg(target_os = "linux")]
+const MPSC_PATH: &str = "/dev/shm/zcr-test-ipm-mpsc";
+
+/// Segments in the MPSC ring, each a buffer of the pool, which
+/// holds exactly these.
+#[cfg(target_os = "linux")]
+const MPSC_SEGMENTS: u32 = 3;
+
+/// The MPSC ring: segments switched, and sleeps on a futex whose
+/// timeout turns a dead peer into a poll.
+#[cfg(target_os = "linux")]
+type MpscRing = zc_ring_x1::mpsc::v3::MpscRing<
+    'static,
+    zc_ring_x1::mpsc::v3::Multi,
+    zc_ring_x1::wake::Futex<10>,
+>;
+
+/// An MPSC message: its producer, its number in that producer's
+/// stream, a value, and a checksum over all three.
+#[cfg(target_os = "linux")]
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+struct MpscMsg {
+    producer: u64,
+    seq: u64,
+    value: u64,
+    checksum: u64,
+}
+
+/// The checksum of an MPSC message's three fields.
+#[cfg(target_os = "linux")]
+fn mpsc_checksum(producer: u64, seq: u64, value: u64) -> u64 {
+    checksum(producer ^ checksum(seq ^ checksum(value)))
+}
+
+/// Bytes the MPSC region holds: the pool's header and its segments.
+#[cfg(target_os = "linux")]
+fn mpsc_region_len() -> usize {
+    size_of::<zc_ring_x1::PoolHeader>()
+        + MPSC_SEGMENTS as usize * zc_ring_x1::mpsc::v3::segment_size(SLOT, DEPTH) as usize
+}
+
+/// Attach the MPSC region's pool and ring.
+#[cfg(target_os = "linux")]
+fn mpsc_attach() -> Result<MpscRing, String> {
+    let base = map_at(MPSC_PATH, mpsc_region_len(), false)?;
+    // SAFETY: the mapping is the region's length, shared and
+    // writable, never unmapped, and this handle never allocates.
+    let pool = unsafe { zc_ring_x1::Pool::attach(base, mpsc_region_len()) }
+        .map_err(|e| format!("pool: {e:?}"))?;
+    // The pool handle lives as long as the process, as the
+    // mapping does.
+    let pool = Box::leak(Box::new(pool));
+    // SAFETY: FIRST_SEGMENT is the ring's segment 0 in this pool,
+    // asserted by the consumer that made it, and its segments are
+    // the ring's until a release, after which the magic is gone.
+    unsafe { MpscRing::attach(pool, FIRST_SEGMENT) }.map_err(|e| format!("ring: {e:?}"))
+}
+
+/// Create (`new`) or attach (`join`) the MPSC ring, claim the
+/// consumer, read `messages` messages, and release.
+#[cfg(target_os = "linux")]
+fn mpsc_consumer(how: &str, messages: u64) -> Result<(), String> {
+    let ring = match how {
+        "new" => {
+            let base = map_at(MPSC_PATH, mpsc_region_len(), true)?;
+            // SAFETY: the mapping is the region's length,
+            // page-aligned, never unmapped, and this process's only
+            // view of it until another attaches.
+            let region = unsafe { core::slice::from_raw_parts_mut(base, mpsc_region_len()) };
+            let seg = zc_ring_x1::mpsc::v3::segment_size(SLOT, DEPTH) as u32;
+            let pool = zc_ring_x1::Pool::init(region, seg, MPSC_SEGMENTS)
+                .map_err(|e| format!("pool: {e:?}"))?;
+            let pool = Box::leak(Box::new(pool));
+            let ring = MpscRing::init(pool, SLOT, DEPTH, MPSC_SEGMENTS)
+                .map_err(|e| format!("ring: {e:?}"))?;
+            if ring.first_segment() != FIRST_SEGMENT {
+                return Err(format!(
+                    "ring's first segment is {}, not {FIRST_SEGMENT}",
+                    ring.first_segment()
+                ));
+            }
+            ring
+        }
+        "join" => mpsc_attach()?,
+        _ => return Err("mpsc-consumer takes new or join".to_string()),
+    };
+    let mut cons = ring
+        .claim_consumer()
+        .map_err(|e| format!("claim consumer: {e:?}"))?;
+    println!("ready");
+    use std::io::Write;
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    // Each producer's first and last number seen, in order.
+    let mut seen: std::collections::BTreeMap<u64, (u64, u64)> = Default::default();
+    let deadline = std::time::Instant::now() + WAIT;
+    for n in 0..messages {
+        let msg = cons
+            .reserve_slot_wait::<MpscMsg>(|_| std::time::Instant::now() < deadline)
+            .map_err(|_| format!("message {n} not within {WAIT:?}"))?;
+        let (p, seq, value, sum) = (msg.producer, msg.seq, msg.value, msg.checksum);
+        msg.release();
+        if sum != mpsc_checksum(p, seq, value) {
+            return Err(format!("message {n}: bad checksum from producer {p}"));
+        }
+        match seen.get_mut(&p) {
+            Some((_, last)) if seq == *last + 1 => *last = seq,
+            Some((_, last)) => {
+                return Err(format!("producer {p}: {seq} after {last}"));
+            }
+            None => {
+                seen.insert(p, (seq, seq));
+            }
+        }
+    }
+    cons.release();
+    for (p, (first, last)) in &seen {
+        println!("received producer={p} first={first} last={last}");
+    }
+    println!("received {messages} ok");
+    Ok(())
+}
+
+/// Attach the MPSC ring, claim a producer, send `count` messages
+/// numbered from 0, and release.
+#[cfg(target_os = "linux")]
+fn mpsc_producer(id: u64, count: u64) -> Result<(), String> {
+    let ring = mpsc_attach()?;
+    let prod = ring
+        .claim_producer()
+        .map_err(|e| format!("claim producer: {e:?}"))?;
+    let deadline = std::time::Instant::now() + WAIT;
+    for seq in 0..count {
+        let value = random() ^ seq;
+        prod.send_wait::<MpscMsg>(
+            |_| std::time::Instant::now() < deadline,
+            |m| {
+                m.producer = id;
+                m.seq = seq;
+                m.value = value;
+                m.checksum = mpsc_checksum(id, seq, value);
+            },
+        )
+        .map_err(|_| format!("message {seq} not sent within {WAIT:?}"))?;
+    }
+    prod.release();
+    println!("sent producer={id} count={count}");
+    Ok(())
+}
+
+/// Attach the MPSC ring and release it.
+#[cfg(target_os = "linux")]
+fn mpsc_release() -> Result<(), String> {
+    let base = map_at(MPSC_PATH, mpsc_region_len(), false)?;
+    // SAFETY: as in mpsc_attach, and the release frees buffers,
+    // which any process may do.
+    let pool = unsafe { zc_ring_x1::Pool::attach(base, mpsc_region_len()) }
+        .map_err(|e| format!("pool: {e:?}"))?;
+    // SAFETY: as in mpsc_attach.
+    let ring =
+        unsafe { MpscRing::attach(&pool, FIRST_SEGMENT) }.map_err(|e| format!("ring: {e:?}"))?;
+    ring.release_ring(&pool)
+        .map_err(|e| format!("release: {e:?}"))?;
+    println!("released");
+    Ok(())
+}
+
+/// The `n`th argument as a number.
+#[cfg(target_os = "linux")]
+fn arg_num(n: usize) -> Result<u64, String> {
+    std::env::args()
+        .nth(n)
+        .ok_or_else(|| format!("argument {n} missing"))?
+        .parse()
+        .map_err(|e| format!("argument {n}: {e}"))
+}
+
 #[cfg(target_os = "linux")]
 fn main() -> ExitCode {
     let role = std::env::args().nth(1);
     let run = match role.as_deref() {
         Some("consumer") => consumer(),
         Some("producer") => producer(),
-        _ => Err("usage: zcr-test-ipm consumer | producer".to_string()),
+        Some("mpsc-consumer") => std::env::args()
+            .nth(2)
+            .ok_or_else(|| "mpsc-consumer takes new or join".to_string())
+            .and_then(|how| mpsc_consumer(&how, arg_num(3)?)),
+        Some("mpsc-producer") => arg_num(2).and_then(|id| mpsc_producer(id, arg_num(3)?)),
+        Some("mpsc-release") => mpsc_release(),
+        _ => Err(
+            "usage: zcr-test-ipm consumer | producer | mpsc-consumer new|join <messages> \
+             | mpsc-producer <id> <count> | mpsc-release"
+                .to_string(),
+        ),
     };
     match run {
         Ok(()) => ExitCode::SUCCESS,

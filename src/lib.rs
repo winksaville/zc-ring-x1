@@ -53,6 +53,7 @@ pub mod policy;
 pub mod pool;
 mod registry;
 pub mod spsc;
+pub mod wake;
 
 #[cfg(target_has_atomic = "32")]
 pub use mpsc::{MpscConsumer, MpscHeader, MpscProducer, MpscReadSlot, MpscRing, mpsc_region_size};
@@ -150,7 +151,8 @@ pub enum Error {
     /// header disagrees with the control block.
     BadSegment,
     /// A ring of segments: the role asked for is already held, in
-    /// this process or another.
+    /// this process or another, or every producer role an MPSC v3
+    /// ring allows is.
     RoleTaken,
     /// A ring of segments: a claim's holder id is `0` or
     /// `u32::MAX`, the role word's two values that name no holder.
@@ -159,6 +161,18 @@ pub enum Error {
     /// ring does not have, or a takeover's scan finds seq words
     /// the ring could not have written.
     BadCheckpoint,
+    /// MPSC v3: a claim on a ring its release has closed, or a
+    /// second release of it.
+    RingClosed,
+    /// MPSC v3: a release of a ring whose roles are not all given
+    /// back.
+    RingInUse,
+    /// MPSC v3: a ring's most producers is `0`, which no producer
+    /// could claim under.
+    BadMaxProducers,
+    /// MPSC v3, attach: the ring was built for the other segment
+    /// mode, `Single` or `Multi`.
+    BadMode,
 }
 
 /// Check `T` fits a slot, called once per `reserve_slot_with`
