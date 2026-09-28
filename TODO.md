@@ -80,6 +80,7 @@ no side can sleep until the other acts.
 - [perf: mpsc v3 in the demo and multi-producer][33] (done)
 - [perf: pin every producer][34] (done)
 - [fix: mpsc v3 multi matches single without a switch][35] (done)
+- [docs: the ring versions explained][36] (done)
 - [feat: attachable MPSC v3 closing][32]
 
 #### Deliberation
@@ -117,6 +118,9 @@ no side can sleep until the other acts.
     design itself is the new Todo `MPSC claim contention`.
   - The user's contract for the fix: a ring of several segments runs, while it does not switch,
     no differently from a ring of one.
+- `docs: the ring versions explained` inserted before the closing, the user's call on
+  2026-09-28, with the Todo `Producer work in the streams`. The push is asked for, since no go
+  covers it yet.
 
 #### Ladder details
 
@@ -352,6 +356,20 @@ ring of one does. Find the cause and remove it.
 - A slip: a probe that disabled the seal load ran with two segments, where the consumer then
   cannot follow a switch, and hung in the background, loading the machine until it was stopped,
   so the probe's first rows were discarded and re-run at one segment.
+
+##### docs: the ring versions explained
+
+The README names every ring version with a sentence each, scattered through its overview, and
+nothing maps the measurement tools' flavor names to rings, so a reader cannot tell the versions
+apart or pick one.
+
+- The README gains `The ring versions`: a table per family, SPSC v0 to v4 and MPSC v0 to v3, what
+  each adds, its region, and whether another process joins it, then v3's mode and wake
+  parameters and its send entries, the tools' v3 flavors against their ring types, and which ring
+  to use from the measurements so far. The overview points at it.
+- The Todo `Producer work in the streams` records the next measurement: producers that do real
+  work between sends, where more producers should pay, ranked ahead of `MPSC claim contention`,
+  whose weight its results decide.
 
 ##### feat: attachable MPSC v3 closing
 
@@ -611,6 +629,41 @@ has the rows.
 - A mark to beat: the rows in the design note, `tp-stream`, 3900X, 2026-09-27, 0.18.5-13.
 - From `feat: attachable MPSC v3`.
 
+### Producer work in the streams
+
+The streams' producers do nothing between sends, so every MPSC measurement is of the claim word
+alone, and a second producer costs more than it adds: 108M messages a second from one producer,
+19M from two on cores of their own, 5.6M from three, the user's runs of 2026-09-28. Real producers
+work between sends, and the more work, the more producers should pay, until the claim word or the
+consumer binds.
+
+- Real work, not a timed spin: `--work-bytes K`, each producer fills a K-byte payload in place and
+  checksums it, the zero-copy write doing the work, with `--slot-lines` for slots big enough to
+  hold it.
+- `--verify on|off`: the consumer recomputes each checksum or only reads the message, so the
+  consumer can be kept fast to show the producers' scaling, or made to bind, where `full %` rises
+  and spin-then-sleep on a full ring finally has a case.
+- A model to test: per message, W the producer's work, C its claim and commit, T the claim word's
+  handoff, a cache line's transfer, and R the consumer's cost. Throughput is about the least of
+  N / (W + C), 1 / T, and 1 / R, so producers pay until N times T reaches W + C.
+- Predictions, on record before measuring: at small K more producers still lose, at a few hundred
+  bytes two to four beat one, at large K throughput scales with N until the claim word binds,
+  sooner across L3s than within one, shared cores best, and with `--verify on` the consumer binds
+  first.
+- Placements named by where the producers sit, all in one L3 or split across L3s: at three
+  producers `own cores near` turned mixed, two in the consumer's L3 and one outside, and ran
+  slower than `own cores x-L3`, all three in one other L3, 179 against 87 ns a message, since
+  what matters is whether the producers share an L3 with each other.
+- With the consumer binding, producers finally sleep on a full ring, so measure the wake there:
+  `wake_producers` wakes every sleeper at each half segment of releases, `FUTEX_WAKE` at
+  `i32::MAX`, and most go back to sleep, against waking one producer per freed slot, a count
+  passed through `Wake::wake`, a stranded sleeper covered by the next check or its timeout. Under
+  producers that do no work the ring never fills, so the wake has not been measured.
+- Then the same workload in `zcr-test-ipm`'s MPSC mode, the scaling shown between processes.
+- Ranked ahead of `MPSC claim contention`, whose weight it decides: if producers with real work
+  scale, the claim word matters only at small messages.
+- From `feat: attachable MPSC v3`, on 2026-09-28.
+
 ### MPSC claim contention
 
 Every MPSC ring, v0 through v3, claims a slot by a CAS loop on one shared word, and with producers
@@ -842,3 +895,4 @@ _None._
 [33]: #perf-mpsc-v3-in-the-demo-and-multi-producer
 [34]: #perf-pin-every-producer
 [35]: #fix-mpsc-v3-multi-matches-single-without-a-switch
+[36]: #docs-the-ring-versions-explained

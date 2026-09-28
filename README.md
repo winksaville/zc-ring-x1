@@ -59,13 +59,15 @@ segments with `attach`: its segment 0 carries a control block,
 its endpoints keep offsets, and a second process joins through
 the pool and claims its role for a named holder, held once
 anywhere ([SPSC v4: attachable ring](#spsc-v4-attachable-ring)).
-The multi-producer sibling is
+The multi-producer siblings are
 `mpsc::v2::MpscRing`, the same ring of segments with any number
-of producers sending through a fill closure, reached by path
+of producers sending through a fill closure, and `mpsc::v3`, v2
+attachable with counted roles and waiting, both reached by path
 since the crate-root `MpscRing` is still the single-region
-`mpsc::v1`. How to use the two segmented rings from a pool to
-two threads, with two complete programs, is the
-[user guide](notes/user-guide.md).
+`mpsc::v1`. Every version, what it adds, and which to use is
+[The ring versions](#the-ring-versions). How to use the
+segmented rings from a pool to two threads, with complete
+programs, is the [user guide](notes/user-guide.md).
 
 ```rust
 use zc_ring_x1::{Pool, PoolHeader, Ring};
@@ -103,6 +105,69 @@ segmented rings and between processes for the single-region
 ones, where attaching to an existing shared-memory region is
 `unsafe` (see `spsc::v2::Ring::attach`). Planned hardening and
 follow-ons are tracked in [TODO.md](TODO.md).
+
+## The ring versions
+
+Every version is a live module, reached by its path, so each is measured beside the others, and
+the crate root's `Ring` and `MpscRing` name the current defaults. Each version is a sibling of the
+one before it, not a replacement: it changes one idea and keeps the rest. The design note's section
+for each has the why and the measurements.
+
+SPSC, one producer and one consumer:
+
+| Version | What it is | Region | Joined from another process |
+|---|---|---|---|
+| `spsc::v0` | the first ring: a head and a tail index, each side polling the other's | one region | `attach` |
+| `spsc::v1` | a seq word per slot in an array, so each side reads slot lines and its own index | one region | `attach` |
+| `spsc::v2` | the seq word moved into its slot, one line per message | one region | `attach` |
+| `spsc::v3`, the crate's `Ring` | v2's slots over a ring of segments from a pool, the spare segments taking a producer that runs ahead | segments | no |
+| `spsc::v4` | v3 with a control block, so a process joins through the pool, and roles claimed by a named holder, released, and taken over | segments | `attach` and role claims |
+
+MPSC, any number of producers and one consumer, a producer claiming its slot by a CAS on a shared
+claim word and filling it through a closure:
+
+| Version | What it is | Region | Joined from another process |
+|---|---|---|---|
+| `mpsc::v0` | Vyukov's bounded queue, depth 2 and up | one region | `attach` |
+| `mpsc::v1`, the crate's `MpscRing` | v0 with seq values that also work at depth 1 | one region | `attach` |
+| `mpsc::v2` | v1's claim over a ring of segments, the claim word doubling as the seal | segments | no |
+| `mpsc::v3` | v2 with a control block, counted roles, the ring's release, compile-time modes, and waiting | segments | `attach` and role claims |
+
+`mpsc::v3` in more detail, the one ring that takes type parameters, `MpscRing<'a, M, W>`:
+
+- The mode `M`: `Multi`, v2's switching over up to 32 segments, or `Single`, one segment, whose
+  code has no switch path at all. While a `Multi` ring does not switch, it runs as fast as a
+  `Single` one.
+- The wake `W`: `NoWake`, where a wait is a spin, or `Futex` on Linux, where `send_wait` and
+  `reserve_slot_wait` sleep in the kernel until the other side acts. `NoWake` compiles every wake
+  check out.
+- Roles are counted, not named: one consumer and producers up to a most, each claimed and
+  released by one CAS, and a holder that dies is recovered by restarting the set the ring
+  belongs to, not by a takeover.
+- Producers send with `send_with`, spinning or giving up under a policy, `send_with_backoff`,
+  backing off after a lost claim race, or `send_wait`, sleeping on a full ring.
+
+The measurement tools name each ring `xpsc-vN` after its path, and name the v3 variants by what
+they add:
+
+| Flavor | Ring |
+|---|---|
+| `mpsc-v3` | `MpscRing<Multi, NoWake>`, sending by `send_with` |
+| `mpsc-v3-single` | `MpscRing<Single, NoWake>` |
+| `mpsc-v3-futex` | `MpscRing<Multi, Futex>`, still spinning, so it measures the wake checks' cost with nothing asleep |
+| `mpsc-v3-backoff` | `MpscRing<Multi, NoWake>`, sending by `send_with_backoff` with `policy::backoff` |
+
+Which to use, from the measurements so far:
+
+- One producer between threads: `spsc::v2` where one region is enough, `spsc::v3` where a
+  producer runs ahead in bursts.
+- One producer between processes: `mpsc::v3` in `Single` mode, faster than `spsc::v4` at depth 8
+  in the streams, 8.9 against 13.0 ns a message on two cores of one L3, or `spsc::v4` where a dead
+  holder must be taken over rather than restarted.
+- Several producers: `mpsc::v3`, `Single` where one segment holds the traffic, and backoff when
+  producers contend. With producers doing nothing between sends a second producer costs more
+  than it adds, since every send passes through the one claim word, and how much work a
+  producer must do before more of them pay is the Todo `Producer work in the streams`.
 
 ## Message pool
 
