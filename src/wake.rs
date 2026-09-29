@@ -17,27 +17,23 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::Micros;
+use crate::Deadline;
 
-/// A word and the value it was last seen holding, before the
-/// caller's last look at what it waits for: a wait sleeps only
-/// while the word still holds it.
+/// `struct Seen` is a word and the value the word was last seen holding, read before the caller's
+/// last look at what it waits for. A wait sleeps only while the word still holds that value.
 ///
-/// - The guard against a lost wake: the waker changes the word
-///   before it wakes, so a change between the look and the sleep
-///   makes the sleep return at once, the kernel comparing and
-///   sleeping as one step.
-/// - Taken by [`load`](Seen::load), or by
-///   [`written`](Seen::written) when the caller's own
-///   read-modify-write put the value there.
+/// - The value guards against a lost wake: the waker changes the word before it wakes, so a change
+///   between the caller's look and its sleep makes the sleep return at once. The kernel compares
+///   and sleeps as one step.
+/// - A caller makes a `Seen` with [`Seen::load`], or with [`Seen::written`] when its own
+///   read-modify-write put the value in the word.
 pub struct Seen<'a> {
     word: &'a AtomicU32,
     value: u32,
 }
 
 impl<'a> Seen<'a> {
-    /// The word as a load finds it, `SeqCst`, before the caller's
-    /// look.
+    /// `Seen::load` reads the word with a `SeqCst` load, before the caller's look.
     pub fn load(word: &'a AtomicU32) -> Self {
         Seen {
             word,
@@ -45,18 +41,18 @@ impl<'a> Seen<'a> {
         }
     }
 
-    /// The word as the caller's own read-modify-write left it, its
-    /// `value` the one written.
+    /// `Seen::written` records `value` as the word's value, when the caller's own read-modify-write
+    /// wrote it there.
     pub fn written(word: &'a AtomicU32, value: u32) -> Self {
         Seen { word, value }
     }
 
-    /// The word a wait sleeps on.
+    /// `Seen::word` returns the word a wait sleeps on.
     pub fn word(&self) -> &'a AtomicU32 {
         self.word
     }
 
-    /// The value the word was seen holding.
+    /// `Seen::value` returns the value the word was seen holding.
     pub fn value(&self) -> u32 {
         self.value
     }
@@ -69,20 +65,18 @@ pub trait Wake {
     /// compiles every wake check out of the message paths.
     const WAKES: bool;
 
-    /// Sleep while the word still holds the value `seen` saw.
+    /// `wait` sleeps while the word in `seen` still holds the value `seen` recorded.
     ///
-    /// - Returns on a wake, when the word no longer holds
-    ///   `expected`, spuriously, or at the implementation's own
-    ///   timeout, and the caller looks again whichever it was.
+    /// - `wait` returns on a wake, when the word no longer holds that value, spuriously, or at the
+    ///   implementation's own timeout, and the caller looks again whichever it was.
     fn wait(seen: Seen<'_>);
 
-    /// Sleep while the word still holds the value `seen` saw, for at
-    /// most `timeout`, the caller's bound in place of the
-    /// implementation's own timeout.
+    /// `wait_until` sleeps while the word in `seen` still holds the value `seen` recorded, until
+    /// `deadline` at the latest. The caller's deadline replaces the implementation's own timeout.
     ///
-    /// - Returns as [`wait`](Wake::wait) does, and at `timeout`, so a
-    ///   caller with a deadline sleeps on what is left of it.
-    fn wait_for(seen: Seen<'_>, timeout: Micros);
+    /// - `wait_until` returns as [`wait`](Wake::wait) does, and at `deadline`. A sleep that returns
+    ///   early sleeps again to the same deadline.
+    fn wait_until(seen: Seen<'_>, deadline: Deadline);
 
     /// Wake every sleeper on `word`.
     fn wake(word: &AtomicU32);
@@ -99,7 +93,7 @@ impl Wake for NoWake {
         core::hint::spin_loop();
     }
 
-    fn wait_for(_seen: Seen<'_>, _timeout: Micros) {
+    fn wait_until(_seen: Seen<'_>, _deadline: Deadline) {
         core::hint::spin_loop();
     }
 
@@ -121,24 +115,24 @@ impl<const TIMEOUT_MS: u32> Wake for Futex<TIMEOUT_MS> {
     const WAKES: bool = true;
 
     fn wait(seen: Seen<'_>) {
-        futex_wait(
-            seen,
-            libc::timespec {
-                tv_sec: (TIMEOUT_MS / 1000) as libc::time_t,
-                tv_nsec: ((TIMEOUT_MS % 1000) * 1_000_000) as libc::c_long,
-            },
-        );
+        // FUTEX_WAIT's timeout is relative.
+        let timeout = libc::timespec {
+            tv_sec: (TIMEOUT_MS / 1000) as libc::time_t,
+            tv_nsec: ((TIMEOUT_MS % 1000) * 1_000_000) as libc::c_long,
+        };
+        futex_wait(seen, libc::FUTEX_WAIT, &timeout);
     }
 
-    fn wait_for(seen: Seen<'_>, timeout: Micros) {
-        let Micros(us) = timeout;
-        futex_wait(
-            seen,
-            libc::timespec {
-                tv_sec: (us / 1_000_000) as libc::time_t,
-                tv_nsec: ((us % 1_000_000) * 1_000) as libc::c_long,
-            },
-        );
+    fn wait_until(seen: Seen<'_>, deadline: Deadline) {
+        // FUTEX_WAIT_BITSET's timeout is absolute, on CLOCK_MONOTONIC, the clock a Deadline is read
+        // on, so no remaining time is computed. The divisors are constants, so the split into
+        // seconds and nanoseconds costs multiplies, paid once before a sleep.
+        let ns = deadline.monotonic_nanos();
+        let at = libc::timespec {
+            tv_sec: (ns / 1_000_000_000) as libc::time_t,
+            tv_nsec: (ns % 1_000_000_000) as libc::c_long,
+        };
+        futex_wait(seen, libc::FUTEX_WAIT_BITSET, &at);
     }
 
     fn wake(word: &AtomicU32) {
@@ -158,24 +152,27 @@ impl<const TIMEOUT_MS: u32> Wake for Futex<TIMEOUT_MS> {
     }
 }
 
-/// One `FUTEX_WAIT` on the word while it holds the value `seen`
-/// saw, bounded by the relative `timeout`.
+/// `futex_wait` sleeps once on the word in `seen` while the word holds the value `seen` recorded.
+/// `op` is `FUTEX_WAIT`, with `timeout` relative, or `FUTEX_WAIT_BITSET`, with `timeout` absolute
+/// on `CLOCK_MONOTONIC`.
+///
+/// - The bitset is `FUTEX_BITSET_MATCH_ANY`, so the plain `FUTEX_WAKE` in [`Futex::wake`] wakes
+///   either sleep.
 #[cfg(target_os = "linux")]
-fn futex_wait(seen: Seen<'_>, timeout: libc::timespec) {
-    // SAFETY: the word is a live, aligned u32 for the call, which the
-    // kernel reads atomically against the seen value, and the timeout
-    // is a valid relative timespec. An error return (EAGAIN when the word
-    // moved, ETIMEDOUT, EINTR) is a return, and the caller looks
-    // again.
+fn futex_wait(seen: Seen<'_>, op: libc::c_int, timeout: &libc::timespec) {
+    // SAFETY: the word is a live, aligned u32 for the call, which the kernel reads atomically
+    // against the seen value, and the timeout is a valid timespec. FUTEX_WAIT ignores the last
+    // argument. An error return (EAGAIN when the word moved, ETIMEDOUT, EINTR) is a return, and the
+    // caller looks again.
     unsafe {
         libc::syscall(
             libc::SYS_futex,
             seen.word().as_ptr(),
-            libc::FUTEX_WAIT,
+            op,
             seen.value(),
-            &timeout as *const libc::timespec,
+            timeout as *const libc::timespec,
             core::ptr::null::<u32>(),
-            0u32,
+            libc::FUTEX_BITSET_MATCH_ANY,
         );
     }
 }

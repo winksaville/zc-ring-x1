@@ -864,7 +864,7 @@ impl<'a, M: Mode, W: Wake> MpscRing<'a, M, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Empty, Exhausted, Full, Micros, PoolHeader};
+    use crate::{Empty, Exhausted, Full, PoolHeader, Ticks};
     use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
     /// Test message, two words so a torn write would be visible.
@@ -1627,36 +1627,39 @@ mod tests {
         assert_eq!(seen, [0, 1, 2]);
     }
 
-    /// Well over any deadline a test below sets, so a send that
-    /// returns sooner returned by room or by its own deadline.
-    #[cfg(feature = "std")]
+    /// `LONG` is well over any deadline a test below sets, so a send that returns sooner returned
+    /// because of room or its own deadline.
+    #[cfg(any(target_os = "linux", feature = "std"))]
     const LONG: std::time::Duration = std::time::Duration::from_millis(250);
 
-    /// [`SlowFutex`]'s timeout: a deadline well over [`WOKEN`], so a
+    /// `SLOW_US` is [`SlowFutex`]'s timeout in microseconds: a deadline well over [`WOKEN`], so a
     /// send that returns sooner was woken.
-    #[cfg(all(feature = "std", target_os = "linux"))]
-    const SLOW: Micros = Micros(500_000);
+    #[cfg(target_os = "linux")]
+    const SLOW_US: u64 = 500_000;
 
-    #[cfg(feature = "std")]
+    #[cfg(any(target_os = "linux", feature = "std"))]
     #[test]
     fn a_deadline_send_gives_up_at_its_time() {
-        // A full ring and no consumer: a zero deadline probes once,
-        // and a longer one spins until it passes, both then Full.
-        // With room, the send lands and reads no clock.
+        // A full ring and no consumer: a zero deadline probes once, and a longer one spins until it
+        // passes, both then Full. With room, the send lands and reads no clock.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
         let ring = MpscRing::<Single>::init(&mut pool, 64, 4, 1).unwrap();
         let (prod, mut cons) = endpoints(&ring);
         send(&prod, 0, 3);
-        prod.send_with_x::<Msg>(Micros(0), |m| {
+        prod.send_with_x::<Msg>(Ticks::ZERO, |m| {
             m.seq = 3;
             m.val = 30;
         })
         .unwrap();
-        assert_eq!(prod.send_with_x::<Msg>(Micros(0), |_| {}).err(), Some(Full));
+        assert_eq!(
+            prod.send_with_x::<Msg>(Ticks::ZERO, |_| {}).err(),
+            Some(Full)
+        );
         let start = std::time::Instant::now();
         assert_eq!(
-            prod.send_with_x::<Msg>(Micros(20_000), |_| {}).err(),
+            prod.send_with_x::<Msg>(crate::microsecs_to_ticks(20_000), |_| {})
+                .err(),
             Some(Full)
         );
         let waited = start.elapsed();
@@ -1665,8 +1668,12 @@ mod tests {
         // With NoWake the backoff send spins through both times.
         let start = std::time::Instant::now();
         assert_eq!(
-            prod.send_with_backoff_x::<Msg>(Micros(100), Micros(10_000), |_| {})
-                .err(),
+            prod.send_with_backoff_x::<Msg>(
+                crate::microsecs_to_ticks(100),
+                crate::microsecs_to_ticks(10_000),
+                |_| {}
+            )
+            .err(),
             Some(Full)
         );
         let waited = start.elapsed();
@@ -1678,11 +1685,11 @@ mod tests {
         recv(&mut cons, 0, 4);
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(any(target_os = "linux", feature = "std"))]
     #[test]
     fn a_deadline_send_lands_when_room_comes() {
-        // A full ring: a send that never gives up spins until the
-        // consumer frees room, then lands after everything before it.
+        // A full ring: a send that never gives up spins until the consumer frees room, then lands
+        // after everything before it.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
         let ring = MpscRing::<Single>::init(&mut pool, 64, 4, 1).unwrap();
@@ -1690,7 +1697,7 @@ mod tests {
         send(&prod, 0, 4);
         std::thread::scope(|s| {
             let writer = s.spawn(move || {
-                prod.send_with_x::<Msg>(Micros::FOREVER, |m| {
+                prod.send_with_x::<Msg>(Ticks::FOREVER, |m| {
                     m.seq = 4;
                     m.val = 40;
                 })
@@ -1702,12 +1709,11 @@ mod tests {
         });
     }
 
-    #[cfg(all(feature = "std", target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_deadline_sleeper_is_woken_by_releases() {
-        // A full ring of each mode: the producer spins not at all,
-        // sleeps, and is woken by the consumer's releases long
-        // before its deadline or SlowFutex's timeout.
+        // A full ring of each mode: the producer spins not at all, sleeps, and is woken by the
+        // consumer's releases long before its deadline or SlowFutex's timeout.
         fn run<M: Mode>(count: u32) {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
@@ -1719,10 +1725,14 @@ mod tests {
             std::thread::scope(|s| {
                 let writer = s.spawn(move || {
                     let start = std::time::Instant::now();
-                    let sent = prod.send_with_backoff_x::<Msg>(Micros(0), SLOW, |m| {
-                        m.seq = full;
-                        m.val = full * 10;
-                    });
+                    let sent = prod.send_with_backoff_x::<Msg>(
+                        Ticks::ZERO,
+                        crate::microsecs_to_ticks(SLOW_US),
+                        |m| {
+                            m.seq = full;
+                            m.val = full * 10;
+                        },
+                    );
                     (sent, start.elapsed())
                 });
                 // Asleep before the room comes, so the room wakes it.
@@ -1743,12 +1753,11 @@ mod tests {
         run::<Multi>(2);
     }
 
-    #[cfg(all(feature = "std", target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_deadline_sleep_gives_up_at_its_time() {
-        // A full ring and no consumer: the producer spins, sleeps on
-        // what is left of its wait, and gives up when it passes, far
-        // sooner than SlowFutex's own timeout.
+        // A full ring and no consumer: the producer spins, sleeps on what is left of its wait, and
+        // gives up when it passes, far sooner than SlowFutex's own timeout.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
         let ring = MpscRing::<Single, SlowFutex>::init(&mut pool, 64, 2, 1).unwrap();
@@ -1756,8 +1765,12 @@ mod tests {
         send(&prod, 0, 2);
         let start = std::time::Instant::now();
         assert_eq!(
-            prod.send_with_backoff_x::<Msg>(Micros(100), Micros(20_000), |_| {})
-                .err(),
+            prod.send_with_backoff_x::<Msg>(
+                crate::microsecs_to_ticks(100),
+                crate::microsecs_to_ticks(20_000),
+                |_| {}
+            )
+            .err(),
             Some(Full)
         );
         let waited = start.elapsed();

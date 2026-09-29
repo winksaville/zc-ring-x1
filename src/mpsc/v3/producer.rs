@@ -12,10 +12,12 @@ use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 use super::{
     MOVED, Mode, Multi, Segments, WAITING, check_body_type, seq_of, word, word_pos, word_seg,
 };
-#[cfg(feature = "std")]
-use crate::clock::Stopwatch;
+#[cfg(any(target_os = "linux", feature = "std"))]
+use crate::Ticks;
+#[cfg(any(target_os = "linux", feature = "std"))]
+use crate::clock::now_ticks;
 use crate::wake::{NoWake, Seen, Wake};
-use crate::{Full, Micros};
+use crate::{Deadline, Full};
 
 /// A producing handle, one counted producer role: claim one per
 /// producing thread or process with
@@ -175,68 +177,128 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
         self.send(on_full, |_| {}, fill, true)
     }
 
-    /// Claim the next slot, call `fill` to write the message into
-    /// it, and commit it for the consumer, spinning while the ring
-    /// is full, for at most `give_up`.
+    /// `send_with_x` claims the next free slot in the ring, spinning for up to `give_up` for a slot
+    /// to become free. When no slot becomes free in that time, `send_with_x` returns `Err(Full)`.
+    /// When a slot is free, or becomes free, `send_with_x` calls `fill` with a mutable reference to
+    /// the message in the slot, `fill` writes the message there, and `send_with_x` commits the slot
+    /// so the consumer can read it. `fill` is a closure, so the values it writes are ones it
+    /// captures from the caller, as `value` is in the example below.
+    ///
+    /// Another producer may claim a free slot first. `send_with_x` then goes for the next slot at
+    /// once and does not return, so a lost slot is never an error: `Err(Full)` means the ring was
+    /// full when `send_with_x` last looked, after `give_up` had passed, and any slot freed in the
+    /// meantime went to another producer. The `give_up` time starts when `send_with_x` first finds
+    /// the ring full, so a send that finds a free slot never reads the clock.
+    ///
+    /// While `fill` runs, the slot is claimed but not committed, and the consumer, which reads
+    /// slots in order, cannot read past it. A slow `fill` delays every message behind it, and a
+    /// `fill` that panics leaves the slot claimed for good, so the consumer waits at it until the
+    /// ring is restarted. A consumer asleep on an empty ring is woken after the commit.
+    ///
+    /// `send_with_x` is available on Linux, and on other targets with the `std` feature, which
+    /// provides its clock.
     ///
     /// # Parameters
     ///
-    /// - `self`: this producer, by shared reference, so one handle
-    ///   may be used from several threads at once.
-    /// - `give_up`: the number of microseconds to wait while the ring
-    ///   is full, counted from the first attempt that finds it full.
-    ///   A value of `Micros(0)` makes one attempt, and
-    ///   [`Micros::FOREVER`] never gives up.
-    /// - `fill`: writes the message. Called once, after the slot is
-    ///   claimed, with a mutable reference to the slot's body, which
-    ///   still holds the bytes of the message the slot carried last.
-    ///   It must write every field, since the consumer reads what it
-    ///   leaves as those stale bytes. Not called when the send
-    ///   returns `Err(Full)`.
+    /// - `self`: this producer, by shared reference, so one handle may be used from several threads
+    ///   at once.
+    /// - `give_up`: how long to wait while the ring is full, counted from the first attempt that
+    ///   finds it full. [`Ticks::ZERO`] makes one attempt, and [`Ticks::FOREVER`] never gives up.
+    ///   The caller makes `give_up` once, with [`microsecs_to_ticks`](crate::microsecs_to_ticks) or
+    ///   [`nanos_to_ticks`](crate::nanos_to_ticks), not once per send.
+    /// - `fill`: the closure that writes the message. `send_with_x` calls `fill` once, after the
+    ///   slot is claimed, with a mutable reference to the slot's body, which still holds the bytes
+    ///   of the message the slot carried last. `fill` must write every field, since the consumer
+    ///   reads any field `fill` leaves as those stale bytes. `send_with_x` does not call `fill`
+    ///   when it returns `Err(Full)`.
     ///
     /// # Type parameters
     ///
-    /// - `T`: the message type the slot holds. Its size must be at
-    ///   most the slot size less
-    ///   [`SLOT_HEADER_BYTES`](super::SLOT_HEADER_BYTES), and its
-    ///   alignment at most `SLOT_HEADER_BYTES`, or the send panics.
-    ///   For zero-copy, `T` is a [`Desc`](crate::Desc), the handle of
-    ///   a pool buffer the producer wrote the message into before the
-    ///   send, so `fill` is one small store and the message itself is
-    ///   never copied.
+    /// - `T`: the message type the slot holds. The size of `T` must be at most the slot size less
+    ///   [`SLOT_HEADER_BYTES`](super::SLOT_HEADER_BYTES), and its alignment at most
+    ///   `SLOT_HEADER_BYTES`, or the send panics. For zero-copy, `T` is a [`Desc`](crate::Desc),
+    ///   the handle of a pool buffer the producer wrote the message into before the send, so `fill`
+    ///   is one small store and the message itself is never copied.
     ///
     /// # Returns
     ///
-    /// - `Ok(())`: the message is committed, and the consumer can
-    ///   read it.
-    /// - `Err(Full)`: the ring stayed full until `give_up` passed.
-    ///   No slot was claimed and `fill` was not called.
+    /// - `Ok(())`: the message is committed, and the consumer can read it.
+    /// - `Err(Full)`: the ring stayed full until `give_up` passed. No slot was claimed, and `fill`
+    ///   was not called.
     ///
-    /// # Notes
+    /// # Example
     ///
-    /// - Needs the `std` feature, which provides the clock.
-    /// - The clock is read only once the ring is found full, so a
-    ///   send that finds room reads no clock.
-    /// - Losing a slot to another producer is not a full ring: the
-    ///   send retries at once.
-    /// - A consumer asleep on an empty ring is woken after the
-    ///   commit.
-    /// - While `fill` runs, the consumer cannot read past this slot,
-    ///   so a slow `fill` delays every message behind it.
-    /// - If `fill` panics, the slot stays claimed and is never
-    ///   committed, and the consumer waits at it until the ring is
-    ///   restarted.
-    #[cfg(feature = "std")]
-    pub fn send_with_x<T>(&self, give_up: Micros, fill: impl FnOnce(&mut T)) -> Result<(), Full>
+    /// ```
+    /// use zc_ring_x1::mpsc::v3::{MpscRing, Single, segment_size};
+    /// use zc_ring_x1::{Pool, PoolHeader, Full, microsecs_to_ticks};
+    /// use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+    ///
+    /// // The message: plain data, at most a slot's body in size.
+    /// #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+    /// #[repr(C)]
+    /// struct Reading {
+    ///     sensor: u32,
+    ///     value: u32,
+    /// }
+    ///
+    /// // One cache line of backing store, so a `Vec<Line>` is a line-aligned region.
+    /// #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Clone)]
+    /// #[repr(C, align(64))]
+    /// struct Line([u8; 64]);
+    ///
+    /// // A pool holding one segment of 4 slots, 64 bytes each, and a one-segment ring over it.
+    /// let seg_bytes = segment_size(64, 4);
+    /// let region_bytes = size_of::<PoolHeader>() as u64 + seg_bytes;
+    /// let mut store = vec![Line([0; 64]); region_bytes.div_ceil(64) as usize];
+    /// let mut pool = Pool::init(store.as_mut_slice().as_mut_bytes(), seg_bytes as u32, 1)
+    ///     .expect("the store holds the pool"); // OK: sized above from segment_size
+    /// let ring = MpscRing::<Single>::init(&mut pool, 64, 4, 1)
+    ///     .expect("the pool holds the segment"); // OK: the pool was made for it
+    /// let producer = ring.claim_producer().expect("a fresh ring"); // OK: no role is held yet
+    /// let mut consumer = ring.claim_consumer().expect("a fresh ring"); // OK: no role is held yet
+    ///
+    /// // The caller converts its time to ticks once, not once per send.
+    /// let give_up = microsecs_to_ticks(1_000);
+    ///
+    /// // Send a reading. The closure captures `value` and writes the message into the slot.
+    /// let value = 42;
+    /// let sent = producer.send_with_x::<Reading>(give_up, |msg| {
+    ///     msg.sensor = 7;
+    ///     msg.value = value;
+    /// });
+    /// assert_eq!(sent, Ok(()));
+    ///
+    /// // Fill the other 3 slots. Then, with nothing read, the next send waits `give_up`, 1 ms,
+    /// // and returns `Err(Full)` without calling its closure.
+    /// for value in 0..3 {
+    ///     let sent = producer.send_with_x::<Reading>(give_up, |msg| {
+    ///         msg.sensor = 7;
+    ///         msg.value = value;
+    ///     });
+    ///     assert_eq!(sent, Ok(()));
+    /// }
+    /// assert_eq!(producer.send_with_x::<Reading>(give_up, |_| {}), Err(Full));
+    ///
+    /// // The consumer reads the first message in place, then releases its slot.
+    /// let msg = consumer
+    ///     .reserve_slot_with::<Reading>(|_| false)
+    ///     .expect("a message is waiting"); // OK: four were sent
+    /// assert_eq!((msg.sensor, msg.value), (7, 42));
+    /// msg.release();
+    /// ```
+    #[cfg(any(target_os = "linux", feature = "std"))]
+    pub fn send_with_x<T>(&self, give_up: Ticks, fill: impl FnOnce(&mut T)) -> Result<(), Full>
     where
         T: FromBytes + IntoBytes + KnownLayout,
     {
-        let mut watch: Option<Stopwatch> = None;
+        // `end` is set at the first full ring, so a send that finds room reads no clock, and each
+        // later check is one reading and a compare.
+        let mut end: Option<u64> = None;
         self.send(
             |_| {
-                if give_up != Micros::FOREVER {
-                    let elapsed = watch.get_or_insert_with(Stopwatch::start).elapsed_us();
-                    if elapsed >= give_up.0 as u64 {
+                if give_up != Ticks::FOREVER {
+                    let now = now_ticks();
+                    if now >= *end.get_or_insert(now.saturating_add(give_up.0)) {
                         return false;
                     }
                 }
@@ -249,99 +311,167 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
         )
     }
 
-    /// Claim the next slot, call `fill` to write the message into
-    /// it, and commit it for the consumer. While the ring is full,
-    /// spin for at most `spin`, then sleep until the consumer frees
-    /// room, for at most `wait` more.
+    /// `send_with_backoff_x` claims the next free slot in the ring, first spinning for up to `spin`
+    /// for a slot to become free, then sleeping for up to `wait` more until the consumer frees one.
+    /// When no slot becomes free in that time, `send_with_backoff_x` returns `Err(Full)`. When a
+    /// slot is free, or becomes free, `send_with_backoff_x` calls `fill` with a mutable reference
+    /// to the message in the slot, `fill` writes the message there, and `send_with_backoff_x`
+    /// commits the slot so the consumer can read it. `fill` is a closure, so the values it writes
+    /// are ones it captures from the caller.
+    ///
+    /// Another producer may claim a free slot first. `send_with_backoff_x` then goes for the next
+    /// slot at once and does not return, so a lost slot is never an error: `Err(Full)` means the
+    /// ring was full when `send_with_backoff_x` last looked, after `spin` and `wait` had passed,
+    /// and any slot freed in the meantime went to another producer. The time starts when
+    /// `send_with_backoff_x` first finds the ring full, so a send that finds a free slot never
+    /// reads the clock.
+    ///
+    /// The sleep is the ring's [`Wake`]. With [`NoWake`] there is no sleep, and
+    /// `send_with_backoff_x` spins for `spin` and `wait` together. The consumer wakes all sleeping
+    /// producers at once, at each half segment of releases. A sleep that ends early, woken for a
+    /// slot another producer took, sleeps again to the same deadline, and `send_with_backoff_x`
+    /// looks at the ring once more after the last sleep.
+    ///
+    /// While `fill` runs, the slot is claimed but not committed, and the consumer, which reads
+    /// slots in order, cannot read past it. A slow `fill` delays every message behind it, and a
+    /// `fill` that panics leaves the slot claimed for good, so the consumer waits at it until the
+    /// ring is restarted. A consumer asleep on an empty ring is woken after the commit.
+    ///
+    /// `send_with_backoff_x` is available on Linux, and on other targets with the `std` feature,
+    /// which provides its clock.
     ///
     /// # Parameters
     ///
-    /// - `self`: this producer, by shared reference, so one handle
-    ///   may be used from several threads at once.
-    /// - `spin`: the number of microseconds to spin while the ring is
-    ///   full, counted from the first attempt that finds it full,
-    ///   before sleeping. A value of `Micros(0)` sleeps at once, and
-    ///   [`Micros::FOREVER`] never sleeps.
-    /// - `wait`: the number of microseconds to sleep, in all, after
-    ///   the spin. A value of `Micros(0)` gives up when the spin
-    ///   ends, and [`Micros::FOREVER`] never gives up.
-    /// - `fill`: writes the message. Called once, after the slot is
-    ///   claimed, with a mutable reference to the slot's body, which
-    ///   still holds the bytes of the message the slot carried last.
-    ///   It must write every field, since the consumer reads what it
-    ///   leaves as those stale bytes. Not called when the send
-    ///   returns `Err(Full)`.
+    /// - `self`: this producer, by shared reference.
+    /// - `spin`: how long to spin while the ring is full, counted from the first attempt that finds
+    ///   it full, before sleeping. [`Ticks::ZERO`] sleeps at once, and [`Ticks::FOREVER`] never
+    ///   sleeps.
+    /// - `wait`: how long to sleep, in all, after the spin. [`Ticks::ZERO`] gives up when the spin
+    ///   ends, and [`Ticks::FOREVER`] never gives up. The caller makes `spin` and `wait` once, with
+    ///   [`microsecs_to_ticks`](crate::microsecs_to_ticks) or
+    ///   [`nanos_to_ticks`](crate::nanos_to_ticks), not once per send.
+    /// - `fill`: the closure that writes the message. `send_with_backoff_x` calls `fill` once,
+    ///   after the slot is claimed, with a mutable reference to the slot's body, which still holds
+    ///   the bytes of the message the slot carried last. `fill` must write every field, since the
+    ///   consumer reads any field `fill` leaves as those stale bytes. `send_with_backoff_x` does
+    ///   not call `fill` when it returns `Err(Full)`.
     ///
     /// # Type parameters
     ///
-    /// - `T`: the message type the slot holds. Its size must be at
-    ///   most the slot size less
-    ///   [`SLOT_HEADER_BYTES`](super::SLOT_HEADER_BYTES), and its
-    ///   alignment at most `SLOT_HEADER_BYTES`, or the send panics.
-    ///   For zero-copy, `T` is a [`Desc`](crate::Desc), the handle of
-    ///   a pool buffer the producer wrote the message into before the
-    ///   send, so `fill` is one small store and the message itself is
-    ///   never copied.
+    /// - `T`: the message type the slot holds. The size of `T` must be at most the slot size less
+    ///   [`SLOT_HEADER_BYTES`](super::SLOT_HEADER_BYTES), and its alignment at most
+    ///   `SLOT_HEADER_BYTES`, or the send panics. For zero-copy, `T` is a [`Desc`](crate::Desc),
+    ///   the handle of a pool buffer the producer wrote the message into before the send, so `fill`
+    ///   is one small store and the message itself is never copied.
     ///
     /// # Returns
     ///
-    /// - `Ok(())`: the message is committed, and the consumer can
-    ///   read it.
-    /// - `Err(Full)`: the ring stayed full until `spin` and `wait`
-    ///   passed. No slot was claimed and `fill` was not called.
+    /// - `Ok(())`: the message is committed, and the consumer can read it.
+    /// - `Err(Full)`: the ring stayed full until `spin` and `wait` passed. No slot was claimed, and
+    ///   `fill` was not called.
     ///
-    /// # Notes
+    /// # Example
     ///
-    /// - Needs the `std` feature, which provides the clock.
-    /// - The sleep is `W`'s, the ring's [`Wake`]. With [`NoWake`]
-    ///   there is no sleep, and the send spins for `spin` and `wait`
-    ///   together.
-    /// - A sleep that ends early, woken for room another producer
-    ///   took, sleeps again on what is left of `wait`, and the ring
-    ///   is tried once more after the last sleep.
-    /// - The consumer wakes sleeping producers at each half segment
-    ///   of releases, all of them at once.
-    /// - The clock is read only once the ring is found full, so a
-    ///   send that finds room reads no clock.
-    /// - Losing a slot to another producer is not a full ring: the
-    ///   send retries at once.
-    /// - A consumer asleep on an empty ring is woken after the
-    ///   commit.
-    /// - While `fill` runs, the consumer cannot read past this slot,
-    ///   so a slow `fill` delays every message behind it.
-    /// - If `fill` panics, the slot stays claimed and is never
-    ///   committed, and the consumer waits at it until the ring is
-    ///   restarted.
-    #[cfg(feature = "std")]
+    /// ```
+    /// use zc_ring_x1::mpsc::v3::{MpscRing, Single, segment_size};
+    /// use zc_ring_x1::wake::Futex;
+    /// use zc_ring_x1::{Pool, PoolHeader, Ticks, microsecs_to_ticks};
+    /// use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+    ///
+    /// // The message: plain data, at most a slot's body in size.
+    /// #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+    /// #[repr(C)]
+    /// struct Reading {
+    ///     sensor: u32,
+    ///     value: u32,
+    /// }
+    ///
+    /// // One cache line of backing store, so a `Vec<Line>` is a line-aligned region.
+    /// #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Clone)]
+    /// #[repr(C, align(64))]
+    /// struct Line([u8; 64]);
+    ///
+    /// // A pool holding one segment of 4 slots, 64 bytes each, and a one-segment ring over it.
+    /// let seg_bytes = segment_size(64, 4);
+    /// let region_bytes = size_of::<PoolHeader>() as u64 + seg_bytes;
+    /// let mut store = vec![Line([0; 64]); region_bytes.div_ceil(64) as usize];
+    /// let mut pool = Pool::init(store.as_mut_slice().as_mut_bytes(), seg_bytes as u32, 1)
+    ///     .expect("the store holds the pool"); // OK: sized above from segment_size
+    /// let ring = MpscRing::<Single, Futex>::init(&mut pool, 64, 4, 1)
+    ///     .expect("the pool holds the segment"); // OK: the pool was made for it
+    /// let producer = ring.claim_producer().expect("a fresh ring"); // OK: no role is held yet
+    /// let mut consumer = ring.claim_consumer().expect("a fresh ring"); // OK: no role is held yet
+    ///
+    /// // Fill the ring's 4 slots, so the next send finds it full.
+    /// for value in 0..4 {
+    ///     let sent = producer.send_with_x::<Reading>(Ticks::ZERO, |msg| {
+    ///         msg.sensor = 7;
+    ///         msg.value = value;
+    ///     });
+    ///     assert_eq!(sent, Ok(()));
+    /// }
+    ///
+    /// std::thread::scope(|s| {
+    ///     // The consumer, on its own thread, reads two messages after 10 ms. The consumer wakes
+    ///     // sleeping producers every half segment of releases, two releases in a ring of 4.
+    ///     s.spawn(move || {
+    ///         std::thread::sleep(std::time::Duration::from_millis(10));
+    ///         for _ in 0..2 {
+    ///             let msg = consumer
+    ///                 .reserve_slot_with::<Reading>(|_| false)
+    ///                 .expect("a message is waiting"); // OK: four were sent
+    ///             msg.release();
+    ///         }
+    ///     });
+    ///
+    ///     // Spin for up to 20 microseconds, then sleep for up to 1 second. The consumer's
+    ///     // releases wake the producer after about 10 ms, and the send lands.
+    ///     let spin = microsecs_to_ticks(20);
+    ///     let wait = microsecs_to_ticks(1_000_000);
+    ///     let sent = producer.send_with_backoff_x::<Reading>(spin, wait, |msg| {
+    ///         msg.sensor = 7;
+    ///         msg.value = 4;
+    ///     });
+    ///     assert_eq!(sent, Ok(()));
+    /// });
+    /// ```
+    #[cfg(any(target_os = "linux", feature = "std"))]
     pub fn send_with_backoff_x<T>(
         &self,
-        spin: Micros,
-        wait: Micros,
+        spin: Ticks,
+        wait: Ticks,
         fill: impl FnOnce(&mut T),
     ) -> Result<(), Full>
     where
         T: FromBytes + IntoBytes + KnownLayout,
     {
-        let mut watch: Option<Stopwatch> = None;
+        // `ends` holds the spin's end and the wait's end, set at the first full ring, so a send
+        // that finds room reads no clock, and each later check is one reading and a compare or two.
+        let mut ends: Option<(u64, u64)> = None;
         self.send(
             |_| {
-                let elapsed = watch.get_or_insert_with(Stopwatch::start).elapsed_us();
-                if spin == Micros::FOREVER || elapsed < spin.0 as u64 {
+                if spin == Ticks::FOREVER {
                     core::hint::spin_loop();
                     return true;
                 }
-                let timeout = if wait == Micros::FOREVER {
+                let now = now_ticks();
+                let (spin_end, wait_end) = *ends.get_or_insert_with(|| {
+                    let spin_end = now.saturating_add(spin.0);
+                    (spin_end, spin_end.saturating_add(wait.0))
+                });
+                if now < spin_end {
+                    core::hint::spin_loop();
+                    return true;
+                }
+                let deadline = if wait == Ticks::FOREVER {
                     None
+                } else if now >= wait_end {
+                    return false;
                 } else {
-                    let end = spin.0 as u64 + wait.0 as u64;
-                    if elapsed >= end {
-                        return false;
-                    }
-                    // Less than wait, so it fits.
-                    Some(Micros((end - elapsed) as u32))
+                    Some(Deadline::at(wait_end))
                 };
                 if W::WAKES {
-                    self.sleep_full(timeout);
+                    self.sleep_full(deadline);
                 } else {
                     core::hint::spin_loop();
                 }
@@ -460,9 +590,8 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
         Ok(())
     }
 
-    /// Sleep on a full ring until the consumer frees room, a wake
-    /// that comes early, or the timeout: `timeout`, or `W`'s own
-    /// when `None`.
+    /// `sleep_full` sleeps on a full ring until the consumer frees room, a wake comes early, or the
+    /// timeout passes: `deadline`, or `W`'s own timeout when `deadline` is `None`.
     ///
     /// - Count in, then look again: the consumer's check fences
     ///   its releases before it reads the count, and the fence here
@@ -473,15 +602,15 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     ///   sleep returns at once.
     #[cold]
     #[inline(never)]
-    fn sleep_full(&self, timeout: Option<Micros>) {
+    fn sleep_full(&self, deadline: Option<Deadline>) {
         let segs = &self.segs;
         let c = segs.claims();
         c.prod_waiters.fetch_add(1, Ordering::SeqCst);
         core::sync::atomic::fence(Ordering::SeqCst);
         let seen = Seen::load(&c.prod_wake);
         if !self.has_room() {
-            match timeout {
-                Some(t) => W::wait_for(seen, t),
+            match deadline {
+                Some(d) => W::wait_until(seen, d),
                 None => W::wait(seen),
             }
         }

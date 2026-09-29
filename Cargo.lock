@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "zc-ring-x1-dev"
-version = "0.18.5"
+version = "0.19.0-2"
 dependencies = [
  "cordyceps",
  "libc",

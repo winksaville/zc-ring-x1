@@ -3,7 +3,7 @@ name = "zc-ring-x1-dev"
 # Version-of-record (see agent-data/versioning.md): advanced through
 # the cycle's X.Y.Z-N phases, and the -N rides in the semver
 # prerelease slot.
-version = "0.18.5"
+version = "0.19.0-2"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"
@@ -24,9 +24,9 @@ name = "zcr-test-ipm-dev"
 path = "src/bin/zcr-test-ipm.rs"
 
 [features]
-# The time-bounded sends, MPSC v3's `send_with_x` and
-# `send_with_backoff_x`, which read `std`'s clock until a `no_std`
-# one is chosen. Off, the library is `no_std`.
+# The `std` feature brings `std`'s clock to MPSC v3's deadline sends, `send_with_x` and
+# `send_with_backoff_x`, on targets other than Linux. On Linux the sends read `clock_gettime`
+# through libc without it. With `std` off, the library is `no_std`.
 std = []
 
 [dependencies]

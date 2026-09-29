@@ -14,14 +14,19 @@ lose context, read first at acquaint, acted on, and reset to `_None._` by the re
   reply.
 - Open for the user: `take_over_*(dead, id)` and a holder query, left as `take_over_*(id)`, with no
   Todo entry.
-- Cycle `feat: mpsc v3 deadline sends` is mid-ladder: `feat: mpsc v3 deadline sends behind std` is
+- Cycle `feat: mpsc v3 deadline sends` is mid-ladder: `feat: mpsc v3 deadline sends in ticks` is
   pushed, and the next rung is `refactor: port mpsc v3 callers to the deadline sends`, not yet
-  started. The version hold is in effect, `0.18.5` with the `-dev` names, per the block's
+  started. Its target is in the deliberation: `send(policy, fill)` public, and the wrappers
+  `send_spin` and `send_spin_sleep`. The sends take `Ticks`, made by `microsecs_to_ticks` or
+  `nanos_to_ticks`. The version
+  hold ended at `0.19.0-2`, so the port is `0.19.0-3`, with the `-dev` names, per the block's
   deliberation.
-- For the port rung: the bins that call the `_x` sends need `std`, and `cargo install` skips a bin
-  whose required features are off, so the validate list's install likely becomes `--features
-  std`. The other v3 methods' docs, `send_with`, `send_with_backoff`, `send_wait`, and the
-  consumer's, are still in the old form, not the Parameters form the two new sends now use.
+- For the port rung: on Linux the bins need no `std` for the `_x` sends, so the install's
+  `--features std` question is gone there. The other v3 methods' docs, `send_with`,
+  `send_with_backoff`, `send_wait`, and the consumer's, are still in the old form, not the
+  Parameters form the two new sends now use.
+- Open for the user: an overview page for reviewers, planned after the port, when the API it
+  describes is final.
 - Open for the user: whether the Parameters doc form, every parameter documented including
   `self`, becomes a rule in `agent-data/code.md`, its own cycle, with no Todo entry yet. And the
   rank of the Todo `Zero-copy endpoints: send a buffer, not a message`, placed second by the agent
@@ -45,20 +50,23 @@ to offer.
 
 #### Solution
 
-Two sends that take times in microseconds instead of closures, behind a new `std` feature, beside
-the closure sends until porting their callers decides whether those go.
+Two sends that take times instead of closures, beside the closure sends until porting their
+callers decides whether those go.
 
 - `send_with_x(give_up, fill)`: spin on a full ring until there is room or `give_up` has passed,
-  then `Full`. `Micros(0)` is one probe and `Micros::FOREVER` waits forever.
+  then `Full`. `Ticks::ZERO` is one probe and `Ticks::FOREVER` waits forever.
 - `send_with_backoff_x(spin, wait, fill)`: spin for up to `spin`, then sleep on the producers' futex
   until `wait` more has passed, sleeping again on what is left after an early return, then `Full`.
   Under `NoWake` the sleep is a spin.
-- Times are `Micros`, a microsecond count, and a wait's lost-wake guard is `Seen`, a word and the
-  value it was last seen holding.
-- `Wake` gains `wait_for`, a wait bounded by the caller's timeout, beside `wait` and
-  `Futex<TIMEOUT_MS>`, which the untimed waits keep.
-- The `std` feature is off by default, the clock is read in one function, and validation builds
-  the library with the feature and without it.
+- Times are `Ticks`, a span on the crate's monotonic clock, made once by the caller with
+  `microsecs_to_ticks` or `nanos_to_ticks`, so a send adds and compares and converts no unit. A
+  tick is a nanosecond for now. A wait's end is `Deadline`, a moment in ticks, and a wait's
+  lost-wake guard is `Seen`, a word and the value it was last seen holding.
+- `Wake` gains `wait_until`, a sleep to a `Deadline`, beside `wait` and `Futex<TIMEOUT_MS>`, which
+  the untimed waits keep.
+- On Linux the sends read `clock_gettime` through `libc` and need no `std`. Elsewhere a `std`
+  feature, off by default, brings `std`'s clock. Validation builds the library with the feature
+  and without it.
 - The v3 callers move to the `_x` sends. If none still needs a closure, `send_with`,
   `send_with_backoff`, and `send_wait` are deleted and the `_x` sends take the plain names.
 
@@ -71,14 +79,6 @@ the closure sends until porting their callers decides whether those go.
 - `cargo clippy` and `cargo test` pass with `--all-features`, and the library builds with the
   feature off.
 
-#### Ladder
-
-- [feat: mpsc v3 deadline sends opening][21] (done)
-- [feat: mpsc v3 deadline sends behind std][22] (done)
-- [refactor: port mpsc v3 callers to the deadline sends][23]
-- [refactor: drop mpsc v3 closure sends][24]
-- [feat: mpsc v3 deadline sends closing][25]
-
 #### Deliberation
 
 - Times, not closures: a send is bounded by a time in microseconds, the user's proposal of
@@ -87,7 +87,8 @@ the closure sends until porting their callers decides whether those go.
     to the call site rather than being lost.
   - The spin-then-sleep send is today's `send_wait` reshaped, not today's `send_with_backoff`,
     whose backoff is after a lost claim race, not on a full ring.
-- Behind `std` for now, the user's call, until a `no_std` clock is chosen.
+- Behind `std` for now, the user's call, until a `no_std` clock is chosen, and narrowed by `feat:
+  mpsc v3 deadline sends in ticks` to the targets other than Linux.
   - Off by default, since the crate is `no_std`, and the bins and tools that call the sends turn it
     on.
   - The clock is read in one function, so a `no_std` clock replaces it in one place. We think the
@@ -98,7 +99,17 @@ the closure sends until porting their callers decides whether those go.
     says where the value came from: `load` before the look, or `written` by the caller's own
     read-modify-write.
   - `Micros(u32)` over `core::time::Duration`: 4 bytes, not 16, and the microseconds the sends
-    were asked in, with `Micros::FOREVER` the time that never passes.
+    were asked in, with `Micros::FOREVER` the time that never passes. Replaced by `Ticks` in
+    `feat: mpsc v3 deadline sends in ticks`.
+- `Ticks`, converted once by the caller, the user's call of 2026-09-29, so a send multiplies
+  nothing to set its deadline.
+  - A tick is a nanosecond of `CLOCK_MONOTONIC` for now. Other clocks, the CPU's own counter
+    among them, are the Todo `Clock choices for the deadline sends`, which gives `Ticks` its
+    clock as a type parameter defaulting to today's, so callers barely change.
+- The clock is a choice the caller makes, not a ring version, the user's call of 2026-09-29, and
+  the choices are measured side by side before any other becomes the default.
+  - `Micros` goes, since the unit is now in the conversion's name, and one time type is less to
+    learn than two.
 - `wait_for` beside `wait`, not in place of it, the user's call of 2026-09-28 in `feat: mpsc v3
   deadline sends behind std`.
   - The plan replaced `Futex<TIMEOUT_MS>` with a per-call timeout, but the consumer's
@@ -106,6 +117,26 @@ the closure sends until porting their callers decides whether those go.
     outside this cycle.
   - The cost: two timeout sources until the consumer has a deadline wait of its own, when
     `TIMEOUT_MS` can go.
+- `feat: mpsc v3 deadline sends in ticks` inserted before the port, the user's call of
+  2026-09-29, after Zed showed the `std`-gated sends inactive.
+  - On Linux the clock needs no `std`, so the sends are there whenever the target is Linux, and
+    `std` remains the fallback for other targets.
+  - Every cycle counts, the user's rule, so a check is one `u64` compare against a deadline, not
+    a conversion of elapsed time to microseconds.
+- One general `send` and two wrappers, the user's call of 2026-09-29, the target of the port and
+  drop rungs.
+  - `send(policy, fill)`, today's private core made public, where a policy is a `SendPolicy`: what
+    a send does when the ring is full, `on_full`, or when it loses a slot, `on_lost`, with a
+    closure a policy too. It replaces the core's `sleep` flag, a bool that said nothing at a call
+    site, and the policy sleeps through a public `Room` when it wants to.
+  - Two wrappers, named for what the producer's core does while it waits: `send_spin(give_up,
+    fill)`, today's `send_with_x`, and `send_spin_sleep(spin_time, wait_time, fill)`, today's
+    `send_with_backoff_x`, the parameter names the user's.
+  - `send_with`, `send_with_backoff`, and `send_wait` go, each a policy or a closure passed to
+    `send`, so five sends become three. Sophisticated users and the measurement tools, which
+    count waits and lost slots, write a policy.
+  - Named policies with no wrappers were weighed and set aside: the wrappers read better at a call
+    site, and a new behavior is still a policy, not a method.
 - Fresh `_x` names during the cycle, the user's call, so old and new sit side by side and callers
   move one at a time.
 - Delete only if the port leaves no holdout: the port is the evidence. The lost-race backoff,
@@ -120,8 +151,19 @@ the closure sends until porting their callers decides whether those go.
     sets as usual.
   - Why: the size of the bump depends on whether the closure sends are deleted, a break, and that
     is decided mid-cycle.
+  - Ended at `feat: mpsc v3 deadline sends in ticks`, the user's call of 2026-09-29, at
+    `0.19.0-2`, the cycle's third commit by the suffix scheme: `Wake`'s signatures had already
+    changed, a break for any `Wake` outside the crate, so the bump is minor whatever the port
+    decides. The opening and `feat: mpsc v3 deadline sends behind std` carry `0.18.5`.
 
-#### Ladder details
+#### Ladder
+
+- [feat: mpsc v3 deadline sends opening][21] (done)
+- [feat: mpsc v3 deadline sends behind std][22] (done)
+- [feat: mpsc v3 deadline sends in ticks][26] (done)
+- [refactor: port mpsc v3 callers to the deadline sends][23]
+- [refactor: drop mpsc v3 closure sends][24]
+- [feat: mpsc v3 deadline sends closing][25]
 
 ##### feat: mpsc v3 deadline sends opening
 
@@ -171,17 +213,77 @@ builds.
     endpoints`.
 * Deferred to the port: once the demo and `zcr-test-ipm` call the sends they need `std`, and
   `cargo install` skips a bin whose required features are off, so the install likely becomes
-  `--features std`.
+  `--features std`. Answered by `feat: mpsc v3 deadline sends in ticks`: on Linux they need no
+  `std`.
+
+##### feat: mpsc v3 deadline sends in ticks
+
+The deadline sends need `std` only for its clock, which on Linux is `clock_gettime`, reachable
+through the `libc` the crate already links, and `Stopwatch` turns each reading into microseconds
+with a multiply and a divide. Read the clock through `libc` on Linux as one `u64` of nanoseconds,
+keep a deadline so each check is one compare, sleep to it with `FUTEX_WAIT_BITSET`, and gate the
+sends on Linux or `std`.
+
+* On Linux the sends waited on `std` for a clock the crate can read itself.
+  - `clock::now_ns` is `clock_gettime(CLOCK_MONOTONIC)` through `libc`, folded to one `u64` of
+    nanoseconds by a multiply by a constant and an add. Elsewhere it is `std`'s `Instant`, counted
+    from the process's first reading.
+  - The sends are there on Linux or with `std`, so a Linux build, `no_std` included, has them,
+    and an editor with default features shows them live.
+* Each check converted elapsed time to microseconds, a multiply and a divide.
+  - A send sets its ends once, at the first full ring, and each check is one reading and a
+    compare, the user's rule that every cycle counts.
+* The sleep bounded by time left recomputed it after each early wake.
+  - `Deadline` is a moment in nanoseconds on the crate's clock, and `Wake::wait_until` replaces
+    `wait_for`. `Futex` sleeps with `FUTEX_WAIT_BITSET`, whose timeout is absolute on
+    `CLOCK_MONOTONIC`, the same clock, so the deadline goes to the kernel as it is, and an early
+    wake sleeps again to the same deadline.
+  - The bitset is `FUTEX_BITSET_MATCH_ANY`, so the consumer's plain `FUTEX_WAKE` wakes it.
+* A send still multiplied once, turning its microseconds into the clock's unit at the first full
+  ring.
+  - `Ticks` is the unit the sends take, made once by the caller's `microsecs_to_ticks` or
+    `nanos_to_ticks`, so a send sets its deadline with an add, the user's call at review. A tick
+    is a nanosecond for now, and `Micros` is gone.
+  - The multiply inside each reading remains, the clock's own and the fold of seconds into
+    nanoseconds, and is the Todo `Clock choices for the deadline sends`.
+  - `Ticks` and `Deadline` keep their counts private, so a caller makes them only by the
+    conversions, and `Deadline::monotonic_nanos` is what a futex needs.
+* The cycle's doc comments wrapped near 70 columns, imitating the older v3 files, and some bullets
+  left their subject to be guessed, "Made once by".
+  - The user's call at review: the source width is 100, per prose.md's Line widths, which says to
+    write to the full width, and every sentence names its subject. Each item's doc opens by naming
+    the item, "`struct Ticks` is a duration", so a reader never looks elsewhere for what is being
+    defined.
+  - Every doc comment and comment this cycle wrote is rewritten so, and older text is left as it
+    is.
+  - `notes/reflow.py` rewraps a file's comment blocks to the width, keeping their structure and
+    checking their words are unchanged, kept for the Todo `Rewrap MPSC v3 to the full width`.
+* The sends' docs opened on what they do, not on how a caller uses them, and showed no use.
+  - Each opens, in the user's wording, with the claim of a free slot, the wait for one, `Err(Full)`
+    when none comes, and `fill` writing the message it captured into the slot.
+  - Each has an example, a doctest run by `cargo test`: `send_with_x` sends, fills the ring, and
+    gets `Err(Full)` at its deadline, and `send_with_backoff_x` sleeps on a full ring until a
+    consumer thread's releases wake it. The crate had no doc examples before.
+* The sends' `# Notes` held how the sends behave, apart from the intro, and "losing a slot" read
+  as a second failure beside `Full`.
+  - The user's call at review: the notes fold into the intro as paragraphs. A lost slot is never
+    an error, the send goes for the next slot at once, and `Err(Full)` means the ring was full at
+    the last look after the deadline, any slot freed in the meantime having gone to another
+    producer.
+* Checked beyond the validate list: the library lints on `wasm32-unknown-unknown` with `std`, the
+  fallback, and without, on `thumbv7em-none-eabihf` and `riscv32imac-unknown-none-elf`, no
+  `std`, and on 32- and 64-bit Arm Linux.
 
 ##### refactor: port mpsc v3 callers to the deadline sends
 
 The demo, `zcr-test-ipm`, the `tp_matrix` tools, the v3 tests, and the `policy.rs` docs call the
-closure sends. Move each to an `_x` send, and record any that cannot move as a holdout.
+closure sends. Make `send(policy, fill)` public with `SendPolicy` and `Room`, rename the `_x` sends
+to `send_spin` and `send_spin_sleep`, and move each caller to one of the three.
 
 ##### refactor: drop mpsc v3 closure sends
 
-Runs only when the port leaves no holdout. Delete `send_with`, `send_with_backoff`, and
-`send_wait`, and rename the `_x` sends to the plain names.
+Delete `send_with`, `send_with_backoff`, and `send_wait`, once the port has moved every caller
+to `send`, `send_spin`, or `send_spin_sleep`.
 
 ##### feat: mpsc v3 deadline sends closing
 
@@ -201,6 +303,26 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 `###` heading, so a citation is a link to its anchor. Long-tail entries live in
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
+
+### Rewrap MPSC v3 to the full width
+
+The MPSC v3 source, `src/mpsc/v3/mod.rs`, `producer.rs`, and `consumer.rs`, wraps its doc comments
+and comments near 70 columns, where the source width is 100, per prose.md's [Line
+widths](agent-data/prose.md#line-widths). Rewrap every comment in the three files to the full
+width.
+
+- A deliberate sweep, the user's call of 2026-09-29, where Line widths otherwise rewraps text only
+  when it is touched.
+- Text only: the words stay, the lines move, so the diff is reviewed as a rewrap, with any wording
+  fix left to its own commit.
+- Lines that read better long stay long, as Line widths allows: the `// OK:` comments on `unwrap`
+  calls, a URL.
+- `python3 notes/reflow.py <file>` does the rewrap: it keeps paragraphs, bullets at any depth,
+  headings, and fenced code, and refuses to write a block whose words changed. A trial on copies
+  of the three files kept every word and shortened them by about 200 lines.
+- After `feat: mpsc v3 deadline sends`, the user's call of 2026-09-29, ahead of `Wake count for
+  sleeping producers`, since both touch `mpsc::v3` and a rewrap first keeps that cycle's diff to
+  its own change.
 
 ### Wake count for sleeping producers
 
@@ -228,7 +350,7 @@ never copied, whatever its size.
   moves, and comes back on a full ring rather than being lost.
 - The consumer: `recv(&mut self, wait) -> Result<Buf, Empty>`, the handle checked and turned back
   into a guard over the same bytes in its own mapping, to read in place, forward, or free.
-- `wait` is one `Micros`, over `send_with_backoff_x` with a built-in spin.
+- `wait` is one `Ticks`, over `send_with_backoff_x` with a built-in spin.
 - The wire form: a pool id and the buffer's byte offset in that pool, never an address, since
   each process maps the pool at its own. Buffer sizes are powers of two, so a receiver checks an
   offset with a compare and a mask and resolves it with an add, the user's rule of 2026-09-28
@@ -250,6 +372,43 @@ never copied, whatever its size.
   per pool, so a pool per producer, and `Pool buffers survive their holders`.
 - Ranked after `Wake count for sleeping producers`, from `feat: mpsc v3 deadline sends` on
   2026-09-28.
+
+### Clock choices for the deadline sends
+
+A deadline send reads the clock on every check of a full ring, and on Linux that is the vDSO's
+`clock_gettime`: a seqlock, the hardware counter, a multiply and a shift to scale it, then the
+crate's fold of seconds into nanoseconds, about 20 ns. Offer the clock as a choice and measure
+the choices side by side before any is the default beyond today's.
+
+- A `Clock` trait, as `Wake` is one: `now`, the two conversions to ticks, and the conversion of a
+  deadline to `CLOCK_MONOTONIC` nanoseconds for the futex.
+- `Ticks<C: Clock>` carries its clock, so a caller picks the clock by the conversion it calls,
+  `Monotonic::micros_to_ticks(100)` or `Counter::micros_to_ticks(100)`, and a send infers the
+  clock from its `Ticks`. No ring type parameter and no cargo feature, since features unify across
+  a build and the comparison needs both clocks in one binary. `Monotonic` is the default,
+  `Ticks<C = Monotonic>`, so today's callers barely change.
+- A clock is not a ring version: it never touches shared memory, and a deadline is private to one
+  send.
+- The choices:
+  - `Monotonic`, today's: `clock_gettime` through `libc` on Linux, `Instant` with `std`.
+  - `Counter`: the CPU's own counter, `rdtsc` on x86-64, `CNTVCT_EL0` on Arm64, `rdtime` on
+    RISC-V, so a check is one counter read and a compare. The frequency: Arm64 reads it from
+    `CNTFRQ_EL0`, x86 calibrates once against `CLOCK_MONOTONIC`, RISC-V's is the device tree's
+    timebase. Fallbacks to `Monotonic`: x86 without an invariant TSC, a VM that traps `rdtsc`, a
+    RISC-V board that traps `rdtime` to firmware. It also brings the sends to bare-metal targets,
+    which have no `libc` clock.
+  - `Monotonic` read every N spins, say 16, which spreads the read's cost over the loop with no
+    per-architecture code.
+  - Sleep only, `spin` of `Ticks::ZERO`, as the energy baseline.
+- What to measure, in tp_matrix beside `mpsc-v3` and `mpsc-v3-futex`: the reaction from a freed
+  slot to a landed send, how far past its deadline a send gives up, and the CPU and energy spent
+  waiting, `perf stat` and RAPL on x86, measured power on a small Arm board.
+- A prediction on record before measuring: a clock is read only while the ring is full, and a
+  spinning core burns until room or its deadline whatever a read costs, so a cheaper clock buys
+  reaction time, not energy, and sleeping is where a battery device saves. We think sleep only
+  dominates energy and the clock matters only for reaction.
+- Every cycle counts, measured in a small device's battery life, the user's rule, and the reason
+  to measure rather than assume. From `feat: mpsc v3 deadline sends` on 2026-09-29.
 
 ### Cycle block: the ladder last, above its rung subsections
 
@@ -749,3 +908,4 @@ _None._
 [23]: #refactor-port-mpsc-v3-callers-to-the-deadline-sends
 [24]: #refactor-drop-mpsc-v3-closure-sends
 [25]: #feat-mpsc-v3-deadline-sends-closing
+[26]: #feat-mpsc-v3-deadline-sends-in-ticks
