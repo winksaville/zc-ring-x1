@@ -14,6 +14,18 @@ lose context, read first at acquaint, acted on, and reset to `_None._` by the re
   reply.
 - Open for the user: `take_over_*(dead, id)` and a holder query, left as `take_over_*(id)`, with no
   Todo entry.
+- Cycle `feat: mpsc v3 deadline sends` is mid-ladder: `feat: mpsc v3 deadline sends behind std` is
+  pushed, and the next rung is `refactor: port mpsc v3 callers to the deadline sends`, not yet
+  started. The version hold is in effect, `0.18.5` with the `-dev` names, per the block's
+  deliberation.
+- For the port rung: the bins that call the `_x` sends need `std`, and `cargo install` skips a bin
+  whose required features are off, so the validate list's install likely becomes `--features
+  std`. The other v3 methods' docs, `send_with`, `send_with_backoff`, `send_wait`, and the
+  consumer's, are still in the old form, not the Parameters form the two new sends now use.
+- Open for the user: whether the Parameters doc form, every parameter documented including
+  `self`, becomes a rule in `agent-data/code.md`, its own cycle, with no Todo entry yet. And the
+  rank of the Todo `Zero-copy endpoints: send a buffer, not a message`, placed second by the agent
+  since the user had not picked one.
 
 ## In Progress
 
@@ -36,12 +48,15 @@ to offer.
 Two sends that take times in microseconds instead of closures, behind a new `std` feature, beside
 the closure sends until porting their callers decides whether those go.
 
-- `send_with_x(give_up_us, fill)`: spin on a full ring until there is room or `give_up_us` has
-  passed, then `Full`. `0` is one probe and `u32::MAX` waits forever.
-- `send_with_backoff_x(spin_us, wait_us, fill)`: spin for up to `spin_us`, then sleep on the
-  producers' futex until `wait_us` has passed in all, sleeping again on what is left after an early
-  return, then `Full`. Under `NoWake` the sleep is a spin.
-- `Wake::wait` takes its timeout per call, replacing `Futex<TIMEOUT_MS>`.
+- `send_with_x(give_up, fill)`: spin on a full ring until there is room or `give_up` has passed,
+  then `Full`. `Micros(0)` is one probe and `Micros::FOREVER` waits forever.
+- `send_with_backoff_x(spin, wait, fill)`: spin for up to `spin`, then sleep on the producers' futex
+  until `wait` more has passed, sleeping again on what is left after an early return, then `Full`.
+  Under `NoWake` the sleep is a spin.
+- Times are `Micros`, a microsecond count, and a wait's lost-wake guard is `Seen`, a word and the
+  value it was last seen holding.
+- `Wake` gains `wait_for`, a wait bounded by the caller's timeout, beside `wait` and
+  `Futex<TIMEOUT_MS>`, which the untimed waits keep.
 - The `std` feature is off by default, the clock is read in one function, and validation builds
   the library with the feature and without it.
 - The v3 callers move to the `_x` sends. If none still needs a closure, `send_with`,
@@ -59,7 +74,7 @@ the closure sends until porting their callers decides whether those go.
 #### Ladder
 
 - [feat: mpsc v3 deadline sends opening][21] (done)
-- [feat: mpsc v3 deadline sends behind std][22]
+- [feat: mpsc v3 deadline sends behind std][22] (done)
 - [refactor: port mpsc v3 callers to the deadline sends][23]
 - [refactor: drop mpsc v3 closure sends][24]
 - [feat: mpsc v3 deadline sends closing][25]
@@ -77,6 +92,20 @@ the closure sends until porting their callers decides whether those go.
     on.
   - The clock is read in one function, so a `no_std` clock replaces it in one place. We think the
     first is Linux's `clock_gettime` through the `libc` the crate already links for the futex.
+- Types for a wait's arguments, the user's call of 2026-09-28 at review, since a bare `expected`
+  said nothing of what value to pass.
+  - `Seen` pairs the word with its value, so the two cannot be mismatched, and its constructor
+    says where the value came from: `load` before the look, or `written` by the caller's own
+    read-modify-write.
+  - `Micros(u32)` over `core::time::Duration`: 4 bytes, not 16, and the microseconds the sends
+    were asked in, with `Micros::FOREVER` the time that never passes.
+- `wait_for` beside `wait`, not in place of it, the user's call of 2026-09-28 in `feat: mpsc v3
+  deadline sends behind std`.
+  - The plan replaced `Futex<TIMEOUT_MS>` with a per-call timeout, but the consumer's
+    `reserve_slot_wait` sleeps untimed too, and giving it a timeout changes the consumer's API,
+    outside this cycle.
+  - The cost: two timeout sources until the consumer has a deadline wait of its own, when
+    `TIMEOUT_MS` can go.
 - Fresh `_x` names during the cycle, the user's call, so old and new sit side by side and callers
   move one at a time.
 - Delete only if the port leaves no holdout: the port is the evidence. The lost-race backoff,
@@ -105,6 +134,44 @@ version bump.
 A send bounded by time needs a closure that reads a clock the crate cannot offer. Add the `std`
 feature, `send_with_x` and `send_with_backoff_x`, a per-call futex timeout, and validation of both
 builds.
+
+* A time-bounded send needs a clock, and the crate is `no_std`.
+  - The `std` feature, off by default, turns `no_std` off and brings in `clock`, one `Stopwatch`
+    type over `std::time::Instant`, so a `no_std` clock replaces it there and nowhere else.
+  - Validation lints the library alone, which is the `no_std` build, then lints and tests
+    everything with every feature.
+* The sends keep the closure sends' loop.
+  - Each is the shared `send` with an `on_full` closure that reads the clock, started at the first
+    full ring, so a send that finds room never reads it.
+  - `Micros::FOREVER`, `u32::MAX` microseconds, is a deadline that never passes and a spin that
+    never ends.
+* A wait's `expected` was a bare `u32`, and what value to pass was the caller's to know.
+  - It is the futex's guard against a lost wake: the value the word held before the caller's last
+    look, so a waker's change between the look and the sleep makes the sleep return at once.
+  - `Seen` carries the word and that value together, `Seen::load` for the producer's wake counter
+    and `Seen::written` for the claim word the consumer's `fetch_or` flagged.
+  - `Micros` is the time type throughout, the crate root's, beside `Full`.
+* The backoff send sleeps on what is left of its wait.
+  - `sleep_full` takes an optional timeout, and `Wake::wait_for` bounds one sleep by it, a
+    `FUTEX_WAIT` of that many microseconds, a spin hint under `NoWake`.
+  - Under `NoWake` the sleep phase skips `sleep_full`, whose waiter count would put a shared
+    atomic write in every spin, and spins instead.
+* The waiting tests' bounds were seconds, so a broken wake hung a test that long before failing.
+  - The user's call at review: none needs to be long, only clearly over a wake or a deadline. The
+    wake bound is 250 ms, `SlowFutex`'s timeout and the deadline a woken send must beat are 500 ms,
+    the last cycle's waiting tests included.
+* The sends' docs assumed the reader knew the closure sends, and named neither every parameter nor
+  what `fill` must do.
+  - The user's call at review: every parameter documented, `self` included, under fixed sections,
+    Parameters, Type parameters, Returns, and Notes, nothing left to "otherwise as" another method.
+  - `fill` writes the message and must write all of it, since the slot still holds the last
+    message's bytes, and `T` names `Desc` as the zero-copy use.
+  - The zero-copy framing the queues are for, a thin layer sending a buffer's handle, is the new
+    Todo `Zero-copy endpoints: send a buffer, not a message`, which absorbs `Descriptor queue
+    endpoints`.
+* Deferred to the port: once the demo and `zcr-test-ipm` call the sends they need `std`, and
+  `cargo install` skips a bin whose required features are off, so the install likely becomes
+  `--features std`.
 
 ##### refactor: port mpsc v3 callers to the deadline sends
 
@@ -146,6 +213,43 @@ none is stranded until its timeout.
 - The consumer's side, not a send's argument: a sleeper cannot choose how many the waker wakes.
 - Measuring it needs a ring that fills, producers that do real work or a slow consumer, the Todo
   `Producer work in the streams`.
+
+### Zero-copy endpoints: send a buffer, not a message
+
+Zero-copy is the point of these queues, and the rings' API does not show it: a send writes its
+message into the ring slot through a closure, which works for any message that fits a slot but
+copies the message's bytes there and holds the slot claimed while it does. A thin layer over the
+rings makes the zero-copy path the plain one: the producer writes a message into a pool buffer on
+its own time, and the ring carries only the buffer's handle, so the message is written once and
+never copied, whatever its size.
+
+- The producer: `loan(size)` a buffer from its own pool, write the message, then `send(&self,
+  wait, buf) -> Result<(), Full<Buf>>`. The buffer's guard goes in by value, so ownership visibly
+  moves, and comes back on a full ring rather than being lost.
+- The consumer: `recv(&mut self, wait) -> Result<Buf, Empty>`, the handle checked and turned back
+  into a guard over the same bytes in its own mapping, to read in place, forward, or free.
+- `wait` is one `Micros`, over `send_with_backoff_x` with a built-in spin.
+- The wire form: a pool id and the buffer's byte offset in that pool, never an address, since
+  each process maps the pool at its own. Buffer sizes are powers of two, so a receiver checks an
+  offset with a compare and a mask and resolves it with an add, the user's rule of 2026-09-28
+  that every cycle counts, measured in a small device's battery life, not in one message's time.
+  Today's `Desc` carries a buffer index, which costs a multiply to resolve.
+- A trusted mode, `unsafe`, skipping the receiver's checks, for a device whose processes all trust
+  each other.
+- A pool id both processes agree on by construction: today's is each process's registry slot in
+  registration order, so two processes agree only by registering alike.
+- For a battery device, sleeping beats spinning by far: the docs say so, and the default spin is
+  short.
+- Documented as the way to use the queues: the `mpsc::v3` module docs and the user guide's
+  zero-copy section, the ring's own closure sends described as the engine and as fine for small
+  fixed messages, and a complete example in `examples/` to copy.
+- From the Todo `Descriptor queue endpoints` [[11]], which this replaces: the demo's ~20-line send
+  path becomes ~3 lines, `to_slot`'s unsafe is audited once inside the crate, both ring flavors,
+  SPSC and MPSC, are served, and the sender holds each sender's private overflow pending list.
+- Bounded by the Todos `Shared allocation: a pool any process can allocate from`, one allocator
+  per pool, so a pool per producer, and `Pool buffers survive their holders`.
+- Ranked after `Wake count for sleeping producers`, from `feat: mpsc v3 deadline sends` on
+  2026-09-28.
 
 ### Cycle block: the ladder last, above its rung subsections
 
@@ -506,16 +610,6 @@ decision and a harness shape:
   ring lines'. iceoryx2 is publish-subscribe over shared memory with no direct depth knob.
 - Which lines and placements they join, and whether the demo or a `tp-pool` sweep is the place, is
   the design question the `tp-pool` cycle answered once for cordyceps.
-
-### Descriptor queue endpoints
-
-Paired DescSender (loan + send) / DescReceiver (recv) [[11]]:
-- own ring endpoint + registry access
-- the demo's ~20-line send path becomes ~3 lines
-- `to_slot`'s unsafe is audited once inside the crate (recv safe by construction)
-- guard handed back on Full
-- design against both ring flavors (SPSC + MPSC)
-- the sender is also where each sender's private overflow pending list will live.
 
 ### Batch alloc/free demo
 

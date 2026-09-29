@@ -15,7 +15,7 @@ use super::{
     seq_of, word, word_pos, word_seg,
 };
 use crate::Empty;
-use crate::wake::{NoWake, Wake};
+use crate::wake::{NoWake, Seen, Wake};
 
 /// The consumer's private state, held apart from the handle so a
 /// guard can borrow it without naming the region's lifetime.
@@ -260,7 +260,7 @@ fn sleep_empty<W: Wake>(segs: &Segments, cur: u32, pos: u32, multi: bool) {
         word_pos(prev) == seq_of(pos)
     };
     if here {
-        W::wait(claim, prev | WAITING);
+        W::wait(Seen::written(claim, prev | WAITING));
     }
     claim.fetch_and(!WAITING, Ordering::SeqCst);
 }

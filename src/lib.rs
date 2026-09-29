@@ -38,7 +38,9 @@
 //! [user guide]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/user-guide.md
 //! [notes/ring-buffer-design.md]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/ring-buffer-design.md
 
-#![cfg_attr(not(test), no_std)]
+// `no_std` unless testing or the `std` feature is on, which adds
+// the time-bounded sends until a `no_std` clock is chosen.
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
 
 use core::mem::{align_of, size_of};
 use core::sync::atomic::AtomicU32;
@@ -48,6 +50,8 @@ use core::sync::atomic::AtomicU32;
 // free-stacks also use CAS and are not gated, v0 having
 // predated the gate, see notes/bugs.md.)
 #[cfg(target_has_atomic = "32")]
+#[cfg(feature = "std")]
+mod clock;
 pub mod mpsc;
 pub mod policy;
 pub mod pool;
@@ -86,6 +90,21 @@ pub struct Full;
 ///   [`Full`] for why it lives in the crate core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Empty;
+
+/// A time in microseconds: a send's deadline or spin, or a sleep's
+/// bound.
+///
+/// - [`Micros::FOREVER`] never passes: a deadline of it never gives
+///   up, and a spin of it never ends.
+/// - Shared by the waits and the sends that take one, so it lives
+///   in the crate core, as [`Full`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Micros(pub u32);
+
+impl Micros {
+    /// The time that never passes.
+    pub const FOREVER: Micros = Micros(u32::MAX);
+}
 
 /// Cache-line-aligned wrapper granting its field sole
 /// ownership of the line.

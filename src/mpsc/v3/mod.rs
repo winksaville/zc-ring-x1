@@ -864,7 +864,7 @@ impl<'a, M: Mode, W: Wake> MpscRing<'a, M, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Empty, Exhausted, Full, PoolHeader};
+    use crate::{Empty, Exhausted, Full, Micros, PoolHeader};
     use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
     /// Test message, two words so a torn write would be visible.
@@ -1517,11 +1517,11 @@ mod tests {
     /// A futex whose timeout is far longer than any test step, so a
     /// wait that ends quickly ended by a wake.
     #[cfg(target_os = "linux")]
-    type SlowFutex = crate::wake::Futex<5_000>;
+    type SlowFutex = crate::wake::Futex<500>;
 
     /// Well under [`SlowFutex`]'s timeout, well over a step's time.
     #[cfg(target_os = "linux")]
-    const WOKEN: std::time::Duration = std::time::Duration::from_millis(2_000);
+    const WOKEN: std::time::Duration = std::time::Duration::from_millis(250);
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -1625,6 +1625,148 @@ mod tests {
             .err();
         assert_eq!(err, Some(Full));
         assert_eq!(seen, [0, 1, 2]);
+    }
+
+    /// Well over any deadline a test below sets, so a send that
+    /// returns sooner returned by room or by its own deadline.
+    #[cfg(feature = "std")]
+    const LONG: std::time::Duration = std::time::Duration::from_millis(250);
+
+    /// [`SlowFutex`]'s timeout: a deadline well over [`WOKEN`], so a
+    /// send that returns sooner was woken.
+    #[cfg(all(feature = "std", target_os = "linux"))]
+    const SLOW: Micros = Micros(500_000);
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn a_deadline_send_gives_up_at_its_time() {
+        // A full ring and no consumer: a zero deadline probes once,
+        // and a longer one spins until it passes, both then Full.
+        // With room, the send lands and reads no clock.
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::<Single>::init(&mut pool, 64, 4, 1).unwrap();
+        let (prod, mut cons) = endpoints(&ring);
+        send(&prod, 0, 3);
+        prod.send_with_x::<Msg>(Micros(0), |m| {
+            m.seq = 3;
+            m.val = 30;
+        })
+        .unwrap();
+        assert_eq!(prod.send_with_x::<Msg>(Micros(0), |_| {}).err(), Some(Full));
+        let start = std::time::Instant::now();
+        assert_eq!(
+            prod.send_with_x::<Msg>(Micros(20_000), |_| {}).err(),
+            Some(Full)
+        );
+        let waited = start.elapsed();
+        assert!(waited >= std::time::Duration::from_millis(20), "{waited:?}");
+        assert!(waited < LONG, "{waited:?}");
+        // With NoWake the backoff send spins through both times.
+        let start = std::time::Instant::now();
+        assert_eq!(
+            prod.send_with_backoff_x::<Msg>(Micros(100), Micros(10_000), |_| {})
+                .err(),
+            Some(Full)
+        );
+        let waited = start.elapsed();
+        assert!(
+            waited >= std::time::Duration::from_micros(10_100),
+            "{waited:?}"
+        );
+        assert!(waited < LONG, "{waited:?}");
+        recv(&mut cons, 0, 4);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn a_deadline_send_lands_when_room_comes() {
+        // A full ring: a send that never gives up spins until the
+        // consumer frees room, then lands after everything before it.
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::<Single>::init(&mut pool, 64, 4, 1).unwrap();
+        let (prod, mut cons) = endpoints(&ring);
+        send(&prod, 0, 4);
+        std::thread::scope(|s| {
+            let writer = s.spawn(move || {
+                prod.send_with_x::<Msg>(Micros::FOREVER, |m| {
+                    m.seq = 4;
+                    m.val = 40;
+                })
+            });
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            recv(&mut cons, 0, 4);
+            assert_eq!(writer.join().unwrap(), Ok(()));
+            recv(&mut cons, 4, 5);
+        });
+    }
+
+    #[cfg(all(feature = "std", target_os = "linux"))]
+    #[test]
+    fn a_deadline_sleeper_is_woken_by_releases() {
+        // A full ring of each mode: the producer spins not at all,
+        // sleeps, and is woken by the consumer's releases long
+        // before its deadline or SlowFutex's timeout.
+        fn run<M: Mode>(count: u32) {
+            let mut r = Region::new();
+            let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+            let ring = MpscRing::<M, SlowFutex>::init(&mut pool, 64, 4, count).unwrap();
+            let (prod, mut cons) = endpoints(&ring);
+            let full = 4 * count as u64;
+            send(&prod, 0, full);
+            let waiters = &ring.segs.claims().prod_waiters;
+            std::thread::scope(|s| {
+                let writer = s.spawn(move || {
+                    let start = std::time::Instant::now();
+                    let sent = prod.send_with_backoff_x::<Msg>(Micros(0), SLOW, |m| {
+                        m.seq = full;
+                        m.val = full * 10;
+                    });
+                    (sent, start.elapsed())
+                });
+                // Asleep before the room comes, so the room wakes it.
+                let start = std::time::Instant::now();
+                while waiters.load(Ordering::SeqCst) == 0 {
+                    assert!(start.elapsed() < LONG, "the producer never slept");
+                    std::thread::yield_now();
+                }
+                recv(&mut cons, 0, full);
+                let (sent, waited) = writer.join().unwrap();
+                assert_eq!(sent, Ok(()));
+                assert!(waited < WOKEN, "woken by its timeout, not a release");
+                recv(&mut cons, full, full + 1);
+            });
+            assert_eq!(waiters.load(Ordering::Relaxed), 0);
+        }
+        run::<Single>(1);
+        run::<Multi>(2);
+    }
+
+    #[cfg(all(feature = "std", target_os = "linux"))]
+    #[test]
+    fn a_deadline_sleep_gives_up_at_its_time() {
+        // A full ring and no consumer: the producer spins, sleeps on
+        // what is left of its wait, and gives up when it passes, far
+        // sooner than SlowFutex's own timeout.
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::<Single, SlowFutex>::init(&mut pool, 64, 2, 1).unwrap();
+        let (prod, _cons) = endpoints(&ring);
+        send(&prod, 0, 2);
+        let start = std::time::Instant::now();
+        assert_eq!(
+            prod.send_with_backoff_x::<Msg>(Micros(100), Micros(20_000), |_| {})
+                .err(),
+            Some(Full)
+        );
+        let waited = start.elapsed();
+        assert!(
+            waited >= std::time::Duration::from_micros(20_100),
+            "{waited:?}"
+        );
+        assert!(waited < LONG, "{waited:?}");
+        assert_eq!(ring.segs.claims().prod_waiters.load(Ordering::Relaxed), 0);
     }
 
     #[test]

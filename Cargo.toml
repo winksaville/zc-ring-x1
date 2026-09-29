@@ -23,6 +23,12 @@ path = "src/bin/zc-ring-x1-demo.rs"
 name = "zcr-test-ipm-dev"
 path = "src/bin/zcr-test-ipm.rs"
 
+[features]
+# The time-bounded sends, MPSC v3's `send_with_x` and
+# `send_with_backoff_x`, which read `std`'s clock until a `no_std`
+# one is chosen. Off, the library is `no_std`.
+std = []
+
 [dependencies]
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 
