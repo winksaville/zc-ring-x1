@@ -585,9 +585,36 @@ macro_rules! mpsc_pair {
             .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
         let ring = zc_ring_x1::mpsc::v3::MpscRing::<$mode>::init(&mut $pool, slot, $depth, segments)
             .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
-        let $producer = ring.claim_producer().unwrap(); // OK: a fresh ring holds no role
+        let $producer = V3Send(ring.claim_producer().unwrap()); // OK: a fresh ring holds no role
         let mut $consumer = ring.claim_consumer().unwrap(); // OK: a fresh ring holds no role
     };
+}
+
+/// `struct V3Send` is an MPSC v3 producer with a `send_with`, which the macros shared with v0 to
+/// v2 call, forwarding to v3's `send`, whose policy a closure is.
+struct V3Send<P>(P);
+
+impl<M: zc_ring_x1::mpsc::v3::Mode> V3Send<zc_ring_x1::mpsc::v3::MpscProducer<'_, M>> {
+    /// `send_with` is v3's `send` with `on_full` as its policy.
+    #[inline]
+    fn send_with<T>(
+        &self,
+        on_full: impl FnMut(u32) -> bool,
+        write_msg: impl FnOnce(&mut T),
+    ) -> Result<(), zc_ring_x1::Full>
+    where
+        T: zerocopy::FromBytes + zerocopy::IntoBytes + zerocopy::KnownLayout,
+    {
+        self.0.send(on_full, write_msg)
+    }
+}
+
+impl<P> core::ops::Deref for V3Send<P> {
+    type Target = P;
+
+    fn deref(&self) -> &P {
+        &self.0
+    }
 }
 
 /// The v3 `Multi` pair under the stress macros' `segmented`
@@ -815,7 +842,7 @@ fn mpsc3_ring_one_msg_3t<M: zc_ring_x1::mpsc::v3::Mode>() -> f64 {
         producers,
         |producer, i, p| {
             producer
-                .send_with::<Msg>(policy::spin, |m| {
+                .send::<Msg>(policy::spin, |m| {
                     m.seq = i;
                     m.val = p;
                 })

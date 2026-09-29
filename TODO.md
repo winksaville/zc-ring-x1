@@ -14,17 +14,18 @@ lose context, read first at acquaint, acted on, and reset to `_None._` by the re
   reply.
 - Open for the user: `take_over_*(dead, id)` and a holder query, left as `take_over_*(id)`, with no
   Todo entry.
-- Cycle `feat: mpsc v3 deadline sends` is mid-ladder: `feat: mpsc v3 deadline sends in ticks` is
-  pushed, and the next rung is `refactor: port mpsc v3 callers to the deadline sends`, not yet
-  started. Its target is in the deliberation: `send(policy, fill)` public, and the wrappers
-  `send_spin` and `send_spin_sleep`. The sends take `Ticks`, made by `microsecs_to_ticks` or
-  `nanos_to_ticks`. The version
-  hold ended at `0.19.0-2`, so the port is `0.19.0-3`, with the `-dev` names, per the block's
-  deliberation.
-- For the port rung: on Linux the bins need no `std` for the `_x` sends, so the install's
-  `--features std` question is gone there. The other v3 methods' docs, `send_with`,
-  `send_with_backoff`, `send_wait`, and the consumer's, are still in the old form, not the
-  Parameters form the two new sends now use.
+- Cycle `feat: mpsc v3 deadline sends` runs unattended to the closing under the user's waiver of
+  2026-09-29, recorded in the block's deliberation: `refactor: mpsc v3 send takes a policy` and
+  `refactor: drop mpsc v3 closure sends` are pushed by the agent, and the closing waits for the
+  user. Nothing is done on the 7600X while iiac-perf measures there.
+- For the closing: the design note's MPSC v3 sections still describe `send_with`, `send_wait`,
+  and `send_with_backoff`, and want the policy `send`, `send_spin`, `send_spin_sleep`, `Ticks`,
+  and the three machines' measurements, each table naming its build profile.
+- Scratch left for the user to keep or delete: `~/tmp/zc-ab` on the 7600X and the Pi, both
+  source trees and four `tp-stream` builds each, and the Pi's demo build. Local copies of the
+  tables are in `tmp/ab/`.
+- The consumer's v3 methods' docs are still in the old form, not the Parameters form the
+  producer's sends now use.
 - Open for the user: an overview page for reviewers, planned after the port, when the API it
   describes is final.
 - Open for the user: whether the Parameters doc form, every parameter documented including
@@ -123,6 +124,14 @@ callers decides whether those go.
     `std` remains the fallback for other targets.
   - Every cycle counts, the user's rule, so a check is one `u64` compare against a deadline, not
     a conversion of elapsed time to microseconds.
+- Run unattended to the closing, the user's explicit waiver of 2026-09-29, the user away.
+  - It covers: the per-rung work review and description review, and the approval of each push to
+    the `feat-mpsc-v3-deadline-sends` bookmark, for `refactor: mpsc v3 send takes a policy` and
+    `refactor: drop mpsc v3 closure sends`.
+  - It does not cover: the closing, Land, any push to `main`, any write to another repo, or any
+    work on the 7600X, where iiac-perf is measuring. The Pi 5 is free to use.
+  - Where a question would stop the cycle, the agent takes the option that keeps the plan and
+    records it in the rung's subsection, and a change of scope stops the cycle.
 - One general `send` and two wrappers, the user's call of 2026-09-29, the target of the port and
   drop rungs.
   - `send(policy, fill)`, today's private core made public, where a policy is a `SendPolicy`: what
@@ -161,7 +170,7 @@ callers decides whether those go.
 - [feat: mpsc v3 deadline sends opening][21] (done)
 - [feat: mpsc v3 deadline sends behind std][22] (done)
 - [feat: mpsc v3 deadline sends in ticks][26] (done)
-- [refactor: port mpsc v3 callers to the deadline sends][23]
+- [refactor: mpsc v3 send takes a policy][23] (done)
 - [refactor: drop mpsc v3 closure sends][24]
 - [feat: mpsc v3 deadline sends closing][25]
 
@@ -274,11 +283,45 @@ sends on Linux or `std`.
   fallback, and without, on `thumbv7em-none-eabihf` and `riscv32imac-unknown-none-elf`, no
   `std`, and on 32- and 64-bit Arm Linux.
 
-##### refactor: port mpsc v3 callers to the deadline sends
+##### refactor: mpsc v3 send takes a policy
 
 The demo, `zcr-test-ipm`, the `tp_matrix` tools, the v3 tests, and the `policy.rs` docs call the
 closure sends. Make `send(policy, fill)` public with `SendPolicy` and `Room`, rename the `_x` sends
 to `send_spin` and `send_spin_sleep`, and move each caller to one of the three.
+
+* The closure sends were three public wrappers over a private core, and a caller who wanted its
+  own wait policy could not reach the core.
+  - `send(policy, write_msg)` is the core made public. A `SendPolicy` decides at a full ring, and
+    hears of each lost slot, and a closure `|attempt| ...` is a policy, so `|_| false` probes once
+    and `policy::spin` never gives up. The core's `sleep` flag is gone: a policy sleeps through
+    `Room`, which erases the ring's mode and wake so it takes no type parameters.
+  - A policy whose state the caller reads afterward implements `SendPolicy` for `&mut` itself,
+    since a blanket impl for `&mut P` would overlap the closures' own.
+  - `send_spin(give_up, write_msg)` and `send_spin_sleep(spin_time, sleep_time, write_msg)` are
+    `send` with a policy already written, the names the user's.
+* Every caller moved off `send_with`, `send_with_backoff`, and `send_wait`, proved by building the
+  whole workspace with the three disabled.
+  - The v3 tests use `send`, with two test policies standing in for `send_wait` and
+    `send_with_backoff`, `SleepThen` and `LostThen`.
+  - The demo and tp_matrix call v3 through macros shared with v0 to v2, so a `V3Send` shim gives
+    v3 their `send_with`, forwarding to `send`, and tp_matrix's `Backoff` passes a `BackoffPolicy`.
+  - `zcr-test-ipm` uses `send_spin_sleep`, sleeping on its futex, and its `WAIT` now bounds
+    each message rather than the whole run, as its error message already said.
+* The port measured slower on some v3 flavors, and the cause was the build, not the API.
+  - `tp-stream -d 1`, three alternating runs per build, 3900X, 2026-09-29: against the pushed
+    commit, on the SMT pair, `mpsc-v3-single` 10.1 to 11.5 ns and `mpsc-v3-backoff` 10.6 to
+    12.2, each tight across runs, and with loops aligned to 64 bytes the gaps stayed.
+  - The loops are functionally identical: the core's `sleep` flag was a constant `false`, the
+    closures' `on_lost` a no-op or the same `policy::backoff`, and the `Room` unused by a closure
+    policy, and nothing was left out of line but the cold `switch` and `wake_consumer`. The user's
+    reasoning: identical loops fully inlined should run alike.
+  - With one codegen unit and fat LTO both builds run alike on every row, on the 3900X, the
+    7600X, and the Pi 5, and under the default profile the gaps go either way by machine and row,
+    up to 1.4 ns on the 7600X, where the port ran faster on the same-CCX `single` row. The
+    profile moves whole rows far more, in both directions, which is the Todo `Measurement builds
+    and the producer-consumer rhythm`.
+  - Moving the policy call out of line, tried first, reshuffled the rows under the default profile
+    rather than closing the gaps, and was backed out.
 
 ##### refactor: drop mpsc v3 closure sends
 
@@ -323,6 +366,36 @@ width.
 - After `feat: mpsc v3 deadline sends`, the user's call of 2026-09-29, ahead of `Wake count for
   sleeping producers`, since both touch `mpsc::v3` and a rewrap first keeps that cycle's diff to
   its own change.
+
+### Measurement builds and the producer-consumer rhythm
+
+A stream's ns per message measures two cores in a rhythm, and a build that changes either side's
+loop slightly can move the rhythm, and so the number, by far more than the change being measured.
+The port of the MPSC v3 callers to the policy `send` showed it: under the default release profile
+the same functionally identical loops measured up to 1.8 ns apart, in either direction by machine
+and row, and under one codegen unit and fat LTO they measured alike on every row of three
+machines. `tp-stream -d 1`, three alternating runs per build, 2026-09-29:
+
+- One codegen unit and fat LTO against the default profile, the port's build: the 3900X's SMT
+  rows about 35% faster and cross-CCX about 20%, the 7600X's SMT rows 25 to 35% faster but its
+  same-CCX and unpinned rows 65 to 87% slower, and the Pi 5's within -4 to +2%.
+- The 7600X's same-CCX slowdown is a change of rhythm, not of work: cache-line transfers per
+  message rise from 2.0 to 2.4, and the ring is empty 7 to 15% of the time where it was 0.03%, so
+  producer and consumer fall out of step and contend on the shared lines.
+- So a build profile is no speedup to adopt, and one to fix: every measurement names its profile,
+  a comparison between two builds uses the same profile, runs alternate, and more than one machine
+  is measured before a change is called a cost or a win.
+- Loop alignment weighed with it: 64-byte loop alignment alone moved the 3900X's cross-CCX rows
+  about 10% in flavors a change never touched, `mpsc-v2` 51.1 to 46.2 and `spsc-v4` 57.3 to 50.8.
+- What sets the rhythm is the open question: which side's loop falls behind, and whether a
+  producer that does work between sends, the Todo `Producer work in the streams`, steadies it, as
+  a real workload would.
+- The A/B runner used here, `tmp/ab/`: two source trees built under two profiles on a remote
+  machine over ssh, three alternating rounds, and a median table, worth keeping under `notes/`.
+- `tp-stream`'s cache-line transfer column reads 0 on the Pi, and we think its probe counts
+  transfers only on x86.
+- From `feat: mpsc v3 deadline sends`, the user's reasoning that identical loops fully inlined
+  should run alike, and the user's call to measure on the 7600X and the Pi.
 
 ### Wake count for sleeping producers
 
@@ -905,7 +978,7 @@ _None._
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [21]: #feat-mpsc-v3-deadline-sends-opening
 [22]: #feat-mpsc-v3-deadline-sends-behind-std
-[23]: #refactor-port-mpsc-v3-callers-to-the-deadline-sends
+[23]: #refactor-mpsc-v3-send-takes-a-policy
 [24]: #refactor-drop-mpsc-v3-closure-sends
 [25]: #feat-mpsc-v3-deadline-sends-closing
 [26]: #feat-mpsc-v3-deadline-sends-in-ticks

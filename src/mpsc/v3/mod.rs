@@ -44,9 +44,10 @@
 //!   the old segment's header. The consumer reads the seal only when a
 //!   slot is not committed, so its fast path
 //!   is v1's one load.
-//! - Waiting: `send_wait` and `reserve_slot_wait` sleep between
-//!   attempts where `send_with` and `reserve_slot_with` spin or
-//!   give up, and call the same policy after each wake.
+//! - Waiting: a producer's `send` asks its `SendPolicy` what to do at a full ring, and the policy
+//!   may sleep through `Room`, as `send_spin_sleep` does, where `send_spin` only spins. The
+//!   consumer's `reserve_slot_wait` sleeps between attempts where `reserve_slot_with` spins or
+//!   gives up, and calls the same policy after each wake.
 //!   - The consumer sleeps on the claim word, whose bit 31 is its
 //!     waiting flag. It sets the flag and sleeps only while the
 //!     word, flag aside, names its own segment and position, so no
@@ -79,7 +80,7 @@ mod producer;
 pub use crate::spsc::v2::SLOT_HEADER_BYTES;
 pub use crate::spsc::v3::{MAX_SEG_CAPACITY, MAX_SEGMENTS, SEQ_BITS};
 pub use consumer::{MpscConsumer, MpscReadSlot};
-pub use producer::MpscProducer;
+pub use producer::{MpscProducer, Room, SendPolicy};
 
 /// The position's bits within a word.
 const SEQ_MASK: u32 = (1 << SEQ_BITS) - 1;
@@ -895,7 +896,7 @@ mod tests {
     /// Send `from..to` as `seq = i`, `val = i * 10`.
     fn send<M: Mode, W: Wake>(prod: &MpscProducer<'_, M, W>, from: u64, to: u64) {
         for i in from..to {
-            prod.send_with::<Msg>(
+            prod.send::<Msg>(
                 |_| false,
                 |m| {
                     m.seq = i;
@@ -930,6 +931,31 @@ mod tests {
             ring.claim_producer().unwrap(),
             ring.claim_consumer().unwrap(),
         )
+    }
+
+    /// `struct SleepThen` is a policy that sleeps through [`Room`] at each full look, then asks its
+    /// closure whether to look again, as the old `send_wait` does.
+    struct SleepThen<F>(F);
+
+    impl<F: FnMut(u32) -> bool> SendPolicy for SleepThen<F> {
+        fn on_full(&mut self, attempt: u32, room: &Room<'_>) -> bool {
+            room.sleep();
+            (self.0)(attempt)
+        }
+    }
+
+    /// `struct LostThen` is a policy that spins at a full ring and hands each lost slot to its
+    /// closure.
+    struct LostThen<L>(L);
+
+    impl<L: FnMut(u32)> SendPolicy for LostThen<L> {
+        fn on_full(&mut self, attempt: u32, _room: &Room<'_>) -> bool {
+            crate::policy::spin(attempt)
+        }
+
+        fn on_lost(&mut self, lost: u32) {
+            (self.0)(lost)
+        }
     }
 
     /// Segments free by the in-use word.
@@ -1370,7 +1396,7 @@ mod tests {
             let cap = cap as u64;
             for lap in 0..5u64 {
                 send(&prod, lap * cap, lap * cap + cap);
-                assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
+                assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
                 recv(&mut cons, lap * cap, lap * cap + cap);
                 assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
             }
@@ -1435,7 +1461,7 @@ mod tests {
     }
 
     /// Each producer on its own thread sending `count` messages with
-    /// `send_wait`, and the consumer reading with
+    /// `send` and a [`SleepThen`] policy, and the consumer reading with
     /// `reserve_slot_wait`, all waiting without end: per-producer
     /// order holds and every message arrives.
     fn stream_waiting<M: Mode, W: Wake>(
@@ -1448,13 +1474,10 @@ mod tests {
             for (p, prod) in prods.into_iter().enumerate() {
                 s.spawn(move || {
                     for i in 0..count {
-                        prod.send_wait::<Msg>(
-                            |_| true,
-                            |m| {
-                                m.seq = i;
-                                m.val = p as u64;
-                            },
-                        )
+                        prod.send::<Msg>(SleepThen(|_| true), |m| {
+                            m.seq = i;
+                            m.val = p as u64;
+                        })
                         .unwrap(); // OK: a policy of |_| true never gives up
                     }
                 });
@@ -1545,7 +1568,7 @@ mod tests {
                 (start.elapsed(), wakes)
             });
             std::thread::sleep(std::time::Duration::from_millis(50));
-            prod.send_with::<Msg>(|_| false, |m| m.seq = 7).unwrap();
+            prod.send::<Msg>(|_| false, |m| m.seq = 7).unwrap();
             let (waited, wakes) = reader.join().unwrap();
             assert!(waited < WOKEN, "woken by its timeout, not the send");
             // A sleep and a wake, and perhaps a short spin between a
@@ -1568,17 +1591,14 @@ mod tests {
             let (prod, mut cons) = endpoints(&ring);
             let full = 4 * count as u64;
             send(&prod, 0, full);
-            assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
+            assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
             std::thread::scope(|s| {
                 let writer = s.spawn(move || {
                     let start = std::time::Instant::now();
-                    prod.send_wait::<Msg>(
-                        |_| true,
-                        |m| {
-                            m.seq = full;
-                            m.val = full * 10;
-                        },
-                    )
+                    prod.send::<Msg>(SleepThen(|_| true), |m| {
+                        m.seq = full;
+                        m.val = full * 10;
+                    })
                     .unwrap();
                     start.elapsed()
                 });
@@ -1615,11 +1635,11 @@ mod tests {
         send(&prod, 0, 2);
         let mut seen = Vec::new();
         let err = prod
-            .send_wait::<Msg>(
-                |attempt| {
+            .send::<Msg>(
+                SleepThen(|attempt| {
                     seen.push(attempt);
                     attempt < 2
-                },
+                }),
                 |_| {},
             )
             .err();
@@ -1647,18 +1667,15 @@ mod tests {
         let ring = MpscRing::<Single>::init(&mut pool, 64, 4, 1).unwrap();
         let (prod, mut cons) = endpoints(&ring);
         send(&prod, 0, 3);
-        prod.send_with_x::<Msg>(Ticks::ZERO, |m| {
+        prod.send_spin::<Msg>(Ticks::ZERO, |m| {
             m.seq = 3;
             m.val = 30;
         })
         .unwrap();
-        assert_eq!(
-            prod.send_with_x::<Msg>(Ticks::ZERO, |_| {}).err(),
-            Some(Full)
-        );
+        assert_eq!(prod.send_spin::<Msg>(Ticks::ZERO, |_| {}).err(), Some(Full));
         let start = std::time::Instant::now();
         assert_eq!(
-            prod.send_with_x::<Msg>(crate::microsecs_to_ticks(20_000), |_| {})
+            prod.send_spin::<Msg>(crate::microsecs_to_ticks(20_000), |_| {})
                 .err(),
             Some(Full)
         );
@@ -1668,7 +1685,7 @@ mod tests {
         // With NoWake the backoff send spins through both times.
         let start = std::time::Instant::now();
         assert_eq!(
-            prod.send_with_backoff_x::<Msg>(
+            prod.send_spin_sleep::<Msg>(
                 crate::microsecs_to_ticks(100),
                 crate::microsecs_to_ticks(10_000),
                 |_| {}
@@ -1697,7 +1714,7 @@ mod tests {
         send(&prod, 0, 4);
         std::thread::scope(|s| {
             let writer = s.spawn(move || {
-                prod.send_with_x::<Msg>(Ticks::FOREVER, |m| {
+                prod.send_spin::<Msg>(Ticks::FOREVER, |m| {
                     m.seq = 4;
                     m.val = 40;
                 })
@@ -1725,7 +1742,7 @@ mod tests {
             std::thread::scope(|s| {
                 let writer = s.spawn(move || {
                     let start = std::time::Instant::now();
-                    let sent = prod.send_with_backoff_x::<Msg>(
+                    let sent = prod.send_spin_sleep::<Msg>(
                         Ticks::ZERO,
                         crate::microsecs_to_ticks(SLOW_US),
                         |m| {
@@ -1765,7 +1782,7 @@ mod tests {
         send(&prod, 0, 2);
         let start = std::time::Instant::now();
         assert_eq!(
-            prod.send_with_backoff_x::<Msg>(
+            prod.send_spin_sleep::<Msg>(
                 crate::microsecs_to_ticks(100),
                 crate::microsecs_to_ticks(20_000),
                 |_| {}
@@ -1799,15 +1816,14 @@ mod tests {
             for (p, prod) in prods.into_iter().enumerate() {
                 s.spawn(move || {
                     for i in 0..COUNT {
-                        prod.send_with_backoff::<Msg>(
-                            crate::policy::spin,
-                            |lost| {
+                        prod.send::<Msg>(
+                            LostThen(|lost| {
                                 assert!(lost >= 1);
                                 if lost == 1 {
                                     first_losses.fetch_add(1, Ordering::Relaxed);
                                 }
                                 crate::policy::backoff(lost);
-                            },
+                            }),
                             |m| {
                                 m.seq = i;
                                 m.val = p as u64;
@@ -1849,7 +1865,7 @@ mod tests {
         assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
         for lap in 0..3u64 {
             send(&prod, lap * 4, lap * 4 + 4);
-            assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
+            assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
             recv(&mut cons, lap * 4, lap * 4 + 4);
             assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
         }
@@ -1868,7 +1884,7 @@ mod tests {
                 endpoints(&MpscRing::<Multi>::init(&mut pool, 64, cap, count).unwrap());
             let total = (cap * count) as u64;
             send(&prod, 0, total);
-            assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
+            assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
             assert_eq!(free_segments(&prod), 0);
             assert_eq!(prod.switches(), (count - 1) as u64);
             recv(&mut cons, 0, total);
@@ -1947,12 +1963,12 @@ mod tests {
         let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 1, 2).unwrap());
         send(&prod, 0, 2);
         assert_eq!(prod.segment(), 1);
-        assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
+        assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
         // Segment 0 is read, but given back only at the next
         // reserve, so the producer still finds nothing free.
         recv(&mut cons, 0, 1);
         assert_eq!(free_segments(&prod), 0);
-        assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
+        assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
         // That reserve follows the seal and gives segment 0 back,
         // and its release frees segment 1's slot.
         recv(&mut cons, 1, 2);
@@ -1988,7 +2004,7 @@ mod tests {
         send(&prod, 0, 2);
         let mut seen = Vec::new();
         let err = prod
-            .send_with::<Msg>(
+            .send::<Msg>(
                 |attempt| {
                     seen.push(attempt);
                     attempt < 2
@@ -2002,7 +2018,7 @@ mod tests {
             .reserve_slot_with::<Msg>(|_| panic!("policy consulted with a message available"))
             .unwrap();
         msg.release();
-        prod.send_with::<Msg>(|_| panic!("policy consulted with room available"), |_| {})
+        prod.send::<Msg>(|_| panic!("policy consulted with room available"), |_| {})
             .unwrap();
     }
 
@@ -2036,7 +2052,7 @@ mod tests {
         let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 4, 2).unwrap());
         send(&prod, 0, 1);
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            prod.send_with::<Msg>(|_| false, |_: &mut Msg| panic!("fill panics"))
+            prod.send::<Msg>(|_| false, |_: &mut Msg| panic!("fill panics"))
         }));
         assert!(unwound.is_err());
         send(&prod, 1, 3);
@@ -2132,7 +2148,7 @@ mod tests {
             for (p, prod) in prods.into_iter().enumerate() {
                 s.spawn(move || {
                     for i in 0..count {
-                        prod.send_with::<Msg>(crate::policy::spin, |m| {
+                        prod.send::<Msg>(crate::policy::spin, |m| {
                             m.seq = i;
                             m.val = p as u64;
                         })
@@ -2204,7 +2220,7 @@ mod tests {
                         send(&prod, i, i + 1);
                         used |= 1 << prod.segment();
                     }
-                    assert_eq!(prod.send_with::<Msg>(|_| false, |_| {}).err(), Some(Full));
+                    assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
                     assert_eq!(
                         used.count_ones(),
                         count,
@@ -2307,7 +2323,7 @@ mod tests {
             for p in 0..2u64 {
                 s.spawn(move || {
                     for i in 0..COUNT {
-                        prod.send_with::<Msg>(crate::policy::spin, |m| {
+                        prod.send::<Msg>(crate::policy::spin, |m| {
                             m.seq = i;
                             m.val = p;
                         })

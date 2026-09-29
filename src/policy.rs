@@ -16,9 +16,8 @@
 //!   eventfd, async wakers) needs a peer wake over the
 //!   header's user line and is a layer above this crate.
 
-/// Back off after a lost claim race: `2^lost` spin hints, capped
-/// at 64, for an MPSC v3 producer's
-/// [`send_with_backoff`](crate::mpsc::v3::MpscProducer::send_with_backoff).
+/// Back off after a lost claim race: `2^lost` spin hints, capped at 64, for an MPSC v3
+/// [`SendPolicy`](crate::mpsc::v3::SendPolicy)'s [`on_lost`](crate::mpsc::v3::SendPolicy::on_lost).
 ///
 /// - Each producer that loses a claim CAS pauses before it reads the
 ///   claim word again, longer after each loss in a row, so fewer
