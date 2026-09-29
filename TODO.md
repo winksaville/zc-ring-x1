@@ -16,8 +16,8 @@ lose context, read first at acquaint, acted on, and reset to `_None._` by the re
   Todo entry.
 - Cycle `feat: mpsc v3 deadline sends` runs unattended to the closing under the user's waiver of
   2026-09-29, recorded in the block's deliberation: `refactor: mpsc v3 send takes a policy` and
-  `refactor: drop mpsc v3 closure sends` are pushed by the agent, and the closing waits for the
-  user. Nothing is done on the 7600X while iiac-perf measures there.
+  `refactor: drop mpsc v3 closure sends` are pushed by the agent, and the closing, next, waits for
+  the user. Nothing is done on the 7600X while iiac-perf measures there.
 - For the closing: the design note's MPSC v3 sections still describe `send_with`, `send_wait`,
   and `send_with_backoff`, and want the policy `send`, `send_spin`, `send_spin_sleep`, `Ticks`,
   and the three machines' measurements, each table naming its build profile.
@@ -171,7 +171,7 @@ callers decides whether those go.
 - [feat: mpsc v3 deadline sends behind std][22] (done)
 - [feat: mpsc v3 deadline sends in ticks][26] (done)
 - [refactor: mpsc v3 send takes a policy][23] (done)
-- [refactor: drop mpsc v3 closure sends][24]
+- [refactor: drop mpsc v3 closure sends][24] (done)
 - [feat: mpsc v3 deadline sends closing][25]
 
 ##### feat: mpsc v3 deadline sends opening
@@ -327,6 +327,18 @@ to `send_spin` and `send_spin_sleep`, and move each caller to one of the three.
 
 Delete `send_with`, `send_with_backoff`, and `send_wait`, once the port has moved every caller
 to `send`, `send_spin`, or `send_spin_sleep`.
+
+* Five sends were three too many, once no caller used the closure wrappers.
+  - The three go, with `FullAndLost`, the policy `send_with_backoff` built from its closures, so
+    the producer has `send`, `send_spin`, and `send_spin_sleep`, the user's call of 2026-09-29.
+  - The producer's doc names the three, and the safety comment on its `Sync` speaks of the sends,
+    not of `send_with`.
+* The README and the user guide taught the deleted sends.
+  - Their MPSC v3 parts now teach the three, the guide's example sleeping with
+    `send_spin_sleep`, and the README's flavor table says each v3 flavor sends by `send` with its
+    policy. The design note's MPSC v3 sections are left to the closing, outside the user's waiver.
+* Checked beyond the validate list: `cargo test --all-features` passes on the Pi 5, aarch64, the
+  deadline sends, the futex, the `libc` clock, the inter-process test, and the doctests among it.
 
 ##### feat: mpsc v3 deadline sends closing
 

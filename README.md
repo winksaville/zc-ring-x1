@@ -138,24 +138,26 @@ claim word and filling it through a closure:
 - The mode `M`: `Multi`, v2's switching over up to 32 segments, or `Single`, one segment, whose
   code has no switch path at all. While a `Multi` ring does not switch, it runs as fast as a
   `Single` one.
-- The wake `W`: `NoWake`, where a wait is a spin, or `Futex` on Linux, where `send_wait` and
+- The wake `W`: `NoWake`, where a wait is a spin, or `Futex` on Linux, where `send_spin_sleep` and
   `reserve_slot_wait` sleep in the kernel until the other side acts. `NoWake` compiles every wake
   check out.
 - Roles are counted, not named: one consumer and producers up to a most, each claimed and
   released by one CAS, and a holder that dies is recovered by restarting the set the ring
   belongs to, not by a takeover.
-- Producers send with `send_with`, spinning or giving up under a policy, `send_with_backoff`,
-  backing off after a lost claim race, or `send_wait`, sleeping on a full ring.
+- Producers send with `send_spin`, spinning on a full ring for up to a time, `send_spin_sleep`,
+  spinning and then sleeping, or `send`, under a `SendPolicy` of the caller's, which decides at a
+  full ring and hears of each lost claim race. Times are `Ticks`, made once by
+  `microsecs_to_ticks` or `nanos_to_ticks`.
 
 The measurement tools name each ring `xpsc-vN` after its path, and name the v3 variants by what
 they add:
 
 | Flavor | Ring |
 |---|---|
-| `mpsc-v3` | `MpscRing<Multi, NoWake>`, sending by `send_with` |
+| `mpsc-v3` | `MpscRing<Multi, NoWake>`, sending by `send` with a spinning policy |
 | `mpsc-v3-single` | `MpscRing<Single, NoWake>` |
 | `mpsc-v3-futex` | `MpscRing<Multi, Futex>`, still spinning, so it measures the wake checks' cost with nothing asleep |
-| `mpsc-v3-backoff` | `MpscRing<Multi, NoWake>`, sending by `send_with_backoff` with `policy::backoff` |
+| `mpsc-v3-backoff` | `MpscRing<Multi, NoWake>`, sending by `send` with a policy whose `on_lost` is `policy::backoff` |
 
 Which to use, from the measurements so far:
 
@@ -403,8 +405,8 @@ guide's [MPSC v3](notes/user-guide.md#mpsc-v3-joining-counted-roles-and-waiting)
   belongs to restarts. `release_ring` gives a ring no role holds back to its pool.
 - Two modes chosen at compile time: `Single`, one segment and the fastest MPSC ring with slack,
   and `Multi`, v2's switching.
-- Waiting: `send_wait` and `reserve_slot_wait` sleep on a full or empty ring through a `Wake`
-  type, a futex on Linux, where `send_with` and `reserve_slot_with` spin or give up.
+- Waiting: `send_spin_sleep` and `reserve_slot_wait` sleep on a full or empty ring through a
+  `Wake` type, a futex on Linux, where `send_spin` and `reserve_slot_with` spin or give up.
 - Proven between processes: `zcr-test-ipm`'s MPSC mode, run by `cargo test --test ipm`, sends
   from two producer processes to a consumer that hands off to a second consumer process
   mid-stream, then releases the ring. By hand, each step after the one before it, the producers

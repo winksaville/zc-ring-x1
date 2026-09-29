@@ -934,7 +934,7 @@ mod tests {
     }
 
     /// `struct SleepThen` is a policy that sleeps through [`Room`] at each full look, then asks its
-    /// closure whether to look again, as the old `send_wait` does.
+    /// closure whether to look again.
     struct SleepThen<F>(F);
 
     impl<F: FnMut(u32) -> bool> SendPolicy for SleepThen<F> {

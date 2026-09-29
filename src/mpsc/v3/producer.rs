@@ -19,17 +19,16 @@ use crate::clock::now_ticks;
 use crate::wake::{NoWake, Seen, Wake};
 use crate::{Deadline, Full};
 
-/// A producing handle, one counted producer role: claim one per
-/// producing thread or process with
-/// [`MpscRing::claim_producer`](super::MpscRing::claim_producer),
-/// then `send_with`.
+/// `struct MpscProducer` is a producing handle, one counted producer role: a producing thread or
+/// process claims one with [`MpscRing::claim_producer`](super::MpscRing::claim_producer), then
+/// sends with [`send`](MpscProducer::send), [`send_spin`](MpscProducer::send_spin), or
+/// [`send_spin_sleep`](MpscProducer::send_spin_sleep).
 ///
-/// - `send_with` takes `&self`: exclusivity comes from the claim
-///   CAS, not the borrow, so one handle may also be shared by
-///   reference.
-/// - Not `Clone`: each handle is one count in the roles word, and
-///   [`release`](MpscProducer::release) gives it back. Dropping
-///   the handle writes nothing, so the count stays held.
+/// - The sends take `&self`: exclusivity comes from the claim CAS, not the borrow, so one handle
+///   may also be shared by reference.
+/// - `MpscProducer` is not `Clone`: each handle is one count in the roles word, and
+///   [`release`](MpscProducer::release) gives it back. Dropping the handle writes nothing, so the
+///   count stays held.
 pub struct MpscProducer<'a, M: Mode = Multi, W: Wake = NoWake> {
     /// Geometry and segment addresses.
     pub(super) segs: Segments,
@@ -41,8 +40,8 @@ pub struct MpscProducer<'a, M: Mode = Multi, W: Wake = NoWake> {
 // claims are exclusive by CAS, and slot writes are handed off
 // with Release/Acquire ordering.
 unsafe impl<M: Mode, W: Wake> Send for MpscProducer<'_, M, W> {}
-// SAFETY: send_with is &self and every access is protected as
-// above, so shared references across threads are equally fine.
+// SAFETY: the sends are &self and every access is protected as above, so shared references
+// across threads are equally fine.
 unsafe impl<M: Mode, W: Wake> Sync for MpscProducer<'_, M, W> {}
 
 /// Wake the consumer asleep on the claim word, out of line and
@@ -148,25 +147,6 @@ impl<M: Mode, W: Wake> Sleeper for MpscProducer<'_, M, W> {
     }
 }
 
-/// `struct FullAndLost` is the policy of two closures, one for a full ring and one for a lost
-/// slot, which [`send_with_backoff`](MpscProducer::send_with_backoff) passes to `send`.
-struct FullAndLost<F, L> {
-    on_full: F,
-    on_lost: L,
-}
-
-impl<F: FnMut(u32) -> bool, L: FnMut(u32)> SendPolicy for FullAndLost<F, L> {
-    #[inline]
-    fn on_full(&mut self, attempt: u32, _room: &Room<'_>) -> bool {
-        (self.on_full)(attempt)
-    }
-
-    #[inline]
-    fn on_lost(&mut self, lost: u32) {
-        (self.on_lost)(lost)
-    }
-}
-
 impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     /// Build the handle for a claimed role from the ring's
     /// geometry snapshot.
@@ -201,91 +181,6 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     /// ring's segment count less one.
     pub fn segment(&self) -> u32 {
         word_seg(self.segs.claim().load(Ordering::Relaxed))
-    }
-
-    /// Claim the next position, fill it in place, commit on
-    /// closure return, and retry a full ring under the injected wait
-    /// policy, then [`Full`].
-    ///
-    /// - `fill` writes the message through `&mut T`, and commit is by
-    ///   construction, so there is no abandonment state. If `fill`
-    ///   panics, its slot stays claimed and never committed, as if
-    ///   the producer had been killed there: the consumer waits at
-    ///   it, and the ring is recovered by a restart.
-    /// - `on_full` is called after each failed attempt with the
-    ///   attempt count (0-based, saturating), and returning `false`
-    ///   gives up. Pass `|_| false` for a single non-blocking
-    ///   probe. Full means the current segment's next slot is
-    ///   unread and no segment is free.
-    /// - Losing a claim race, or a switch race, is not a policy
-    ///   call: the ring made progress, and this producer retries
-    ///   with the fresher claim word.
-    /// - `T` must fit the slot body, `slot_size` less
-    ///   [`SLOT_HEADER_BYTES`](super::SLOT_HEADER_BYTES), at an
-    ///   alignment of at most that.
-    /// - A consumer asleep on the empty ring is woken after the
-    ///   commit, when its [`Wake`] wakes.
-    pub fn send_with<T>(
-        &self,
-        on_full: impl FnMut(u32) -> bool,
-        fill: impl FnOnce(&mut T),
-    ) -> Result<(), Full>
-    where
-        T: FromBytes + IntoBytes + KnownLayout,
-    {
-        self.send(on_full, fill)
-    }
-
-    /// [`send_with`](MpscProducer::send_with), calling `on_lost`
-    /// after each claim race this producer loses, with the count of
-    /// losses in a row, 1 for the first. A weak CAS failing
-    /// spuriously counts as a loss.
-    ///
-    /// - A lost race is no policy call in `send_with`: the ring made
-    ///   progress, and the loser reads the claim word again at once.
-    ///   With many producers that read pulls the contended line from
-    ///   the winner on every loss, so `on_lost` is where a producer
-    ///   backs off, [`policy::backoff`](crate::policy::backoff) the
-    ///   model.
-    pub fn send_with_backoff<T>(
-        &self,
-        on_full: impl FnMut(u32) -> bool,
-        on_lost: impl FnMut(u32),
-        fill: impl FnOnce(&mut T),
-    ) -> Result<(), Full>
-    where
-        T: FromBytes + IntoBytes + KnownLayout,
-    {
-        self.send(FullAndLost { on_full, on_lost }, fill)
-    }
-
-    /// [`send_with`](MpscProducer::send_with), sleeping on a full
-    /// ring until the consumer frees room, then calling `on_full`
-    /// after each wake.
-    ///
-    /// - The sleep is `W`'s: with [`NoWake`] it is a spin, and with
-    ///   a futex it returns when the consumer wakes it or at its
-    ///   timeout, so `on_full` also counts the timeouts, and bounds
-    ///   the wait as it bounds a spin. Pass `|_| true` to wait until
-    ///   there is room.
-    /// - The consumer checks for sleepers every half segment of
-    ///   releases, not every release, so a sleeping producer is
-    ///   woken within half a segment of room.
-    pub fn send_wait<T>(
-        &self,
-        mut on_full: impl FnMut(u32) -> bool,
-        fill: impl FnOnce(&mut T),
-    ) -> Result<(), Full>
-    where
-        T: FromBytes + IntoBytes + KnownLayout,
-    {
-        self.send(
-            |attempt| {
-                self.sleep_full(None);
-                on_full(attempt)
-            },
-            fill,
-        )
     }
 
     /// `send_spin` claims the next free slot in the ring, spinning for up to `give_up` for a slot
