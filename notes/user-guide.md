@@ -315,6 +315,7 @@ v3](ring-buffer-design.md#mpsc-v3-attachable-segments-with-counted-roles).
 ```rust
 use zc_ring_x1::mpsc::v3::{MpscRing, Multi};
 use zc_ring_x1::wake::Futex;
+use zc_ring_x1::{Ticks, microsecs_to_ticks};
 
 // The process that reads builds the ring and claims its consumer.
 let ring = MpscRing::<Multi, Futex>::init(&mut pool, SLOT, DEPTH, SEGMENTS)?;
@@ -324,7 +325,8 @@ let first = ring.first_segment(); // hand this to the producers' processes
 // A producer's process joins over the same region.
 let ring = unsafe { MpscRing::<Multi, Futex>::attach(&pool, first) }?;
 let producer = ring.claim_producer()?;
-producer.send_wait::<Msg>(|_| true, |m| m.seq = 1)?; // sleeps while the ring is full
+// Spin up to 20 us on a full ring, then sleep until the consumer frees a slot.
+producer.send_spin_sleep::<Msg>(microsecs_to_ticks(20), Ticks::FOREVER, |m| m.seq = 1)?;
 producer.release();
 
 // The consumer sleeps while the ring is empty, bounded by its policy.
@@ -342,10 +344,17 @@ let msg = consumer.reserve_slot_wait::<Msg>(|attempt| attempt < 100)?;
 - `release()` gives a role back. The consumer's release saves where it stopped, and the next
   consumer, in any process, continues there. Dropping an endpoint writes nothing and keeps its
   role held.
-- Waiting: `send_wait` and `reserve_slot_wait` sleep on a full or empty ring where `send_with` and
-  `reserve_slot_with` spin or give up, and call the policy after each wake, a futex's timeout
-  included, so `|_| true` waits until the other side acts and a bounded policy bounds the wait.
-  A sleeping producer is woken within half a segment of the consumer's releases.
+- Sending: `send_spin(give_up, write_msg)` spins on a full ring for up to `give_up`,
+  `send_spin_sleep(spin_time, sleep_time, write_msg)` spins and then sleeps, and `send(policy,
+  write_msg)` asks a `SendPolicy` of the caller's at each full look and tells it of each lost claim
+  race, a closure `|attempt| ...` being a policy. Each returns `Err(Full)` when it gives up, and a
+  lost race is never an error. Times are `Ticks`, made once by `microsecs_to_ticks` or
+  `nanos_to_ticks`, and the deadline sends are there on Linux, or elsewhere with the `std`
+  feature.
+- Waiting: `send_spin_sleep` and `reserve_slot_wait` sleep on a full or empty ring, the consumer
+  calling its policy after each wake, a futex's timeout included, so `|_| true` waits until the
+  producer acts and a bounded policy bounds the wait. A sleeping producer is woken within half a
+  segment of the consumer's releases.
 - `release_ring(pool)` closes a ring no role holds and gives its segments back to the pool, so a
   later `attach` is `Error::BadMagic`. A role held is `Error::RingInUse`. Anyone holding the ring
   may call it, and the creator decides when.

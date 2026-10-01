@@ -369,18 +369,16 @@ fn mpsc_producer(id: u64, count: u64) -> Result<(), String> {
     let prod = ring
         .claim_producer()
         .map_err(|e| format!("claim producer: {e:?}"))?;
-    let deadline = std::time::Instant::now() + WAIT;
+    // Each message may wait up to WAIT for room, asleep on the futex from the first full look.
+    let sleep_time = zc_ring_x1::microsecs_to_ticks(WAIT.as_micros() as u64);
     for seq in 0..count {
         let value = random() ^ seq;
-        prod.send_wait::<MpscMsg>(
-            |_| std::time::Instant::now() < deadline,
-            |m| {
-                m.producer = id;
-                m.seq = seq;
-                m.value = value;
-                m.checksum = mpsc_checksum(id, seq, value);
-            },
-        )
+        prod.send_spin_sleep::<MpscMsg>(zc_ring_x1::Ticks::ZERO, sleep_time, |m| {
+            m.producer = id;
+            m.seq = seq;
+            m.value = value;
+            m.checksum = mpsc_checksum(id, seq, value);
+        })
         .map_err(|_| format!("message {seq} not sent within {WAIT:?}"))?;
     }
     prod.release();

@@ -457,25 +457,67 @@ impl<M: zc_ring_x1::mpsc::v3::Mode, W: zc_ring_x1::wake::Wake> SegmentSwitches
     }
 }
 
-/// A v3 producer whose `send_with` backs off after each lost
-/// claim race, so the cell and stream bodies run it unchanged.
-struct Backoff<P>(P);
+/// `struct V3Send` is an MPSC v3 producer with a `send_with`, which the cell and stream bodies
+/// shared with v0 to v2 call, forwarding to v3's `send`, whose policy a closure is.
+struct V3Send<P>(P);
 
 impl<M: zc_ring_x1::mpsc::v3::Mode, W: zc_ring_x1::wake::Wake>
-    Backoff<zc_ring_x1::mpsc::v3::MpscProducer<'_, M, W>>
+    V3Send<zc_ring_x1::mpsc::v3::MpscProducer<'_, M, W>>
 {
-    /// `send_with_backoff` with [`zc_ring_x1::policy::backoff`].
+    /// `send_with` is v3's `send` with `on_full` as its policy.
     #[inline]
     fn send_with<T>(
         &self,
         on_full: impl FnMut(u32) -> bool,
-        fill: impl FnOnce(&mut T),
+        write_msg: impl FnOnce(&mut T),
     ) -> Result<(), zc_ring_x1::Full>
     where
         T: zerocopy::FromBytes + zerocopy::IntoBytes + zerocopy::KnownLayout,
     {
-        self.0
-            .send_with_backoff(on_full, zc_ring_x1::policy::backoff, fill)
+        self.0.send(on_full, write_msg)
+    }
+}
+
+impl<P: SegmentSwitches> SegmentSwitches for V3Send<P> {
+    fn segment_switches(&self) -> Option<u64> {
+        self.0.segment_switches()
+    }
+}
+
+/// `struct Backoff` is an MPSC v3 producer whose `send_with` backs off after each lost slot, so
+/// the cell and stream bodies run it unchanged.
+struct Backoff<P>(P);
+
+/// `struct BackoffPolicy` is `on_full` for a full ring and
+/// [`policy::backoff`](zc_ring_x1::policy::backoff) for each lost slot.
+struct BackoffPolicy<F>(F);
+
+impl<F: FnMut(u32) -> bool> zc_ring_x1::mpsc::v3::SendPolicy for BackoffPolicy<F> {
+    #[inline]
+    fn on_full(&mut self, attempt: u32, _room: &zc_ring_x1::mpsc::v3::Room<'_>) -> bool {
+        (self.0)(attempt)
+    }
+
+    #[inline]
+    fn on_lost(&mut self, lost: u32) {
+        zc_ring_x1::policy::backoff(lost)
+    }
+}
+
+impl<M: zc_ring_x1::mpsc::v3::Mode, W: zc_ring_x1::wake::Wake>
+    Backoff<zc_ring_x1::mpsc::v3::MpscProducer<'_, M, W>>
+{
+    /// `send_with` is v3's `send` with [`BackoffPolicy`].
+    #[inline]
+    fn send_with<T>(
+        &self,
+        on_full: impl FnMut(u32) -> bool,
+        write_msg: impl FnOnce(&mut T),
+    ) -> Result<(), zc_ring_x1::Full>
+    where
+        T: zerocopy::FromBytes + zerocopy::IntoBytes + zerocopy::KnownLayout,
+    {
+        self.0.send(BackoffPolicy(on_full), write_msg)
     }
 }
 
@@ -744,14 +786,14 @@ macro_rules! mpsc_pair {
         let ring =
             zc_ring_x1::mpsc::v3::MpscRing::<$mode, $wake>::init(&mut $pool, slot, $depth, count)
                 .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
-        let $tx = ring.claim_producer().unwrap(); // OK: a fresh ring holds no role
+        let $tx = V3Send(ring.claim_producer().unwrap()); // OK: a fresh ring holds no role
         let mut $rx = ring.claim_consumer().unwrap(); // OK: a fresh ring holds no role
     };
     ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr,
      v3_backoff) => {
         mpsc_pair!(inner, $rx, $store, $pool, $depth, $segments,
             v3 zc_ring_x1::mpsc::v3::Multi, zc_ring_x1::wake::NoWake);
-        let $tx = Backoff(inner);
+        let $tx = Backoff(inner.0);
     };
 }
 
@@ -1207,7 +1249,7 @@ macro_rules! mpsc_pair_n {
             zc_ring_x1::mpsc::v3::MpscRing::<$mode, $wake>::init(&mut $pool, slot, $depth, count)
                 .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
         let $txs: Vec<_> = (0..$n)
-            .map(|_| ring.claim_producer().unwrap()) // OK: at most MAX_PRODUCERS, under the ring's most
+            .map(|_| V3Send(ring.claim_producer().unwrap())) // OK: at most MAX_PRODUCERS, under the ring's most
             .collect();
         let mut $rx = ring.claim_consumer().unwrap(); // OK: a fresh ring holds no consumer
     };
@@ -1215,7 +1257,7 @@ macro_rules! mpsc_pair_n {
      v3_backoff) => {
         mpsc_pair_n!(inner, $rx, $store, $pool, $depth, $segments, $n,
             v3 zc_ring_x1::mpsc::v3::Multi, zc_ring_x1::wake::NoWake);
-        let $txs: Vec<_> = inner.into_iter().map(Backoff).collect();
+        let $txs: Vec<_> = inner.into_iter().map(|tx| Backoff(tx.0)).collect();
     };
     ($txs:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr, $n:expr,
      $($pair:tt)+) => {

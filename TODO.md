@@ -14,6 +14,18 @@ lose context, read first at acquaint, acted on, and reset to `_None._` by the re
   reply.
 - Open for the user: `take_over_*(dead, id)` and a holder query, left as `take_over_*(id)`, with no
   Todo entry.
+- Cycle `feat: mpsc v3 deadline sends` is closed and waits for Land, on the user's go: a trapezoid,
+  the `-dev` names restored, `main` fast-forwarded, the artifact installed, and the bookmark
+  deleted.
+- Scratch left for the user to keep or delete: `~/tmp/zc-ab` on the 7600X and the Pi, source trees
+  and `tp-stream` builds, the Pi's demo build and test build. Local copies of the tables are in
+  `tmp/ab/`.
+- The consumer's v3 methods' docs are still in the old form, not the Parameters form the
+  producer's sends now use.
+- Open for the user: an overview page for reviewers of the v3 sends, now that the API is final.
+- Open for the user: whether the Parameters doc form, every parameter documented including `self`,
+  becomes a rule in `agent-data/code.md`, its own cycle, with no Todo entry yet. And the ranks of
+  the Todos this cycle added, placed by the agent.
 
 ## In Progress
 
@@ -37,6 +49,170 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 `###` heading, so a citation is a link to its anchor. Long-tail entries live in
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
+
+### Rewrap MPSC v3 to the full width
+
+The MPSC v3 source, `src/mpsc/v3/mod.rs`, `producer.rs`, and `consumer.rs`, wraps its doc comments
+and comments near 70 columns, where the source width is 100, per prose.md's [Line
+widths](agent-data/prose.md#line-widths). Rewrap every comment in the three files to the full
+width.
+
+- A deliberate sweep, the user's call of 2026-09-29, where Line widths otherwise rewraps text only
+  when it is touched.
+- Text only: the words stay, the lines move, so the diff is reviewed as a rewrap, with any wording
+  fix left to its own commit.
+- Lines that read better long stay long, as Line widths allows: the `// OK:` comments on `unwrap`
+  calls, a URL.
+- `python3 notes/reflow.py <file>` does the rewrap: it keeps paragraphs, bullets at any depth,
+  headings, and fenced code, and refuses to write a block whose words changed. A trial on copies
+  of the three files kept every word and shortened them by about 200 lines.
+- After `feat: mpsc v3 deadline sends`, the user's call of 2026-09-29, ahead of `Wake count for
+  sleeping producers`, since both touch `mpsc::v3` and a rewrap first keeps that cycle's diff to
+  its own change.
+
+### Measurement builds and the producer-consumer rhythm
+
+A stream's ns per message measures two cores in a rhythm, and a build that changes either side's
+loop slightly can move the rhythm, and so the number, by far more than the change being measured.
+The port of the MPSC v3 callers to the policy `send` showed it: under the default release profile
+the same functionally identical loops measured up to 1.8 ns apart, in either direction by machine
+and row, and under one codegen unit and fat LTO they measured alike on every row of three
+machines. `tp-stream -d 1`, three alternating runs per build, 2026-09-29:
+
+- One codegen unit and fat LTO against the default profile, the port's build: the 3900X's SMT
+  rows about 35% faster and cross-CCX about 20%, the 7600X's SMT rows 25 to 35% faster but its
+  same-CCX and unpinned rows 65 to 87% slower, and the Pi 5's within -4 to +2%.
+- The 7600X's same-CCX slowdown is a change of rhythm, not of work: cache-line transfers per
+  message rise from 2.0 to 2.4, and the ring is empty 7 to 15% of the time where it was 0.03%, so
+  producer and consumer fall out of step and contend on the shared lines.
+- So a build profile is no speedup to adopt, and one to fix: every measurement names its profile,
+  a comparison between two builds uses the same profile, runs alternate, and more than one machine
+  is measured before a change is called a cost or a win.
+- Loop alignment weighed with it: 64-byte loop alignment alone moved the 3900X's cross-CCX rows
+  about 10% in flavors a change never touched, `mpsc-v2` 51.1 to 46.2 and `spsc-v4` 57.3 to 50.8.
+- What sets the rhythm is the open question: which side's loop falls behind, and whether a
+  producer that does work between sends, the Todo `Producer work in the streams`, steadies it, as
+  a real workload would.
+- The A/B runner used here, `tmp/ab/`: two source trees built under two profiles on a remote
+  machine over ssh, three alternating rounds, and a median table, worth keeping under `notes/`.
+- `tp-stream`'s cache-line transfer column reads 0 on the Pi, and we think its probe counts
+  transfers only on x86.
+- From `feat: mpsc v3 deadline sends`, the user's reasoning that identical loops fully inlined
+  should run alike, and the user's call to measure on the 7600X and the Pi.
+
+### MPSC v4: v3 without Single and Multi
+
+MPSC v3 chooses its mode at compile time, `Single`, one segment and no switch path, or `Multi`,
+v2's switching, and the measurements cannot tell them apart: a one-segment `Multi` ring runs
+within 8% of `Single`, faster on some machines and placements and slower on others. The mode costs
+a type parameter on every v3 type, a field and a check in the control block, and a second flavor in
+every tool, for no measured gain. Start `mpsc::v4` as a copy of v3 with the mode dropped, and keep
+v3 as built, the reference to measure against and to bring a mode back from.
+
+- One mode, v3's `Multi`, and the `M` type parameter gone, so a ring of one segment does what
+  `Single` does now. `MpscRing<'a, W>`, and likewise the endpoints.
+- `W` and its compile-time `W::WAKES` checks stay, the user's call of 2026-09-30.
+- The control block's mode field: kept and fixed at `Multi`, or dropped with a new layout version,
+  decided in the cycle.
+- Measured against v3's `mpsc-v3`, `mpsc-v3-single`, and `mpsc-v3-futex` in the same tables, with
+  each table naming its build profile, per the Todo `Measurement builds and the producer-consumer
+  rhythm`.
+- Weighed and set aside for now: the wake as a runtime kind in place of the trait, `Spin` or
+  `Futex`, set at `init` and written into the control block. Every process attaching reads it, so
+  two processes cannot wake a ring two ways, a mismatch the trait cannot detect, and the types lose
+  `W`. The cost would be a well-predicted branch where `W::WAKES` now compiles checks out, and an
+  enum closed to wakes from outside the crate.
+- The measurements, `tp-stream --segments 1`, depth 8, default profile, two runs each, 2026-09-30,
+  `Multi` over `Single`: the 7600X 1.07 same-CCX, 0.97 SMT, 1.08 unpinned, the Pi 5 1.04 same-CCX
+  and unpinned, the 3900X 0.96 same-CCX, 1.00 cross-CCX, 0.92 SMT and unpinned.
+- From `feat: mpsc v3 deadline sends`, the user's proposal of 2026-09-30 to simplify where the
+  measurements are within the noise.
+
+### Wake count for sleeping producers
+
+The consumer wakes every producer asleep on a full ring, `FUTEX_WAKE` at `i32::MAX`, at each half
+segment of releases, and most go back to sleep. Wake a count instead, about the room freed, passed
+through `Wake::wake`, with a woken producer that still sees room and sleepers waking the next, so
+none is stranded until its timeout.
+
+- The next cycle after `feat: mpsc v3 deadline sends`, the user's call of 2026-09-28.
+- The consumer's side, not a send's argument: a sleeper cannot choose how many the waker wakes.
+- Measuring it needs a ring that fills, producers that do real work or a slow consumer, the Todo
+  `Producer work in the streams`.
+
+### Zero-copy endpoints: send a buffer, not a message
+
+Zero-copy is the point of these queues, and the rings' API does not show it: a send writes its
+message into the ring slot through a closure, which works for any message that fits a slot but
+copies the message's bytes there and holds the slot claimed while it does. A thin layer over the
+rings makes the zero-copy path the plain one: the producer writes a message into a pool buffer on
+its own time, and the ring carries only the buffer's handle, so the message is written once and
+never copied, whatever its size.
+
+- The producer: `loan(size)` a buffer from its own pool, write the message, then `send(&self,
+  wait, buf) -> Result<(), Full<Buf>>`. The buffer's guard goes in by value, so ownership visibly
+  moves, and comes back on a full ring rather than being lost.
+- The consumer: `recv(&mut self, wait) -> Result<Buf, Empty>`, the handle checked and turned back
+  into a guard over the same bytes in its own mapping, to read in place, forward, or free.
+- `wait` is one `Ticks`, over `send_with_backoff_x` with a built-in spin.
+- The wire form: a pool id and the buffer's byte offset in that pool, never an address, since
+  each process maps the pool at its own. Buffer sizes are powers of two, so a receiver checks an
+  offset with a compare and a mask and resolves it with an add, the user's rule of 2026-09-28
+  that every cycle counts, measured in a small device's battery life, not in one message's time.
+  Today's `Desc` carries a buffer index, which costs a multiply to resolve.
+- A trusted mode, `unsafe`, skipping the receiver's checks, for a device whose processes all trust
+  each other.
+- A pool id both processes agree on by construction: today's is each process's registry slot in
+  registration order, so two processes agree only by registering alike.
+- For a battery device, sleeping beats spinning by far: the docs say so, and the default spin is
+  short.
+- Documented as the way to use the queues: the `mpsc::v3` module docs and the user guide's
+  zero-copy section, the ring's own closure sends described as the engine and as fine for small
+  fixed messages, and a complete example in `examples/` to copy.
+- From the Todo `Descriptor queue endpoints` [[11]], which this replaces: the demo's ~20-line send
+  path becomes ~3 lines, `to_slot`'s unsafe is audited once inside the crate, both ring flavors,
+  SPSC and MPSC, are served, and the sender holds each sender's private overflow pending list.
+- Bounded by the Todos `Shared allocation: a pool any process can allocate from`, one allocator
+  per pool, so a pool per producer, and `Pool buffers survive their holders`.
+- Ranked after `Wake count for sleeping producers`, from `feat: mpsc v3 deadline sends` on
+  2026-09-28.
+
+### Clock choices for the deadline sends
+
+A deadline send reads the clock on every check of a full ring, and on Linux that is the vDSO's
+`clock_gettime`: a seqlock, the hardware counter, a multiply and a shift to scale it, then the
+crate's fold of seconds into nanoseconds, about 20 ns. Offer the clock as a choice and measure
+the choices side by side before any is the default beyond today's.
+
+- A `Clock` trait, as `Wake` is one: `now`, the two conversions to ticks, and the conversion of a
+  deadline to `CLOCK_MONOTONIC` nanoseconds for the futex.
+- `Ticks<C: Clock>` carries its clock, so a caller picks the clock by the conversion it calls,
+  `Monotonic::micros_to_ticks(100)` or `Counter::micros_to_ticks(100)`, and a send infers the
+  clock from its `Ticks`. No ring type parameter and no cargo feature, since features unify across
+  a build and the comparison needs both clocks in one binary. `Monotonic` is the default,
+  `Ticks<C = Monotonic>`, so today's callers barely change.
+- A clock is not a ring version: it never touches shared memory, and a deadline is private to one
+  send.
+- The choices:
+  - `Monotonic`, today's: `clock_gettime` through `libc` on Linux, `Instant` with `std`.
+  - `Counter`: the CPU's own counter, `rdtsc` on x86-64, `CNTVCT_EL0` on Arm64, `rdtime` on
+    RISC-V, so a check is one counter read and a compare. The frequency: Arm64 reads it from
+    `CNTFRQ_EL0`, x86 calibrates once against `CLOCK_MONOTONIC`, RISC-V's is the device tree's
+    timebase. Fallbacks to `Monotonic`: x86 without an invariant TSC, a VM that traps `rdtsc`, a
+    RISC-V board that traps `rdtime` to firmware. It also brings the sends to bare-metal targets,
+    which have no `libc` clock.
+  - `Monotonic` read every N spins, say 16, which spreads the read's cost over the loop with no
+    per-architecture code.
+  - Sleep only, `spin` of `Ticks::ZERO`, as the energy baseline.
+- What to measure, in tp_matrix beside `mpsc-v3` and `mpsc-v3-futex`: the reaction from a freed
+  slot to a landed send, how far past its deadline a send gives up, and the CPU and energy spent
+  waiting, `perf stat` and RAPL on x86, measured power on a small Arm board.
+- A prediction on record before measuring: a clock is read only while the ring is full, and a
+  spinning core burns until room or its deadline whatever a read costs, so a cheaper clock buys
+  reaction time, not energy, and sleeping is where a battery device saves. We think sleep only
+  dominates energy and the clock matters only for reaction.
+- Every cycle counts, measured in a small device's battery life, the user's rule, and the reason
+  to measure rather than assume. From `feat: mpsc v3 deadline sends` on 2026-09-29.
 
 ### Cycle block: the ladder last, above its rung subsections
 
@@ -337,7 +513,8 @@ measured](notes/ring-buffer-design.md#mpsc-v3-measured) and the user's `-p 10` r
   for. Waking one sleeper instead of all changes none of it, since a producer that never slept
   can still win the slot first.
 - Claim several slots at once: contention divided by the batch, for producers that send in bursts.
-- One SPSC ring per producer and a consumer that fans in, the design note's [Fan-in (composition, not
+- One SPSC ring per producer and a consumer that fans in, the design note's [Fan-in (composition,
+  not
   a mode)](notes/ring-buffer-design.md#fan-in-composition-not-a-mode): nothing written by two
   producers, so the count of producers scales until the consumer saturates, at the price of
   polling N rings and of order only per producer.
@@ -397,16 +574,6 @@ decision and a harness shape:
   ring lines'. iceoryx2 is publish-subscribe over shared memory with no direct depth knob.
 - Which lines and placements they join, and whether the demo or a `tp-pool` sweep is the place, is
   the design question the `tp-pool` cycle answered once for cordyceps.
-
-### Descriptor queue endpoints
-
-Paired DescSender (loan + send) / DescReceiver (recv) [[11]]:
-- own ring endpoint + registry access
-- the demo's ~20-line send path becomes ~3 lines
-- `to_slot`'s unsafe is audited once inside the crate (recv safe by construction)
-- guard handed back on Full
-- design against both ring flavors (SPSC + MPSC)
-- the sender is also where each sender's private overflow pending list will live.
 
 ### Batch alloc/free demo
 
@@ -536,399 +703,358 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### feat: attachable MPSC v3
+### feat: mpsc v3 deadline sends
 
 #### Problem
 
-The MPSC rings are in-process only: `split` hands out the endpoints, no control block lets a second
-process find a ring, and producers cannot come and go. A full or empty ring can only be polled, as
-no side can sleep until the other acts.
+An MPSC v3 producer bounds a send on a full ring through closures: `send_with` takes an `on_full`
+policy called with an attempt count, `send_with_backoff` adds an `on_lost` hook called after each
+lost claim race, and `send_wait` sleeps between the policy's calls. A caller who wants "give up
+after this long" writes a closure that reads a clock, and the crate is `no_std`, so it has no clock
+to offer.
 
 #### Solution
 
-`mpsc::v3`, v2's claim and seq protocol over a ring that describes itself in the region, as
-`spsc::v4` does, with a simpler role model than v4's, built, measured, and fixed where the
-measurements found it wrong.
+The v3 producer's sends rebuilt around one public `send` that takes a policy, two deadline sends
+over it with times in ticks, and a clock the crate can read without `std` on Linux.
 
-- One claims word: a closed bit, a consumer bit, and a producer count, the most producers set at
-  `init`, `u16::MAX` by default. Claiming a role, releasing it, and releasing the ring are each one
-  CAS on it.
-- No holder ids, no takeover, no intent words, and no scan: a holder that dies is recovered by a
-  restart, the narrower contract of `docs: spsc v4 not perfect`.
-- The consumer checkpoints its segment, position, and resume positions at `release`. Producers
-  keep no state, so a producer claim is a count.
-- `release_ring` fails while any role is held, and otherwise closes the ring, clears its magic, and
-  frees its segments to the pool. Anyone holding the ring may call it, and when is the creator's
-  call.
-- Two hot paths chosen at compile time: `Single`, one segment, where a full ring goes straight to
-  the policy, and `Multi`, v2's switching. The mode is in the control block and `attach` checks it.
-- Waiting: a full producer or an empty consumer can sleep until the other side acts, through a
-  small wake trait the crate calls, with a futex implementation on Linux, and error and spin stay
-  the `_with` policies they are.
-- No unwind guard: v2's `TombstoneOnUnwind` does not carry over, so a panic mid-send is a failure
-  like any other, recovered by a restart.
-- Proven between processes: `zcr-test-ipm`'s MPSC mode and `tests/ipm.rs`, producers and consumers
-  coming and going across processes, and the ring released.
-- Measured: v3 in tp_matrix, the demo, and a multi-producer stream with every thread pinned and
-  each side's waits counted, a backoff after a lost claim race beside plain spinning.
-- Fixed from the measurements: the consumer's wake check moved off the polling path, and the
-  producer's switch attempt kept out of the send loop, so a `Multi` ring runs as a `Single` one
-  until it switches.
-- Documented: the design note's MPSC v3 section, the user guide, and the README's versions, with
-  the next work in the Todos `Producer work in the streams`, `MPSC claim contention`, and `MPSC v3
-  message path gaps`.
+- `send(policy, write_msg)`: the core made public. A `SendPolicy` decides at each full look, and
+  hears of each lost claim race, and a closure `|attempt| ...` is one. A policy sleeps through
+  `Room`, and the core's `sleep` flag is gone.
+- `send_spin(give_up, write_msg)` spins on a full ring for up to `give_up`, and
+  `send_spin_sleep(spin_time, sleep_time, write_msg)` spins and then sleeps on the producers'
+  futex, sleeping again to the same deadline after an early wake. Each returns `Err(Full)` when
+  it gives up, and a lost race is never an error. Their docs name every parameter, and each send
+  has an example run as a doctest.
+- `send_with`, `send_with_backoff`, and `send_wait` are deleted, every caller moved to the three,
+  so five sends became three. The README and the user guide teach the three.
+- Times are `Ticks`, a duration in ticks of the crate's monotonic clock, made once by the caller's
+  `microsecs_to_ticks` or `nanos_to_ticks`, a tick a nanosecond for now. `Deadline` is a point in
+  time in ticks, and `Seen` a wait's lost-wake guard, a word and the value it was last seen
+  holding.
+- `Wake` gains `wait_until`, a sleep to a `Deadline`, which `Futex` makes a `FUTEX_WAIT_BITSET`
+  on an absolute `CLOCK_MONOTONIC` time. `wait` and `Futex<TIMEOUT_MS>` stay for the untimed
+  waits.
+- The clock is `clock_gettime(CLOCK_MONOTONIC)` through `libc` on Linux, so a `no_std` Linux build
+  has the deadline sends, and `std`'s `Instant` elsewhere under a `std` feature, off by default.
+  Validation lints the `no_std` library alone and everything with every feature.
+- Measured on the 3900X, a 7600X, and a Raspberry Pi 5: the policy `send` costs nothing, the
+  release profile moves rows more than any change measured, and a one-segment `Multi` cannot be
+  told from `Single`. The design note's [MPSC v3 sends](notes/ring-buffer-design.md#mpsc-v3-sends)
+  and [MPSC v3 across machines and build
+  profiles](notes/ring-buffer-design.md#mpsc-v3-across-machines-and-build-profiles) hold the
+  design and the tables.
+- Next, as Todos: `Rewrap MPSC v3 to the full width`, `Measurement builds and the
+  producer-consumer rhythm`, `MPSC v4: v3 without Single and Multi`, `Wake count for sleeping
+  producers`, `Zero-copy endpoints: send a buffer, not a message`, and `Clock choices for the
+  deadline sends`, with `notes/reflow.py` kept for the rewrap.
 
 #### Acceptance check
 
-- Two producer processes and one consumer process exchange messages over an attached v3 ring in
-  `/dev/shm`, every message checked.
-- Roles are claimed, released, and claimed again, in one process and across processes, and the
-  consumer resumes where it stopped.
-- `release_ring` refuses while a role is held and succeeds once none is, and a later `attach`
-  fails.
-- A consumer waiting on an empty ring and a producer waiting on a full one are woken by the other
-  side.
-- `Single` and `Multi` are measured beside v1 and v2 in the tp_matrix tables.
+- A test shows `send_spin`, the opening's `send_with_x`, on a full ring returning `Full` no sooner
+  than its deadline and within a bound after it, and succeeding once the consumer frees room.
+- A test shows `send_spin_sleep`, the opening's `send_with_backoff_x`, under `Futex` sleeping on a
+  full ring, woken when the consumer frees room, and returning `Full` at its sleep's end when no
+  room comes.
+- `cargo clippy` and `cargo test` pass with `--all-features`, and the library builds with the
+  feature off.
 
-Pass, 2026-09-28 at the closing: `cargo test --test ipm` passes the cross-process test, two
-producer processes, a consumer handoff between processes, the release refused while held, then
-released and a late producer refused `BadMagic`, and the v3 unit tests pass, 37 of them, the
-waiting tests among them. The tables are in the design note's `MPSC v3 measured`.
-
-#### Ladder
-
-- [feat: attachable MPSC v3 opening][21] (done)
-- [docs: mpsc v3 design and restart domains][22] (done)
-- [feat: mpsc v3 as a copy of v2][23] (done)
-- [feat: mpsc v3 control block and attach][24] (done)
-- [feat: mpsc v3 claims word and roles][25] (done)
-- [feat: mpsc v3 ring release][26] (done)
-- [feat: mpsc v3 single and multi segment paths][27] (done)
-- [feat: mpsc v3 wait and wake][28] (done)
-- [feat: mpsc v3 inter-process test][29] (done)
-- [perf: mpsc v3 in the measurement tools][30] (done)
-- [docs: mpsc v3 in the design note and guide][31] (done)
-- [perf: mpsc v3 in the demo and multi-producer][33] (done)
-- [perf: pin every producer][34] (done)
-- [fix: mpsc v3 multi matches single without a switch][35] (done)
-- [docs: the ring versions explained][36] (done)
-- [feat: attachable MPSC v3 closing][32] (done)
+Pass, 2026-09-30 at the closing: `a_deadline_send_gives_up_at_its_time`,
+`a_deadline_send_lands_when_room_comes`, `a_deadline_sleeper_is_woken_by_releases`, and
+`a_deadline_sleep_gives_up_at_its_time` pass, with the three sends' doctests, 238 tests in all
+under `--all-features`, clippy clean, and the library building with the feature off and linting
+for `thumbv7em-none-eabihf`. The suite also passes on the Pi 5, aarch64.
 
 #### Deliberation
 
-- Restart, not takeover: a dead holder is recovered by restarting the set it belongs to, the user's
-  call on 2026-09-27, after `docs: spsc v4 not perfect` found v4's takeover uncertain.
-  - So no holder ids, since without takeover nothing can replace a live holder, and `release(self)`
-    consumes the endpoint.
-  - A producer that dies between claim and commit leaves its slot claimed and jams the ring, and
-    the consumer's set restarts. Accepted, the user's call.
-- The ring's release: only when no role is held, anyone may call it, and the creator decides when,
-  the user's call. Any process may free to a pool, so this needs no shared allocation.
-- `Single` and `Multi` as a compile-time choice, starting from v2 as it is, the user's call.
-- The unwind guard is removed, the user's call, which settles the open question the Todo entry
-  `Attachable MPSC with claimed roles` carried. v0 through v2 keep theirs, in-process baselines
-  left as built.
-- A `u16` producer count, the user's call.
-- Wait and wake in this cycle, as its own rung, the user's call.
-- The design section is the first rung after the opening, the user's call.
-- Run unattended, the user's explicit waiver on 2026-09-27, confirmed in the session.
+- Times, not closures: a send is bounded by a time in microseconds, the user's proposal of
+  2026-09-28.
+  - A caller who wants another policy composes it from probes, so the closures' flexibility moves
+    to the call site rather than being lost.
+  - The spin-then-sleep send is today's `send_wait` reshaped, not today's `send_with_backoff`,
+    whose backoff is after a lost claim race, not on a full ring.
+- Behind `std` for now, the user's call, until a `no_std` clock is chosen, and narrowed by `feat:
+  mpsc v3 deadline sends in ticks` to the targets other than Linux.
+  - Off by default, since the crate is `no_std`, and the bins and tools that call the sends turn it
+    on.
+  - The clock is read in one function, so a `no_std` clock replaces it in one place. We think the
+    first is Linux's `clock_gettime` through the `libc` the crate already links for the futex.
+- Types for a wait's arguments, the user's call of 2026-09-28 at review, since a bare `expected`
+  said nothing of what value to pass.
+  - `Seen` pairs the word with its value, so the two cannot be mismatched, and its constructor
+    says where the value came from: `load` before the look, or `written` by the caller's own
+    read-modify-write.
+  - `Micros(u32)` over `core::time::Duration`: 4 bytes, not 16, and the microseconds the sends
+    were asked in, with `Micros::FOREVER` the time that never passes. Replaced by `Ticks` in
+    `feat: mpsc v3 deadline sends in ticks`.
+- `Ticks`, converted once by the caller, the user's call of 2026-09-29, so a send multiplies
+  nothing to set its deadline.
+  - A tick is a nanosecond of `CLOCK_MONOTONIC` for now. Other clocks, the CPU's own counter
+    among them, are the Todo `Clock choices for the deadline sends`, which gives `Ticks` its
+    clock as a type parameter defaulting to today's, so callers barely change.
+- The clock is a choice the caller makes, not a ring version, the user's call of 2026-09-29, and
+  the choices are measured side by side before any other becomes the default.
+  - `Micros` goes, since the unit is now in the conversion's name, and one time type is less to
+    learn than two.
+- `wait_for` beside `wait`, not in place of it, the user's call of 2026-09-28 in `feat: mpsc v3
+  deadline sends behind std`.
+  - The plan replaced `Futex<TIMEOUT_MS>` with a per-call timeout, but the consumer's
+    `reserve_slot_wait` sleeps untimed too, and giving it a timeout changes the consumer's API,
+    outside this cycle.
+  - The cost: two timeout sources until the consumer has a deadline wait of its own, when
+    `TIMEOUT_MS` can go.
+  - `wait_for` became `wait_until` in `feat: mpsc v3 deadline sends in ticks`, a sleep to a
+    `Deadline` rather than for a duration.
+- `feat: mpsc v3 deadline sends in ticks` inserted before the port, the user's call of
+  2026-09-29, after Zed showed the `std`-gated sends inactive.
+  - On Linux the clock needs no `std`, so the sends are there whenever the target is Linux, and
+    `std` remains the fallback for other targets.
+  - Every cycle counts, the user's rule, so a check is one `u64` compare against a deadline, not
+    a conversion of elapsed time to microseconds.
+- Run unattended to the closing, the user's explicit waiver of 2026-09-29, the user away.
   - It covers: the per-rung work review and description review, and the approval of each push to
-    the `mpsc-v3` bookmark, from the opening through `docs: mpsc v3 in the design note and guide`.
-  - It does not cover: the closing, Land, any push to `main`, or any write to another repo.
+    the `feat-mpsc-v3-deadline-sends` bookmark, for `refactor: mpsc v3 send takes a policy` and
+    `refactor: drop mpsc v3 closure sends`.
+  - It does not cover: the closing, Land, any push to `main`, any write to another repo, or any
+    work on the 7600X, where iiac-perf is measuring. The Pi 5 is free to use.
   - Where a question would stop the cycle, the agent takes the option that keeps the plan and
     records it in the rung's subsection, and a change of scope stops the cycle.
-- `perf: mpsc v3 in the demo and multi-producer` inserted before the closing, the user's call on
-  2026-09-27 at review: the demo's depth sweep and segment stress had no v3, and the Todo entry
-  `Multi-producer measurement` joins the rung. The user's go covers the rung's push.
-- `perf: pin every producer` and `fix: mpsc v3 multi matches single without a switch` inserted
-  before the closing, the user's go on 2026-09-27 covering both rungs and their pushes.
-  - Every producer on its own cpu, the user's rule for a fair run, and a shared-core placement
-    beside it, read as producers paired on one core's two cpus, never the consumer's core.
-  - A backoff after a lost claim race joins the pinning rung as the first cheap measure against
-    the claim word's contention, which ten producers showed collapses throughput. The claim
-    design itself is the new Todo `MPSC claim contention`.
-  - The user's contract for the fix: a ring of several segments runs, while it does not switch,
-    no differently from a ring of one.
-- `docs: the ring versions explained` inserted before the closing, the user's call on
-  2026-09-28, with the Todo `Producer work in the streams`. The push is asked for, since no go
-  covers it yet.
+  - On 2026-09-30 the user freed the 7600X and asked for the closing.
+- One general `send` and two wrappers, the user's call of 2026-09-29, the target of the port and
+  drop rungs.
+  - `send(policy, fill)`, today's private core made public, where a policy is a `SendPolicy`: what
+    a send does when the ring is full, `on_full`, or when it loses a slot, `on_lost`, with a
+    closure a policy too. It replaces the core's `sleep` flag, a bool that said nothing at a call
+    site, and the policy sleeps through a public `Room` when it wants to.
+  - Two wrappers, named for what the producer's core does while it waits: `send_spin(give_up,
+    fill)`, today's `send_with_x`, and `send_spin_sleep(spin_time, wait_time, fill)`, today's
+    `send_with_backoff_x`, the parameter names the user's. Renamed before the port, the user's
+    call: `sleep_time` for `wait_time`, since spinning waits too, and `write_msg` for `fill`.
+  - `send_with`, `send_with_backoff`, and `send_wait` go, each a policy or a closure passed to
+    `send`, so five sends become three. Sophisticated users and the measurement tools, which
+    count waits and lost slots, write a policy.
+  - Named policies with no wrappers were weighed and set aside: the wrappers read better at a call
+    site, and a new behavior is still a policy, not a method.
+- Fresh `_x` names during the cycle, the user's call, so old and new sit side by side and callers
+  move one at a time.
+- Delete only if the port leaves no holdout: the port is the evidence. The lost-race backoff,
+  `on_lost`, is the likely holdout, and is either built in or kept.
+  - No holdout: `on_lost` became `SendPolicy::on_lost`, so the measurement tools' backoff is a
+    policy, and the workspace built with the three closure sends disabled.
+- The wake count stays wake-all, the user's call: how many sleeping producers the consumer wakes is
+  the consumer's choice, not a send's argument, and the next cycle takes it, the Todo `Wake count
+  for sleeping producers`.
+- v3 only: v0 through v2 keep their closure sends, as built, and iiac-perf's benches call them.
+- No version bump on this cycle's commits, the user's explicit bend of 2026-09-28.
+  - It covers: the opening's bump and each rung's, so the version-of-record stays `0.18.5`.
+  - It does not cover: the closing, which sets the version, nor the dev name, which the opening
+    sets as usual.
+  - Why: the size of the bump depends on whether the closure sends are deleted, a break, and that
+    is decided mid-cycle.
+  - Ended at `feat: mpsc v3 deadline sends in ticks`, the user's call of 2026-09-29, at
+    `0.19.0-2`, the cycle's third commit by the suffix scheme: `Wake`'s signatures had already
+    changed, a break for any `Wake` outside the crate, so the bump is minor whatever the port
+    decides. The opening and `feat: mpsc v3 deadline sends behind std` carry `0.18.5`.
 
-#### Ladder details
+#### Ladder
 
-##### feat: attachable MPSC v3 opening
+- [feat: mpsc v3 deadline sends opening][21] (done)
+- [feat: mpsc v3 deadline sends behind std][22] (done)
+- [feat: mpsc v3 deadline sends in ticks][26] (done)
+- [refactor: mpsc v3 send takes a policy][23] (done)
+- [refactor: drop mpsc v3 closure sends][24] (done)
+- [feat: mpsc v3 deadline sends closing][25] (done)
 
-The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
-Todo entry into this block, bump the version-of-record, and rename to the dev names.
+##### feat: mpsc v3 deadline sends opening
 
-##### docs: mpsc v3 design and restart domains
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write this
+block, add the wake-count Todo, and rename the package and bins to their `-dev` names, with no
+version bump.
 
-The design note gains an `## MPSC v3` section: the initial design this cycle builds and the
-long-term possibilities, restart domains and what crossing one costs.
+##### feat: mpsc v3 deadline sends behind std
 
-- The design fixed what the plan left open, each the agent's call under the waiver:
-  - Seven header lines per segment: v2's seal, claim, and in-use lines, v4's info line and table,
-    and a claims line holding the roles word, the consumer's checkpoint, and the producers' wait
-    words.
-  - The consumer checkpoints at `release` only, every segment's resume position included, since
-    without a takeover nothing reads it between.
-  - Waiting keeps the policy closures: `send_wait` and `reserve_slot_wait` sleep between attempts
-    and call the same policy after each wake, so a caller bounds a wait as it bounds a spin.
-  - The consumer sleeps on the claim word, bit 31 its waiting flag, so a producer learns of it from
-    the claim CAS it already makes. Producers sleep on a sequence word, and the consumer checks
-    their count behind a fence every half segment of releases and when it first finds the ring
-    empty, not at every release, where the fence would cost every message.
-  - `Futex` goes through `libc`, already the package's Linux dependency.
-- The design note's Holders and recovery records the unwind guard's decision.
+A send bounded by time needs a closure that reads a clock the crate cannot offer. Add the `std`
+feature, `send_with_x` and `send_with_backoff_x`, a per-call futex timeout, and validation of both
+builds.
 
-##### feat: mpsc v3 as a copy of v2
+* A time-bounded send needs a clock, and the crate is `no_std`.
+  - The `std` feature, off by default, turns `no_std` off and brings in `clock`, one `Stopwatch`
+    type over `std::time::Instant`, so a `no_std` clock replaces it there and nowhere else.
+  - Validation lints the library alone, which is the `no_std` build, then lints and tests
+    everything with every feature.
+* The sends keep the closure sends' loop.
+  - Each is the shared `send` with an `on_full` closure that reads the clock, started at the first
+    full ring, so a send that finds room never reads it.
+  - `Micros::FOREVER`, `u32::MAX` microseconds, is a deadline that never passes and a spin that
+    never ends.
+* A wait's `expected` was a bare `u32`, and what value to pass was the caller's to know.
+  - It is the futex's guard against a lost wake: the value the word held before the caller's last
+    look, so a waker's change between the look and the sleep makes the sleep return at once.
+  - `Seen` carries the word and that value together, `Seen::load` for the producer's wake counter
+    and `Seen::written` for the claim word the consumer's `fetch_or` flagged.
+  - `Micros` is the time type throughout, the crate root's, beside `Full`.
+* The backoff send sleeps on what is left of its wait.
+  - `sleep_full` takes an optional timeout, and `Wake::wait_for` bounds one sleep by it, a
+    `FUTEX_WAIT` of that many microseconds, a spin hint under `NoWake`.
+  - Under `NoWake` the sleep phase skips `sleep_full`, whose waiter count would put a shared
+    atomic write in every spin, and spins instead.
+* The waiting tests' bounds were seconds, so a broken wake hung a test that long before failing.
+  - The user's call at review: none needs to be long, only clearly over a wake or a deadline. The
+    wake bound is 250 ms, `SlowFutex`'s timeout and the deadline a woken send must beat are 500 ms,
+    the last cycle's waiting tests included.
+* The sends' docs assumed the reader knew the closure sends, and named neither every parameter nor
+  what `fill` must do.
+  - The user's call at review: every parameter documented, `self` included, under fixed sections,
+    Parameters, Type parameters, Returns, and Notes, nothing left to "otherwise as" another method.
+  - `fill` writes the message and must write all of it, since the slot still holds the last
+    message's bytes, and `T` names `Desc` as the zero-copy use.
+  - The zero-copy framing the queues are for, a thin layer sending a buffer's handle, is the new
+    Todo `Zero-copy endpoints: send a buffer, not a message`, which absorbs `Descriptor queue
+    endpoints`.
+* Deferred to the port: once the demo and `zcr-test-ipm` call the sends they need `std`, and
+  `cargo install` skips a bin whose required features are off, so the install likely becomes
+  `--features std`. Answered by `feat: mpsc v3 deadline sends in ticks`: on Linux they need no
+  `std`.
 
-v2's files copied to `src/mpsc/v3/` unchanged but for the names, so each later rung's diff is only
-what v3 changes.
+##### feat: mpsc v3 deadline sends in ticks
 
-- The copy keeps v2's tests, so v3 passes them as v2 does until the rungs after it change what it
-  is, and its module docs say so.
+The deadline sends need `std` only for its clock, which on Linux is `clock_gettime`, reachable
+through the `libc` the crate already links, and `Stopwatch` turns each reading into microseconds
+with a multiply and a divide. Read the clock through `libc` on Linux as one `u64` of nanoseconds,
+keep a deadline so each check is one compare, sleep to it with `FUTEX_WAIT_BITSET`, and gate the
+sends on Linux or `std`.
 
-##### feat: mpsc v3 control block and attach
+* On Linux the sends waited on `std` for a clock the crate can read itself.
+  - `clock::now_ns` is `clock_gettime(CLOCK_MONOTONIC)` through `libc`, folded to one `u64` of
+    nanoseconds by a multiply by a constant and an add. Elsewhere it is `std`'s `Instant`, counted
+    from the process's first reading.
+  - The sends are there on Linux or with `std`, so a Linux build, `no_std` included, has them,
+    and an editor with default features shows them live.
+* Each check converted elapsed time to microseconds, a multiply and a divide.
+  - A send sets its ends once, at the first full ring, and each check is one reading and a
+    compare, the user's rule that every cycle counts.
+* The sleep bounded by time left recomputed it after each early wake.
+  - `Deadline` is a moment in nanoseconds on the crate's clock, and `Wake::wait_until` replaces
+    `wait_for`. `Futex` sleeps with `FUTEX_WAIT_BITSET`, whose timeout is absolute on
+    `CLOCK_MONOTONIC`, the same clock, so the deadline goes to the kernel as it is, and an early
+    wake sleeps again to the same deadline.
+  - The bitset is `FUTEX_BITSET_MATCH_ANY`, so the consumer's plain `FUTEX_WAKE` wakes it.
+* A send still multiplied once, turning its microseconds into the clock's unit at the first full
+  ring.
+  - `Ticks` is the unit the sends take, made once by the caller's `microsecs_to_ticks` or
+    `nanos_to_ticks`, so a send sets its deadline with an add, the user's call at review. A tick
+    is a nanosecond for now, and `Micros` is gone.
+  - The multiply inside each reading remains, the clock's own and the fold of seconds into
+    nanoseconds, and is the Todo `Clock choices for the deadline sends`.
+  - `Ticks` and `Deadline` keep their counts private, so a caller makes them only by the
+    conversions, and `Deadline::monotonic_nanos` is what a futex needs.
+* The cycle's doc comments wrapped near 70 columns, imitating the older v3 files, and some bullets
+  left their subject to be guessed, "Made once by".
+  - The user's call at review: the source width is 100, per prose.md's Line widths, which says to
+    write to the full width, and every sentence names its subject. Each item's doc opens by naming
+    the item, "`struct Ticks` is a duration", so a reader never looks elsewhere for what is being
+    defined.
+  - Every doc comment and comment this cycle wrote is rewritten so, and older text is left as it
+    is.
+  - `notes/reflow.py` rewraps a file's comment blocks to the width, keeping their structure and
+    checking their words are unchanged, kept for the Todo `Rewrap MPSC v3 to the full width`.
+* The sends' docs opened on what they do, not on how a caller uses them, and showed no use.
+  - Each opens, in the user's wording, with the claim of a free slot, the wait for one, `Err(Full)`
+    when none comes, and `fill` writing the message it captured into the slot.
+  - Each has an example, a doctest run by `cargo test`: `send_with_x` sends, fills the ring, and
+    gets `Err(Full)` at its deadline, and `send_with_backoff_x` sleeps on a full ring until a
+    consumer thread's releases wake it. The crate had no doc examples before.
+* The sends' `# Notes` held how the sends behave, apart from the intro, and "losing a slot" read
+  as a second failure beside `Full`.
+  - The user's call at review: the notes fold into the intro as paragraphs. A lost slot is never
+    an error, the send goes for the next slot at once, and `Err(Full)` means the ring was full at
+    the last look after the deadline, any slot freed in the meantime having gone to another
+    producer.
+* Checked beyond the validate list: the library lints on `wasm32-unknown-unknown` with `std`, the
+  fallback, and without, on `thumbv7em-none-eabihf` and `riscv32imac-unknown-none-elf`, no
+  `std`, and on 32- and 64-bit Arm Linux.
 
-Segment 0 holds the ring's identity, geometry, mode, and table of segments, so a process holding
-the pool and the first segment's index can attach.
+##### refactor: mpsc v3 send takes a policy
 
-- Six header lines for now: the info line and the table join v2's seal, claim, and in-use lines.
-  The claims line comes with the roles and the mode with the modes, each into the info line or a
-  line of its own, so the layout grows to the design note's seven lines by the rungs that use it.
-- The endpoints keep v2's per-process pointers rather than v4's offsets: each process builds its
-  own from the table's buffer indices and its pool's buffer array, so nothing process-local is
-  shared, and the message path is v2's.
-- `attach` validates as v4's does, and its tests are v4's, the pairing across handles done by
-  `split` until the roles land.
+The demo, `zcr-test-ipm`, the `tp_matrix` tools, the v3 tests, and the `policy.rs` docs call the
+closure sends. Make `send(policy, fill)` public with `SendPolicy` and `Room`, rename the `_x` sends
+to `send_spin` and `send_spin_sleep`, and move each caller to one of the three.
 
-##### feat: mpsc v3 claims word and roles
+* The closure sends were three public wrappers over a private core, and a caller who wanted its
+  own wait policy could not reach the core.
+  - `send(policy, write_msg)` is the core made public. A `SendPolicy` decides at a full ring, and
+    hears of each lost slot, and a closure `|attempt| ...` is a policy, so `|_| false` probes once
+    and `policy::spin` never gives up. The core's `sleep` flag is gone: a policy sleeps through
+    `Room`, which erases the ring's mode and wake so it takes no type parameters.
+  - A policy whose state the caller reads afterward implements `SendPolicy` for `&mut` itself,
+    since a blanket impl for `&mut P` would overlap the closures' own.
+  - `send_spin(give_up, write_msg)` and `send_spin_sleep(spin_time, sleep_time, write_msg)` are
+    `send` with a policy already written, the names the user's.
+* Every caller moved off `send_with`, `send_with_backoff`, and `send_wait`, proved by building the
+  whole workspace with the three disabled.
+  - The v3 tests use `send`, with two test policies standing in for `send_wait` and
+    `send_with_backoff`, `SleepThen` and `LostThen`.
+  - The demo and tp_matrix call v3 through macros shared with v0 to v2, so a `V3Send` shim gives
+    v3 their `send_with`, forwarding to `send`, and tp_matrix's `Backoff` passes a `BackoffPolicy`.
+  - `zcr-test-ipm` uses `send_spin_sleep`, sleeping on its futex, and its `WAIT` now bounds
+    each message rather than the whole run, as its error message already said.
+* The port measured slower on some v3 flavors, and the cause was the build, not the API.
+  - `tp-stream -d 1`, three alternating runs per build, 3900X, 2026-09-29: against the pushed
+    commit, on the SMT pair, `mpsc-v3-single` 10.1 to 11.5 ns and `mpsc-v3-backoff` 10.6 to
+    12.2, each tight across runs, and with loops aligned to 64 bytes the gaps stayed.
+  - The loops are functionally identical: the core's `sleep` flag was a constant `false`, the
+    closures' `on_lost` a no-op or the same `policy::backoff`, and the `Room` unused by a closure
+    policy, and nothing was left out of line but the cold `switch` and `wake_consumer`. The user's
+    reasoning: identical loops fully inlined should run alike.
+  - With one codegen unit and fat LTO both builds run alike on every row, on the 3900X, the
+    7600X, and the Pi 5, and under the default profile the gaps go either way by machine and row,
+    up to 1.4 ns on the 7600X, where the port ran faster on the same-CCX `single` row. The
+    profile moves whole rows far more, in both directions, which is the Todo `Measurement builds
+    and the producer-consumer rhythm`.
+  - Moving the policy call out of line, tried first, reshuffled the rows under the default profile
+    rather than closing the gaps, and was backed out.
 
-The roles are claimed and released through one claims word, and `split`, producer `Clone`, and the
-unwind guard go.
+##### refactor: drop mpsc v3 closure sends
 
-- The claims line joins the header as line 4, so the header is the design note's seven lines, and
-  the info line gains the most producers and the consumer's resume position per segment.
-- The consumer's switch count is its own since its claim, not checkpointed: the count is a
-  diagnostic, and the producers' shared count is the ring's.
-- New errors: `RingClosed` for a claim on a released ring, ready for the release rung, and
-  `BadMaxProducers` for a ring no producer could join. `RoleTaken` also covers a ring at its most
-  producers.
-- The unwind guard's two tests became `a_panicking_fill_jams_the_ring`, which pins the price: the
-  consumer stops at the panicked slot.
-- A finding: a ring of segments cannot hold its full `seg_count * seg_capacity` unread, since a
-  segment is given back only at the consumer's reserve after its last release. v2 is the same, and
-  the resume test keeps its unread count well under capacity.
+Delete `send_with`, `send_with_backoff`, and `send_wait`, once the port has moved every caller
+to `send`, `send_spin`, or `send_spin_sleep`.
 
-##### feat: mpsc v3 ring release
+* Five sends were three too many, once no caller used the closure wrappers.
+  - The three go, with `FullAndLost`, the policy `send_with_backoff` built from its closures, so
+    the producer has `send`, `send_spin`, and `send_spin_sleep`, the user's call of 2026-09-29.
+  - The producer's doc names the three, and the safety comment on its `Sync` speaks of the sends,
+    not of `send_with`.
+* The README and the user guide taught the deleted sends.
+  - Their MPSC v3 parts now teach the three, the guide's example sleeping with
+    `send_spin_sleep`, and the README's flavor table says each v3 flavor sends by `send` with its
+    policy. The design note's MPSC v3 sections are left to the closing, outside the user's waiver.
+* Checked beyond the validate list: `cargo test --all-features` passes on the Pi 5, aarch64, the
+  deadline sends, the futex, the `libc` clock, the inter-process test, and the doctests among it.
 
-`release_ring` closes a ring no role holds and returns its segments to the pool.
-
-- `release_ring(self, &pool)` consumes the handle, and on `RingInUse` or `RingClosed` the ring is
-  unchanged, so a caller re-attaches rather than getting the handle back, since an `Err` carrying
-  the ring would be a large error type.
-- The pool is checked to be the ring's by the address of segment 0, so a release to another
-  region's pool is `BadSegment` before anything is written.
-- The segments are freed through the pool's view, one guard minted per table entry, the way the
-  registry takes buffers back.
-- A handle kept past the release, in this process or another, reads a closed ring only until the
-  pool reuses the segments, the same contract `attach`'s safety states.
-
-##### feat: mpsc v3 single and multi segment paths
-
-The segment handling becomes a type parameter, so a one-segment ring compiles without the switch
-and seal paths.
-
-- A sealed `Mode` trait with an associated `const MULTI: bool`, implemented by `Single` and `Multi`,
-  rather than a const generic: the mode reads as a name at the call site, `MpscRing::<Single>`, and
-  the trait carries the control block's code beside the flag. Every `if M::MULTI` folds at compile
-  time.
-- The ring and both endpoints take the mode, `Multi` by default. A default does not apply to a
-  path in an expression, so `init` and `attach` are called as `MpscRing::<Multi>::init`, which
-  names the mode everywhere a ring is made.
-- `Single` needs `seg_count` 1, at `init` and at `attach`. Its producer takes segment 0 whatever the
-  claim word's segment bits hold and goes straight to the policy at a full ring, and its consumer
-  never loads a seal.
-- The mode joins the info line, and `attach` of the other mode is the new `Error::BadMode`, checked
-  in every segment's header as the geometry is.
-
-##### feat: mpsc v3 wait and wake
-
-A full producer and an empty consumer can sleep until woken, through a wake trait, with a futex
-implementation on Linux.
-
-- `crate::wake` holds `Wake`, `NoWake`, and `Futex<TIMEOUT_MS>`, crate-level rather than in `mpsc::v3`
-  so another ring can take them. `Wake` is static functions and a `WAKES` constant, so a ring over
-  `NoWake` compiles every check out.
-- `W` is a third type parameter of the ring, both endpoints, and the read slot, which needs it for
-  the release's check, `NoWake` by default.
-- The waiting entries are `send_wait` and `reserve_slot_wait`, beside `send_with` and
-  `reserve_slot_with`, sharing one inlined body with a `sleep` flag, and the policy is called after
-  each wake, a timeout included, so `|_| true` waits without end and a bounded policy bounds it.
-- The consumer's waiting flag is the claim word's bit 31, free there since MOVED lives in seals
-  only. Every producer CAS and the switch CAS carry it over, and only the consumer clears it.
-- Producers are also woken at each segment the consumer gives back, since in `Multi` a free
-  segment is room, and at the consumer's first empty look.
-- The tests prove a wake with a futex whose timeout is 5 s against a 2 s bound, and ran 15 times
-  clean.
-
-##### feat: mpsc v3 inter-process test
-
-`zcr-test-ipm` gains an MPSC mode, two producer processes into one consumer process.
-
-- Three subcommands over an `mpsc::v3` ring of `Multi` segments sleeping on `Futex<10>`, in its
-  own region file, `/dev/shm/zcr-test-ipm-mpsc`, so the SPSC round and this one never share a
-  file: `mpsc-consumer new|join <messages>`, `mpsc-producer <id> <count>`, and `mpsc-release`.
-- Each message carries its producer, its number in that producer's stream, a value, and a checksum
-  over the three, and the consumer checks every checksum and every producer's order, and prints
-  each producer's first and last number, so a test can check a second consumer continued where the
-  first stopped.
-- `tests/ipm.rs` runs the acceptance check's cross-process half in one test: a release refused
-  while the consumer holds its role, two producer processes of 20,000 messages each, the first
-  consumer reading half and releasing while they wait on the full ring, a second consumer process
-  continuing each stream exactly, a third producer after the others have gone, the ring released
-  with no role held, and a late producer refused with `BadMagic`. Ten runs clean.
-- By hand, a producer with no consumer to read waits out its 10 s deadline on a full ring and
-  exits 1, the timeout doing what a dead peer needs.
-
-##### perf: mpsc v3 in the measurement tools
-
-v3 in tp_matrix beside v1 and v2, both modes.
-
-- Three flavors: `mpsc-v3` (`Multi`, `NoWake`), `mpsc-v3-single`, and `mpsc-v3-futex` (`Multi` over a
-  futex, `NoWake` off Linux), so the wake checks' cost on the message path is measured though
-  nothing sleeps. tp-cell takes them by name, and the tools' help names v3 among the segmented
-  flavors.
-- A finding the measurement made, fixed in this rung: the consumer's wake check at its first empty
-  look ran a fence every time a reserve found the ring empty, which in a round trip is every
-  message, 10 to 14 ns on the SMT pair. It was redundant with the half-segment checks, since
-  draining a full segment crosses a mark, so it moved to just before the consumer's own sleep.
-- The measured results go into the design note in `docs: mpsc v3 in the design note and guide`:
-  `Single` is the fastest MPSC ring with slack, and `Multi` trails v2 on some no-switch streams by
-  more than its code delta explains, as v4 did v3. The futex flavor costs about 3 ns/msg streaming
-  on the SMT pair, also more than its checks explain.
-
-##### docs: mpsc v3 in the design note and guide
-
-The measured results in the design note, and v3 in the user guide.
-
-- The design note's MPSC v3 section gains `MPSC v3 measured`: both tools' rows for v2 and the three
-  v3 flavors, what they show, and a verdict, `Single` the MPSC ring to use where one segment holds
-  the traffic and the default `MpscRing` still v1.
-- The unexplained gaps became the Todo `MPSC v3 message path gaps`, placed before `MPSC v2 as the
-  default`, whose choice of default they bear on.
-- The user guide gains a section for v3's joining, counted roles, waiting, and release, with its
-  errors in the table, and the README a section with the MPSC mode's steps by hand.
-
-##### perf: mpsc v3 in the demo and multi-producer
-
-v3 in the demo's one-message lines, depth sweep, and segment stress, and a producer count for the
-streaming tool, so the claim word is measured under several producers, the Todo entry
-`Multi-producer measurement` moved here.
-
-- The demo: `mpsc3_` and `mpsc3s_` one-message lines, v3 in both modes in the depth sweep, v3
-  `Multi` in the segment stress beside v2, `Single` having no segment to switch, and two-producer
-  lines for v2 and both v3 modes beside v1's, over a shared body.
-- tp-stream's `--producers N`, 1 to 64: above 1 the SPSC flavors are skipped, each producer tags
-  its counter with its number in the high bits, the consumer checks each producer's order, and
-  one producer runs the check it ran before. v0 through v2 clone their producer, and v3 claims N
-  roles.
-- tp-stream again at depths 1, 8, 64, and 1024, the mark v4's cycle set, which found `Multi` three
-  times v2 across CCXs at depth 1024. A probe located it in `Multi`'s code, and a header reorder
-  testing a prefetch-pair theory changed nothing and was reverted. Recorded in the Todo `MPSC v3
-  message path gaps`.
-- The pinned multi-producer rows measure the scheduler, the extra producers unpinned beside two
-  spinning threads, so a placement that pins every producer is the new Todo `Pinned
-  multi-producer placements`.
-- tp_matrix's README names the v3 flavors and `--producers`, and says the unpinned rows are the
-  ones to compare.
-- A slip: the reverted header was restored with `git checkout`, where the rule is jj.
-
-##### perf: pin every producer
-
-tp-stream's multi-producer placements name every thread, each producer on a cpu of its own, a
-shared-core placement pairs producers on one core, and a producer that loses a claim race can
-back off, measured beside plain spinning.
-
-- Placements for several producers, `tp_runner::topo::discover_multi_placements`: the consumer on
-  the base cpu, and own cores near, own cores x-L3, shared cores, and unpinned, each producer's
-  cpu printed above the table, a placement the machine cannot give skipped with a note. One
-  producer keeps the two-thread placements, so its rows compare with every earlier run.
-- `run_stream` takes a `StreamPins`, each thread's cpu, in place of one pair and a count.
-- `MpscProducer::send_with_backoff` calls an `on_lost` closure after each lost claim race, the
-  hook `send_with` never had, since a lost race is no policy call, and `policy::backoff` spins
-  `2^lost` hints to 64. The flavor `mpsc-v3-backoff` wraps the producer so the cell and stream
-  bodies run it unchanged.
-- The user asked mid-rung how often each side waits, so the stream gained `full %` and `empty %`,
-  the sends that found the ring full and the reads that found it empty, counted in the spin
-  policy's first call, on the waiting path only. With several producers the ring is nearly always
-  empty, which answers it.
-- The design note's multi-producer bullets are rewritten from the pinned runs, the first runs'
-  one-pinned rows superseded, and tp_matrix's README describes the placements and the columns.
-
-##### fix: mpsc v3 multi matches single without a switch
-
-`Multi` runs slower than `Single` in streams that never switch, three times across CCXs at depth
-1024, where the contract is that a ring of several segments runs, while it does not switch, as a
-ring of one does. Find the cause and remove it.
-
-- Probes at one segment, one side at a time: the consumer's seal load disabled left `Multi` slow,
-  the producer's switch attempt disabled made it match `Single`. The ring is almost never full in
-  these streams, so the attempt's cost was its presence: `switch` inlined into the send loop.
-- The fix is `#[cold]` and `#[inline(never)]` on `switch`, and on a new `wake_consumer` holding
-  the producer's futex wake, the same rule for the other rare path in the send.
-- After it, `Multi` matches or beats `Single` at depths 8 to 1024 at every placement, 8.7 against
-  8.3 ns across CCXs at depth 1024 where it was 39, and beats v2. Depth 1 still favors `Single`,
-  whose ring never switches where `Multi`'s switches on nearly every message, the switch's cost
-  the contract allows.
-- The pinned multi-producer set was re-run on the fixed code, and the design note's table and
-  bullets are its rows: plain v3 at two producers on own cores near went from 54.7 to 43.3 ns,
-  and backoff now helps at four producers too.
-- A slip: a probe that disabled the seal load ran with two segments, where the consumer then
-  cannot follow a switch, and hung in the background, loading the machine until it was stopped,
-  so the probe's first rows were discarded and re-run at one segment.
-
-##### docs: the ring versions explained
-
-The README names every ring version with a sentence each, scattered through its overview, and
-nothing maps the measurement tools' flavor names to rings, so a reader cannot tell the versions
-apart or pick one.
-
-- The README gains `The ring versions`: a table per family, SPSC v0 to v4 and MPSC v0 to v3, what
-  each adds, its region, and whether another process joins it, then v3's mode and wake
-  parameters and its send entries, the tools' v3 flavors against their ring types, and which ring
-  to use from the measurements so far. The overview points at it.
-- The Todo `Producer work in the streams` records the next measurement: producers that do real
-  work between sends, where more producers should pay, ranked ahead of `MPSC claim contention`,
-  whose weight its results decide.
-
-##### feat: attachable MPSC v3 closing
+##### feat: mpsc v3 deadline sends closing
 
 Closing out the cycle.
 
 - The acceptance check passed, recorded above, and the solution statement now says what was done.
-- Close-out shape: a trapezoid, the default.
-- What closing taught: the cycle's measurements kept finding what its plan had not foreseen, a
-  fence per empty look, a scheduler inside the multi-producer rows, and a switch inlined into the
-  send loop, each only once a measurement was pointed at it. The rungs the user inserted at review
-  are where the cycle's findings came from.
+- The design outlives the cycle in the design note: [MPSC v3
+  sends](notes/ring-buffer-design.md#mpsc-v3-sends) for the sends, the ticks, and the clock, and
+  [MPSC v3 across machines and build
+  profiles](notes/ring-buffer-design.md#mpsc-v3-across-machines-and-build-profiles) for the three
+  machines' tables, each naming its build profile. The design section's mentions of the deleted
+  sends now speak of the policy, and the measured section says its tables are the default profile's.
+- Close-out shape: a trapezoid, the default, the user choosing no other at review.
+- What closing taught: a measurement the cycle did not plan, of functionally identical loops, found
+  that the build profile and the two cores' rhythm move a stream's rows more than the change it set
+  out to measure, in both directions by machine. The cycle's widest finding came from the user's
+  question of why identical code should run differently, and three machines were needed to answer
+  it.
 
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[21]: #feat-attachable-mpsc-v3-opening
-[22]: #docs-mpsc-v3-design-and-restart-domains
-[23]: #feat-mpsc-v3-as-a-copy-of-v2
-[24]: #feat-mpsc-v3-control-block-and-attach
-[25]: #feat-mpsc-v3-claims-word-and-roles
-[26]: #feat-mpsc-v3-ring-release
-[27]: #feat-mpsc-v3-single-and-multi-segment-paths
-[28]: #feat-mpsc-v3-wait-and-wake
-[29]: #feat-mpsc-v3-inter-process-test
-[30]: #perf-mpsc-v3-in-the-measurement-tools
-[31]: #docs-mpsc-v3-in-the-design-note-and-guide
-[32]: #feat-attachable-mpsc-v3-closing
-[33]: #perf-mpsc-v3-in-the-demo-and-multi-producer
-[34]: #perf-pin-every-producer
-[35]: #fix-mpsc-v3-multi-matches-single-without-a-switch
-[36]: #docs-the-ring-versions-explained
+[21]: #feat-mpsc-v3-deadline-sends-opening
+[22]: #feat-mpsc-v3-deadline-sends-behind-std
+[23]: #refactor-mpsc-v3-send-takes-a-policy
+[24]: #refactor-drop-mpsc-v3-closure-sends
+[25]: #feat-mpsc-v3-deadline-sends-closing
+[26]: #feat-mpsc-v3-deadline-sends-in-ticks

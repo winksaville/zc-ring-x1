@@ -16,8 +16,10 @@ Project design docs:
   SPSC v3, the equality-seq MPSC v1, the ring of
   segments MPSC v2, the attachable SPSC v4, whose roles
   survive their holders, and the attachable MPSC v3, with
-  counted roles, single and multi segment modes, and waiting,
-  with their measurements at four depths, the
+  counted roles, single and multi segment modes, waiting, and
+  sends that take a policy or a deadline in ticks, with their
+  measurements at four depths and on three machines under two
+  build profiles, the
   holders-and-recovery design, restart domains,
   the pool-message sweep against cordyceps's intrusive MPSC, and
   the multi-stack pool with the type-tag a receiver dispatches
@@ -29,8 +31,8 @@ Project design docs:
   the counters, limits, and errors, with two complete
   programs in `examples/`, joining SPSC v4 from another
   process: claiming a role, handing it over, and replacing a
-  dead holder, and MPSC v3's counted roles, waiting, and
-  release.
+  dead holder, and MPSC v3's counted roles, sending, waiting,
+  and release.
 - [../tp_matrix/README.md](../tp_matrix/README.md): the
   measurement tools, `tp-cell`, `tp-matrix`, the streaming
   `tp-stream`, and the pool-message sweep `tp-pool`, and what
@@ -60,6 +62,10 @@ Bot-facing workflow and conventions live in
   authored banned character and prose semicolon in the tracked files, and runs in `vc-x1
   validate`, full and fast. Frozen history, the agent-files, and the transcriptions it lists are
   excluded.
+
+- [reflow.py](reflow.py): rewraps a Rust file's comment blocks to the source width, keeping
+  paragraphs, bullets at any depth, headings, and fenced code, and refusing any block whose words
+  would change. `python3 notes/reflow.py FILE [LINE ...]`, every block without lines.
 
 Per-cycle workflow lives in [`../AGENTS.md`](../AGENTS.md#cycle-protocol) and the files it
 links under `../agent-data/`: [jj.md](../agent-data/jj.md) for the commands,

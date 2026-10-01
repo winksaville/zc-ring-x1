@@ -2105,7 +2105,7 @@ The design as the cycle built it, with its measurements in [MPSC v3 measured](#m
   - Neither endpoint has a `Drop`, by [Destructors never touch shared
     memory](#destructors-never-touch-shared-memory): a dropped endpoint leaves its role held.
   - The producer is not `Clone`. Each producer is a counted claim, and one handle may still be
-    shared by reference, `send_with` taking `&self`.
+    shared by reference, the sends taking `&self`.
 - The ring's release: `release_ring(self, &pool)` CASes the roles word from no role held to
   closed, else `Err(RingInUse)`. It then clears every segment's magic, so a later `attach` is
   `Err(BadMagic)`, and frees the segments to the pool. Anyone holding the ring may call it, and
@@ -2118,9 +2118,10 @@ The design as the cycle built it, with its measurements in [MPSC v3 measured](#m
   - `Multi`: v2's switching, up to 32 segments.
   - The mode is in the control block, and `attach` of the other mode is an error, so a process
     cannot join a ring with the wrong code.
-- Waiting: a full producer or an empty consumer can sleep until the other side acts. Error and
-  spin stay the `_with` policies they are, and waiting is `send_wait` and `reserve_slot_wait`,
-  which sleep between attempts and call the same policy after each wake.
+- Waiting: a full producer or an empty consumer can sleep until the other side acts. The producer
+  sleeps through its `SendPolicy`, as `send_spin_sleep` does ([MPSC v3 sends](#mpsc-v3-sends)),
+  and the consumer's `reserve_slot_wait` sleeps between attempts where `reserve_slot_with` spins
+  or gives up, and calls the same policy after each wake.
   - The sleep and the wake are a trait the crate calls, `Wake`, with `NoWake`, which spins and
     wakes nothing, and `Futex` on Linux, whose sleep carries a timeout, since a peer can die while
     another sleeps. The crate stays `no_std`, and the futex is a syscall through `libc`.
@@ -2138,8 +2139,8 @@ The design as the cycle built it, with its measurements in [MPSC v3 measured](#m
     a half-segment mark, so the checks miss no sleeper.
   - Every process attached to one ring uses the same `Wake`. A mismatch is not detected, and costs
     only latency, since the futex sleep times out.
-- No unwind guard: v2's `TombstoneOnUnwind` does not carry over. A panic inside the fill closure
-  leaves its slot claimed and never committed, the same as a producer killed there, and both are
+- No unwind guard: v2's `TombstoneOnUnwind` does not carry over. A panic inside the `write_msg`
+  closure leaves its slot claimed and never committed, the same as a producer killed there, and both are
   recovered by a restart. v0 through v2 keep theirs, in-process baselines left as built.
 - What a dead holder costs, the accepted price:
   - A dead consumer leaves its bit set, so the ring cannot be released and nothing reads it. The
@@ -2150,6 +2151,10 @@ The design as the cycle built it, with its measurements in [MPSC v3 measured](#m
     consumer's set restarts too.
 
 ### MPSC v3 measured
+
+Every table in this section was taken under the default release profile, before [MPSC v3 across
+machines and build profiles](#mpsc-v3-across-machines-and-build-profiles) found how far the profile
+moves a row.
 
 The first measurements, `tp-stream -d 1 --depth 1,8,64` and `tp-matrix -d 1 --depth 1,8`, 3900X, 2026-09-27,
 0.18.5-9, two segments, each run twice, after the rung `perf: mpsc v3 in the measurement tools`
@@ -2370,6 +2375,112 @@ though nothing sleeps). The unpinned rows and v0 and v1 are in the runs, left ou
   that needs more. Under many producers every MPSC ring is bound by its claim word, the Todo `MPSC
   claim contention`. The default `MpscRing` stays v1 until the Todo `MPSC v2 as the default`
   weighs v3 with it.
+
+### MPSC v3 sends
+
+The producer's sends as `feat: mpsc v3 deadline sends` left them, 2026-09-28 to 2026-09-30.
+
+- One general send and two wrappers, so five sends became three.
+  - `send(policy, write_msg)` claims the next free slot, asks a `SendPolicy` what to do at each
+    full look and tells it of each lost claim race, then calls `write_msg` with a mutable reference
+    to the message in the slot and commits it. A closure `|attempt| ...` is a policy.
+  - `send_spin(give_up, write_msg)` spins on a full ring for up to `give_up`, and
+    `send_spin_sleep(spin_time, sleep_time, write_msg)` spins and then sleeps, each `send` with a
+    policy already written.
+  - The closure sends `send_with`, `send_with_backoff`, and `send_wait` are gone, each a policy or
+    a closure passed to `send`. Their core's `sleep` flag, a bool that said nothing at a call site,
+    is gone with them.
+- A lost claim race is never an error: the send looks again at once, and `Err(Full)` means the
+  ring was full at the last look after the policy gave up.
+- `Room` lets a policy sleep. It erases the ring's mode and wake behind a private trait, so
+  `SendPolicy` takes no type parameters. A policy whose state the caller reads afterward, a count,
+  implements `SendPolicy` for `&mut` itself, since a blanket impl for `&mut P` would overlap the
+  closures' own.
+- Times are `Ticks`, a duration in ticks of the crate's monotonic clock, made once by the caller's
+  `microsecs_to_ticks` or `nanos_to_ticks`, so a send sets its deadline with an add and each check
+  is one reading and a compare. A tick is a nanosecond for now. `Deadline` is a point in time in
+  ticks, set at the first full ring, so a send that finds room reads no clock.
+- The clock is `clock_gettime(CLOCK_MONOTONIC)` through `libc` on Linux, a vDSO call, and `std`'s
+  `Instant` elsewhere, under a `std` feature that is off by default. So the deadline sends are
+  there on Linux in a `no_std` build.
+- The sleep to a deadline is `Wake::wait_until`, which `Futex` makes a `FUTEX_WAIT_BITSET` with an
+  absolute `CLOCK_MONOTONIC` time, the clock a `Deadline` is read on, so an early wake sleeps again
+  to the same deadline without computing what is left. Its bitset matches any, so the consumer's
+  plain `FUTEX_WAKE` wakes it.
+- A wait's lost-wake guard is `Seen`, the word a wait sleeps on and the value it was last seen
+  holding, taken by a load before the caller's look or recorded from the caller's own
+  read-modify-write.
+- Next, as Todos: other clocks as the caller's choice, `Clock choices for the deadline sends`, how
+  many sleeping producers to wake, `Wake count for sleeping producers`, and a layer that sends a
+  pool buffer's handle, `Zero-copy endpoints: send a buffer, not a message`.
+
+### MPSC v3 across machines and build profiles
+
+Measured 2026-09-29 and 2026-09-30 with `tp-stream -d 1` at depth 8 on three machines: the 3900X,
+a 7600X, Zen 4 with six cores in one CCX, and a Raspberry Pi 5, Cortex-A76 with four cores sharing
+an L3. Each table names its build profile: `default` is the release profile, sixteen codegen
+units, and `lto` is one codegen unit with fat LTO. Medians of three alternating runs unless a table
+says otherwise, ns per message.
+
+- The policy `send` costs nothing. Before and after `refactor: mpsc v3 send takes a policy`, the
+  rows that moved most:
+
+  | machine | placement | flavor | default before | default after | lto before | lto after |
+  |---|---|---|---:|---:|---:|---:|
+  | 3900X | SMT 11,23 | mpsc-v3-single | 10.1 | 11.5 | 6.9 | 6.1 |
+  | 3900X | SMT 11,23 | mpsc-v3-backoff | 10.6 | 12.2 | 7.2 | 6.4 |
+  | 7600X | CCX 5,4 | mpsc-v3-single | 7.3 | 5.9 | 10.4 | 10.3 |
+  | 7600X | SMT 5,11 | mpsc-v3-backoff | 7.3 | 8.1 | 5.3 | 5.3 |
+  | Pi 5 | CCX 3,2 | mpsc-v3 | 53.7 | 54.1 | 52.7 | 51.8 |
+
+  - The loops are functionally identical, the old core's `sleep` a constant `false`, its
+    `on_lost` a no-op or the same `policy::backoff`, and a closure policy's `Room` unused, and
+    nothing is out of line but the cold `switch` and `wake_consumer`. Under `default` the gaps go
+    either way by machine and row, and under `lto` the builds run alike, within the drift of the
+    3900X's SMT rows across runs.
+  - With loops aligned to 64 bytes under `default`, the 3900X's SMT gaps stayed, so they were the
+    code generated, not its placement.
+- The profile moves whole rows more than any change measured, and in both directions. The port's
+  build:
+
+  | machine | placement | v3 flavors, default | v3 flavors, lto |
+  |---|---|---:|---:|
+  | 3900X | SMT 11,23 | 10.3 to 12.6 | 6.1 to 6.8 |
+  | 3900X | x-CCX 11,8, `mpsc-v3-single` | 34.7 | 27.5 |
+  | 7600X | SMT 5,11 | 7.0 to 8.1 | 5.3 to 5.4 |
+  | 7600X | CCX 5,4 | 5.9 to 6.6 | 10.3 to 10.9 |
+  | 7600X | unpinned | 6.0 to 6.8 | 11.1 to 11.2 |
+  | Pi 5 | CCX 3,2 and unpinned | 52.0 to 54.1 | 51.4 to 54.9 |
+
+  - The 7600X's same-CCX slowdown is a change of rhythm, not of work: cache-line transfers per
+    message rise from 2.0 to 2.4, and the ring is empty 7 to 15% of the time where it was 0.03%.
+    A stream's rate is two cores in step, and a build that changes either side's loop can move it.
+  - Loop alignment alone, 64 bytes under `default`, moved the 3900X's cross-CCX rows of flavors
+    no change touched about 10%, `mpsc-v2` 51.1 to 46.2 and `spsc-v4` 57.3 to 50.8.
+  - The Pi's cache-line transfer column reads 0, and we think `tprobe` counts transfers only on
+    x86.
+- A one-segment `Multi` against `Single`, `tp-stream --segments 1`, `default`, the port's build,
+  the mean of two runs:
+
+  | machine | placement | Multi | Single | Multi / Single |
+  |---|---|---:|---:|---:|
+  | 7600X | CCX 5,4 | 6.3 | 5.9 | 1.07 |
+  | 7600X | SMT 5,11 | 7.0 | 7.2 | 0.97 |
+  | 7600X | unpinned | 6.5 | 6.0 | 1.08 |
+  | Pi 5 | CCX 3,2 | 54.0 | 52.0 | 1.04 |
+  | Pi 5 | unpinned | 54.2 | 52.2 | 1.04 |
+  | 3900X | CCX 11,10 | 9.7 | 10.2 | 0.96 |
+  | 3900X | x-CCX 11,8 | 31.2 | 31.2 | 1.00 |
+  | 3900X | SMT 11,23 | 10.6 | 11.5 | 0.92 |
+  | 3900X | unpinned | 8.6 | 9.4 | 0.92 |
+
+  - Within 8% either way, the sign by machine and placement. The demo's depth sweep showed larger
+    gaps on the 7600X and the Pi, up to 24% at depth 64, a different harness and depth.
+- Verdict (2026-09-30): a build profile is a variable to fix, not a speedup to adopt. A comparison
+  between two builds uses one profile, alternates its runs, and measures more than one machine
+  before calling a change a cost or a win, the Todo `Measurement builds and the producer-consumer
+  rhythm`. `Single` and `Multi` cannot be told apart, the Todo `MPSC v4: v3 without Single and
+  Multi`.
 
 ### MPSC v3 long-term possibilities
 

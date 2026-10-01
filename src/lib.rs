@@ -38,7 +38,9 @@
 //! [user guide]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/user-guide.md
 //! [notes/ring-buffer-design.md]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/ring-buffer-design.md
 
-#![cfg_attr(not(test), no_std)]
+// The crate is `no_std` unless testing or the `std` feature is on, which brings the deadline sends'
+// clock to targets other than Linux.
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
 
 use core::mem::{align_of, size_of};
 use core::sync::atomic::AtomicU32;
@@ -48,6 +50,8 @@ use core::sync::atomic::AtomicU32;
 // free-stacks also use CAS and are not gated, v0 having
 // predated the gate, see notes/bugs.md.)
 #[cfg(target_has_atomic = "32")]
+#[cfg(any(target_os = "linux", feature = "std"))]
+mod clock;
 pub mod mpsc;
 pub mod policy;
 pub mod pool;
@@ -55,6 +59,8 @@ mod registry;
 pub mod spsc;
 pub mod wake;
 
+#[cfg(any(target_os = "linux", feature = "std"))]
+pub use clock::{microsecs_to_ticks, nanos_to_ticks};
 #[cfg(target_has_atomic = "32")]
 pub use mpsc::{MpscConsumer, MpscHeader, MpscProducer, MpscReadSlot, MpscRing, mpsc_region_size};
 pub use pool::{BufSlot, Exhausted, Pool, PoolHeader, PoolView};
@@ -86,6 +92,53 @@ pub struct Full;
 ///   [`Full`] for why it lives in the crate core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Empty;
+
+/// `struct Ticks` is a duration: a count of ticks of the crate's monotonic clock, held in a `u64`.
+///
+/// - A send's `give_up`, `spin`, and `wait` are each a `Ticks`.
+/// - A `Ticks` is not a point in time. A point in time is a [`Deadline`].
+/// - A caller makes a `Ticks` with [`microsecs_to_ticks`] or [`nanos_to_ticks`], once, when it sets
+///   up its times, so a send only adds and compares ticks and never converts a unit.
+/// - A tick is one nanosecond today. A later clock may count the CPU's own counter instead, and a
+///   caller that makes its `Ticks` with the conversions does not change.
+/// - `Ticks` lives in the crate core, as [`Full`] does, because the sends and the waits share it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Ticks(u64);
+
+impl Ticks {
+    /// `Ticks::ZERO` is a duration of no ticks. A `give_up` of `Ticks::ZERO` makes one attempt, and
+    /// a `spin` of it sleeps at once.
+    pub const ZERO: Ticks = Ticks(0);
+
+    /// `Ticks::FOREVER` is a duration that never passes. A `give_up` or `wait` of `Ticks::FOREVER`
+    /// never gives up, and a `spin` of it never sleeps.
+    pub const FOREVER: Ticks = Ticks(u64::MAX);
+}
+
+/// `struct Deadline` is a point in time: a reading of the crate's monotonic clock, in ticks, held
+/// in a `u64`, at which a wait gives up.
+///
+/// - A `Deadline` is not a duration. A duration is a [`Ticks`].
+/// - The crate makes a `Deadline` at a send's first full ring: the clock's reading plus the send's
+///   `Ticks`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Deadline(u64);
+
+impl Deadline {
+    /// `Deadline::at` makes the deadline at `ticks` on the crate's clock.
+    #[cfg_attr(not(any(target_os = "linux", feature = "std")), allow(dead_code))]
+    pub(crate) const fn at(ticks: u64) -> Self {
+        Deadline(ticks)
+    }
+
+    /// `Deadline::monotonic_nanos` returns the deadline in nanoseconds of `CLOCK_MONOTONIC`, the
+    /// clock a Linux futex sleeps against.
+    ///
+    /// - A tick is one nanosecond today, so the value returned is the deadline's own count.
+    pub fn monotonic_nanos(self) -> u64 {
+        self.0
+    }
+}
 
 /// Cache-line-aligned wrapper granting its field sole
 /// ownership of the line.
