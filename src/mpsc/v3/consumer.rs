@@ -19,6 +19,10 @@ use crate::wake::{NoWake, Seen, Wake};
 
 /// The consumer's private state, held apart from the handle so a
 /// guard can borrow it without naming the region's lifetime.
+/// wink:
+///  - the.comment says private butnthis is pub
+///  - Maybe this replaces the st field in MpscConsumer
+///    - dito for MpscProducer
 pub(super) struct ConsumerState {
     /// Geometry and segment addresses.
     pub(super) segs: Segments,
@@ -44,7 +48,7 @@ pub(super) struct ConsumerState {
 ///   stays held.
 pub struct MpscConsumer<'a, M: Mode = Multi, W: Wake = NoWake> {
     /// Private state, borrowed by each guard.
-    pub(super) st: ConsumerState,
+    pub(super) st: ConsumerState, // "inline"
     _region: PhantomData<(&'a [u8], M, W)>,
 }
 
