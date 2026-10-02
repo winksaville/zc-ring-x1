@@ -17,21 +17,21 @@ use super::{
 use crate::Empty;
 use crate::wake::{NoWake, Seen, Wake};
 
-/// The consumer's private state, held apart from the handle so a
-/// guard can borrow it without naming the region's lifetime.
-pub(super) struct ConsumerState {
+/// `struct ConsumerState` is the consumer's state, separate from [`MpscConsumer`] so
+/// [`MpscReadSlot`] can borrow it without naming the region's lifetime or the mode.
+struct ConsumerState {
     /// Geometry and segment addresses.
-    pub(super) segs: Segments,
+    segs: Segments,
     /// The segment being read.
-    pub(super) cur: u32,
+    cur: u32,
     /// Position in `cur`, [`SEQ_BITS`](super::SEQ_BITS) wide.
-    pub(super) pos: u32,
+    pos: u32,
     /// Where each segment was left, the position a reuse starts
     /// at, the same value the segment's seal hands the producer
     /// that takes it next.
-    pub(super) resume: [u32; MAX_SEGMENTS as usize],
+    resume: [u32; MAX_SEGMENTS as usize],
     /// Segment switches so far, counted on the switch path only.
-    pub(super) switches: u64,
+    switches: u64,
 }
 
 /// The consuming handle, the ring's one consumer role, CAS-free
@@ -44,7 +44,7 @@ pub(super) struct ConsumerState {
 ///   stays held.
 pub struct MpscConsumer<'a, M: Mode = Multi, W: Wake = NoWake> {
     /// Private state, borrowed by each guard.
-    pub(super) st: ConsumerState,
+    st: ConsumerState,
     _region: PhantomData<(&'a [u8], M, W)>,
 }
 

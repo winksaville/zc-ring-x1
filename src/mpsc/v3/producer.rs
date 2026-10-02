@@ -31,7 +31,7 @@ use crate::{Deadline, Full};
 ///   count stays held.
 pub struct MpscProducer<'a, M: Mode = Multi, W: Wake = NoWake> {
     /// Geometry and segment addresses.
-    pub(super) segs: Segments,
+    segs: Segments,
     _region: PhantomData<(&'a [u8], M, W)>,
 }
 

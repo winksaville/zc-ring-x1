@@ -14,9 +14,6 @@ lose context, read first at acquaint, acted on, and reset to `_None._` by the re
   reply.
 - Open for the user: `take_over_*(dead, id)` and a holder query, left as `take_over_*(id)`, with no
   Todo entry.
-- Cycle `feat: mpsc v3 deadline sends` is closed and waits for Land, on the user's go: a trapezoid,
-  the `-dev` names restored, `main` fast-forwarded, the artifact installed, and the bookmark
-  deleted.
 - Scratch left for the user to keep or delete: `~/tmp/zc-ab` on the 7600X and the Pi, source trees
   and `tp-stream` builds, the Pi's demo build and test build. Local copies of the tables are in
   `tmp/ab/`.
@@ -50,12 +47,19 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
 
-### Rewrap MPSC v3 to the full width
+### MPSC v3 doc pass: full width and lighter examples
 
 The MPSC v3 source, `src/mpsc/v3/mod.rs`, `producer.rs`, and `consumer.rs`, wraps its doc comments
 and comments near 70 columns, where the source width is 100, per prose.md's [Line
-widths](agent-data/prose.md#line-widths). Rewrap every comment in the three files to the full
-width.
+widths](agent-data/prose.md#line-widths). And the examples on `send`, `send_spin`, and
+`send_spin_sleep` run 55 to 60 lines each, mostly the same setup, the message type, the region,
+the pool, the ring, and the claims, around a send of about five lines. Rewrap every comment in the
+three files to the full width, then lighten the examples.
+
+- One cycle, two rungs, the user's call of 2026-10-02: the rewrap first, reviewed as a rewrap, then
+  the examples, reviewed line by line, since the rewrap's review rests on no word changing.
+
+Rewrap:
 
 - A deliberate sweep, the user's call of 2026-09-29, where Line widths otherwise rewraps text only
   when it is touched.
@@ -69,6 +73,16 @@ width.
 - After `feat: mpsc v3 deadline sends`, the user's call of 2026-09-29, ahead of `Wake count for
   sleeping producers`, since both touch `mpsc::v3` and a rewrap first keeps that cycle's diff to
   its own change.
+
+Examples, the user's call of 2026-10-02 that they went overboard and the full example belongs in
+README.md:
+
+- Hide each method example's setup behind rustdoc's `# ` lines, so a reader sees the call and its
+  result and the doctest still runs the whole program.
+- One complete, visible walkthrough, pool to release, in one home: the `mpsc::v3` module docs, with
+  README.md carrying it as a tested block (`#![doc = include_str!("../README.md")]`, which makes
+  every README Rust block compile or be marked `ignore`) or linking to it. `user-guide.md` teaches
+  the sends too, so the choice keeps one copy.
 
 ### Measurement builds and the producer-consumer rhythm
 
@@ -625,6 +639,17 @@ stack. The `alloc` family's name suggests otherwise.
   on 2026-09-25.
 - Raised by the user on 2026-09-24, at the review of `feat: segmented pool in the registry`.
 
+### MPSC read slot borrows fields, not a state struct
+
+MPSC's read slot needs only the segments, the current segment, and the position, so it could
+borrow those three fields of the handle and `ConsumerState` could go, the guard's type staying
+`MpscReadSlot<'c, T, W>`.
+
+- Costs: a guard of about four words instead of two, on the hot path, so a bench run decides, and
+  MPSC no longer matching SPSC, whose guards use nearly all the state and keep the struct.
+- Raised in the deliberation of `refactor: make mpsc v3 producer and consumer states private`,
+  2026-10-02.
+
 ## Ideas
 
 Unranked, not yet solid enough for `## Todo`. Triaged at an opening: promoted to `## Todo` or
@@ -703,358 +728,61 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### feat: mpsc v3 deadline sends
+### refactor: make mpsc v3 producer and consumer states private
 
 #### Problem
 
-An MPSC v3 producer bounds a send on a full ring through closures: `send_with` takes an `on_full`
-policy called with an attempt count, `send_with_backoff` adds an `on_lost` hook called after each
-lost claim race, and `send_wait` sleeps between the policy's calls. A caller who wants "give up
-after this long" writes a closure that reads a clock, and the crate is `no_std`, so it has no clock
-to offer.
+MPSC v3's `ConsumerState`, every field of it, `MpscConsumer::st`, and `MpscProducer::segs` are
+`pub(super)`, though the consumer's doc comment calls its state private. Only tests reach them from
+outside their files: `positions_survive_the_wrap` in `mod.rs` sets the consumer's position and
+resume positions, and the `free_segments` test helper reads the producer's segments.
 
 #### Solution
 
-The v3 producer's sends rebuilt around one public `send` that takes a policy, two deadline sends
-over it with times in ticks, and a clock the crate can read without `std` on Linux.
-
-- `send(policy, write_msg)`: the core made public. A `SendPolicy` decides at each full look, and
-  hears of each lost claim race, and a closure `|attempt| ...` is one. A policy sleeps through
-  `Room`, and the core's `sleep` flag is gone.
-- `send_spin(give_up, write_msg)` spins on a full ring for up to `give_up`, and
-  `send_spin_sleep(spin_time, sleep_time, write_msg)` spins and then sleeps on the producers'
-  futex, sleeping again to the same deadline after an early wake. Each returns `Err(Full)` when
-  it gives up, and a lost race is never an error. Their docs name every parameter, and each send
-  has an example run as a doctest.
-- `send_with`, `send_with_backoff`, and `send_wait` are deleted, every caller moved to the three,
-  so five sends became three. The README and the user guide teach the three.
-- Times are `Ticks`, a duration in ticks of the crate's monotonic clock, made once by the caller's
-  `microsecs_to_ticks` or `nanos_to_ticks`, a tick a nanosecond for now. `Deadline` is a point in
-  time in ticks, and `Seen` a wait's lost-wake guard, a word and the value it was last seen
-  holding.
-- `Wake` gains `wait_until`, a sleep to a `Deadline`, which `Futex` makes a `FUTEX_WAIT_BITSET`
-  on an absolute `CLOCK_MONOTONIC` time. `wait` and `Futex<TIMEOUT_MS>` stay for the untimed
-  waits.
-- The clock is `clock_gettime(CLOCK_MONOTONIC)` through `libc` on Linux, so a `no_std` Linux build
-  has the deadline sends, and `std`'s `Instant` elsewhere under a `std` feature, off by default.
-  Validation lints the `no_std` library alone and everything with every feature.
-- Measured on the 3900X, a 7600X, and a Raspberry Pi 5: the policy `send` costs nothing, the
-  release profile moves rows more than any change measured, and a one-segment `Multi` cannot be
-  told from `Single`. The design note's [MPSC v3 sends](notes/ring-buffer-design.md#mpsc-v3-sends)
-  and [MPSC v3 across machines and build
-  profiles](notes/ring-buffer-design.md#mpsc-v3-across-machines-and-build-profiles) hold the
-  design and the tables.
-- Next, as Todos: `Rewrap MPSC v3 to the full width`, `Measurement builds and the
-  producer-consumer rhythm`, `MPSC v4: v3 without Single and Multi`, `Wake count for sleeping
-  producers`, `Zero-copy endpoints: send a buffer, not a message`, and `Clock choices for the
-  deadline sends`, with `notes/reflow.py` kept for the rewrap.
+`ConsumerState`, its fields, `MpscConsumer::st`, and `MpscProducer::segs` are private to their
+files. The test `positions_survive_the_wrap` stays in `mod.rs` and starts its consumer the way
+production does: it writes the checkpoint the claim reads, through `Segments::store_consumer`, and
+checks the wrap in the checkpoint the consumer's release writes back, so it touches no consumer
+field. `free_segments` reads the ring's segments instead of a producer's, so four
+tests that built their ring inline bind it first. The consumer's doc comment now opens as the
+producer's do, `struct ConsumerState` is the consumer's state, and names the handle and the guard
+as intra-doc links.
 
 #### Acceptance check
 
-- A test shows `send_spin`, the opening's `send_with_x`, on a full ring returning `Full` no sooner
-  than its deadline and within a bound after it, and succeeding once the consumer frees room.
-- A test shows `send_spin_sleep`, the opening's `send_with_backoff_x`, under `Futex` sleeping on a
-  full ring, woken when the consumer frees room, and returning `Full` at its sleep's end when no
-  room comes.
-- `cargo clippy` and `cargo test` pass with `--all-features`, and the library builds with the
-  feature off.
+`grep -n "pub(super)" src/mpsc/v3/consumer.rs src/mpsc/v3/producer.rs` lists no field and no
+struct, only functions, `grep -n "\.st\.\|prod\.segs" src/mpsc/v3/mod.rs` finds nothing, and
+`positions_survive_the_wrap` passes.
 
-Pass, 2026-09-30 at the closing: `a_deadline_send_gives_up_at_its_time`,
-`a_deadline_send_lands_when_room_comes`, `a_deadline_sleeper_is_woken_by_releases`, and
-`a_deadline_sleep_gives_up_at_its_time` pass, with the three sends' doctests, 238 tests in all
-under `--all-features`, clippy clean, and the library building with the feature off and linting
-for `thumbv7em-none-eabihf`. The suite also passes on the Pi 5, aarch64.
-
-#### Deliberation
-
-- Times, not closures: a send is bounded by a time in microseconds, the user's proposal of
-  2026-09-28.
-  - A caller who wants another policy composes it from probes, so the closures' flexibility moves
-    to the call site rather than being lost.
-  - The spin-then-sleep send is today's `send_wait` reshaped, not today's `send_with_backoff`,
-    whose backoff is after a lost claim race, not on a full ring.
-- Behind `std` for now, the user's call, until a `no_std` clock is chosen, and narrowed by `feat:
-  mpsc v3 deadline sends in ticks` to the targets other than Linux.
-  - Off by default, since the crate is `no_std`, and the bins and tools that call the sends turn it
-    on.
-  - The clock is read in one function, so a `no_std` clock replaces it in one place. We think the
-    first is Linux's `clock_gettime` through the `libc` the crate already links for the futex.
-- Types for a wait's arguments, the user's call of 2026-09-28 at review, since a bare `expected`
-  said nothing of what value to pass.
-  - `Seen` pairs the word with its value, so the two cannot be mismatched, and its constructor
-    says where the value came from: `load` before the look, or `written` by the caller's own
-    read-modify-write.
-  - `Micros(u32)` over `core::time::Duration`: 4 bytes, not 16, and the microseconds the sends
-    were asked in, with `Micros::FOREVER` the time that never passes. Replaced by `Ticks` in
-    `feat: mpsc v3 deadline sends in ticks`.
-- `Ticks`, converted once by the caller, the user's call of 2026-09-29, so a send multiplies
-  nothing to set its deadline.
-  - A tick is a nanosecond of `CLOCK_MONOTONIC` for now. Other clocks, the CPU's own counter
-    among them, are the Todo `Clock choices for the deadline sends`, which gives `Ticks` its
-    clock as a type parameter defaulting to today's, so callers barely change.
-- The clock is a choice the caller makes, not a ring version, the user's call of 2026-09-29, and
-  the choices are measured side by side before any other becomes the default.
-  - `Micros` goes, since the unit is now in the conversion's name, and one time type is less to
-    learn than two.
-- `wait_for` beside `wait`, not in place of it, the user's call of 2026-09-28 in `feat: mpsc v3
-  deadline sends behind std`.
-  - The plan replaced `Futex<TIMEOUT_MS>` with a per-call timeout, but the consumer's
-    `reserve_slot_wait` sleeps untimed too, and giving it a timeout changes the consumer's API,
-    outside this cycle.
-  - The cost: two timeout sources until the consumer has a deadline wait of its own, when
-    `TIMEOUT_MS` can go.
-  - `wait_for` became `wait_until` in `feat: mpsc v3 deadline sends in ticks`, a sleep to a
-    `Deadline` rather than for a duration.
-- `feat: mpsc v3 deadline sends in ticks` inserted before the port, the user's call of
-  2026-09-29, after Zed showed the `std`-gated sends inactive.
-  - On Linux the clock needs no `std`, so the sends are there whenever the target is Linux, and
-    `std` remains the fallback for other targets.
-  - Every cycle counts, the user's rule, so a check is one `u64` compare against a deadline, not
-    a conversion of elapsed time to microseconds.
-- Run unattended to the closing, the user's explicit waiver of 2026-09-29, the user away.
-  - It covers: the per-rung work review and description review, and the approval of each push to
-    the `feat-mpsc-v3-deadline-sends` bookmark, for `refactor: mpsc v3 send takes a policy` and
-    `refactor: drop mpsc v3 closure sends`.
-  - It does not cover: the closing, Land, any push to `main`, any write to another repo, or any
-    work on the 7600X, where iiac-perf is measuring. The Pi 5 is free to use.
-  - Where a question would stop the cycle, the agent takes the option that keeps the plan and
-    records it in the rung's subsection, and a change of scope stops the cycle.
-  - On 2026-09-30 the user freed the 7600X and asked for the closing.
-- One general `send` and two wrappers, the user's call of 2026-09-29, the target of the port and
-  drop rungs.
-  - `send(policy, fill)`, today's private core made public, where a policy is a `SendPolicy`: what
-    a send does when the ring is full, `on_full`, or when it loses a slot, `on_lost`, with a
-    closure a policy too. It replaces the core's `sleep` flag, a bool that said nothing at a call
-    site, and the policy sleeps through a public `Room` when it wants to.
-  - Two wrappers, named for what the producer's core does while it waits: `send_spin(give_up,
-    fill)`, today's `send_with_x`, and `send_spin_sleep(spin_time, wait_time, fill)`, today's
-    `send_with_backoff_x`, the parameter names the user's. Renamed before the port, the user's
-    call: `sleep_time` for `wait_time`, since spinning waits too, and `write_msg` for `fill`.
-  - `send_with`, `send_with_backoff`, and `send_wait` go, each a policy or a closure passed to
-    `send`, so five sends become three. Sophisticated users and the measurement tools, which
-    count waits and lost slots, write a policy.
-  - Named policies with no wrappers were weighed and set aside: the wrappers read better at a call
-    site, and a new behavior is still a policy, not a method.
-- Fresh `_x` names during the cycle, the user's call, so old and new sit side by side and callers
-  move one at a time.
-- Delete only if the port leaves no holdout: the port is the evidence. The lost-race backoff,
-  `on_lost`, is the likely holdout, and is either built in or kept.
-  - No holdout: `on_lost` became `SendPolicy::on_lost`, so the measurement tools' backoff is a
-    policy, and the workspace built with the three closure sends disabled.
-- The wake count stays wake-all, the user's call: how many sleeping producers the consumer wakes is
-  the consumer's choice, not a send's argument, and the next cycle takes it, the Todo `Wake count
-  for sleeping producers`.
-- v3 only: v0 through v2 keep their closure sends, as built, and iiac-perf's benches call them.
-- No version bump on this cycle's commits, the user's explicit bend of 2026-09-28.
-  - It covers: the opening's bump and each rung's, so the version-of-record stays `0.18.5`.
-  - It does not cover: the closing, which sets the version, nor the dev name, which the opening
-    sets as usual.
-  - Why: the size of the bump depends on whether the closure sends are deleted, a break, and that
-    is decided mid-cycle.
-  - Ended at `feat: mpsc v3 deadline sends in ticks`, the user's call of 2026-09-29, at
-    `0.19.0-2`, the cycle's third commit by the suffix scheme: `Wake`'s signatures had already
-    changed, a break for any `Wake` outside the crate, so the bump is minor whatever the port
-    decides. The opening and `feat: mpsc v3 deadline sends behind std` carry `0.18.5`.
+Passed: the two files keep `pub(super)` on functions alone, `mod.rs` has no `.st.` and no
+`prod.segs`, and `positions_survive_the_wrap` passes, failing when its checkpoint is not written.
 
 #### Ladder
 
-- [feat: mpsc v3 deadline sends opening][21] (done)
-- [feat: mpsc v3 deadline sends behind std][22] (done)
-- [feat: mpsc v3 deadline sends in ticks][26] (done)
-- [refactor: mpsc v3 send takes a policy][23] (done)
-- [refactor: drop mpsc v3 closure sends][24] (done)
-- [feat: mpsc v3 deadline sends closing][25] (done)
+- refactor: make mpsc v3 producer and consumer states private (done)
 
-##### feat: mpsc v3 deadline sends opening
+#### Deliberation
 
-The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write this
-block, add the wake-count Todo, and rename the package and bins to their `-dev` names, with no
-version bump.
-
-##### feat: mpsc v3 deadline sends behind std
-
-A send bounded by time needs a closure that reads a clock the crate cannot offer. Add the `std`
-feature, `send_with_x` and `send_with_backoff_x`, a per-call futex timeout, and validation of both
-builds.
-
-* A time-bounded send needs a clock, and the crate is `no_std`.
-  - The `std` feature, off by default, turns `no_std` off and brings in `clock`, one `Stopwatch`
-    type over `std::time::Instant`, so a `no_std` clock replaces it there and nowhere else.
-  - Validation lints the library alone, which is the `no_std` build, then lints and tests
-    everything with every feature.
-* The sends keep the closure sends' loop.
-  - Each is the shared `send` with an `on_full` closure that reads the clock, started at the first
-    full ring, so a send that finds room never reads it.
-  - `Micros::FOREVER`, `u32::MAX` microseconds, is a deadline that never passes and a spin that
-    never ends.
-* A wait's `expected` was a bare `u32`, and what value to pass was the caller's to know.
-  - It is the futex's guard against a lost wake: the value the word held before the caller's last
-    look, so a waker's change between the look and the sleep makes the sleep return at once.
-  - `Seen` carries the word and that value together, `Seen::load` for the producer's wake counter
-    and `Seen::written` for the claim word the consumer's `fetch_or` flagged.
-  - `Micros` is the time type throughout, the crate root's, beside `Full`.
-* The backoff send sleeps on what is left of its wait.
-  - `sleep_full` takes an optional timeout, and `Wake::wait_for` bounds one sleep by it, a
-    `FUTEX_WAIT` of that many microseconds, a spin hint under `NoWake`.
-  - Under `NoWake` the sleep phase skips `sleep_full`, whose waiter count would put a shared
-    atomic write in every spin, and spins instead.
-* The waiting tests' bounds were seconds, so a broken wake hung a test that long before failing.
-  - The user's call at review: none needs to be long, only clearly over a wake or a deadline. The
-    wake bound is 250 ms, `SlowFutex`'s timeout and the deadline a woken send must beat are 500 ms,
-    the last cycle's waiting tests included.
-* The sends' docs assumed the reader knew the closure sends, and named neither every parameter nor
-  what `fill` must do.
-  - The user's call at review: every parameter documented, `self` included, under fixed sections,
-    Parameters, Type parameters, Returns, and Notes, nothing left to "otherwise as" another method.
-  - `fill` writes the message and must write all of it, since the slot still holds the last
-    message's bytes, and `T` names `Desc` as the zero-copy use.
-  - The zero-copy framing the queues are for, a thin layer sending a buffer's handle, is the new
-    Todo `Zero-copy endpoints: send a buffer, not a message`, which absorbs `Descriptor queue
-    endpoints`.
-* Deferred to the port: once the demo and `zcr-test-ipm` call the sends they need `std`, and
-  `cargo install` skips a bin whose required features are off, so the install likely becomes
-  `--features std`. Answered by `feat: mpsc v3 deadline sends in ticks`: on Linux they need no
-  `std`.
-
-##### feat: mpsc v3 deadline sends in ticks
-
-The deadline sends need `std` only for its clock, which on Linux is `clock_gettime`, reachable
-through the `libc` the crate already links, and `Stopwatch` turns each reading into microseconds
-with a multiply and a divide. Read the clock through `libc` on Linux as one `u64` of nanoseconds,
-keep a deadline so each check is one compare, sleep to it with `FUTEX_WAIT_BITSET`, and gate the
-sends on Linux or `std`.
-
-* On Linux the sends waited on `std` for a clock the crate can read itself.
-  - `clock::now_ns` is `clock_gettime(CLOCK_MONOTONIC)` through `libc`, folded to one `u64` of
-    nanoseconds by a multiply by a constant and an add. Elsewhere it is `std`'s `Instant`, counted
-    from the process's first reading.
-  - The sends are there on Linux or with `std`, so a Linux build, `no_std` included, has them,
-    and an editor with default features shows them live.
-* Each check converted elapsed time to microseconds, a multiply and a divide.
-  - A send sets its ends once, at the first full ring, and each check is one reading and a
-    compare, the user's rule that every cycle counts.
-* The sleep bounded by time left recomputed it after each early wake.
-  - `Deadline` is a moment in nanoseconds on the crate's clock, and `Wake::wait_until` replaces
-    `wait_for`. `Futex` sleeps with `FUTEX_WAIT_BITSET`, whose timeout is absolute on
-    `CLOCK_MONOTONIC`, the same clock, so the deadline goes to the kernel as it is, and an early
-    wake sleeps again to the same deadline.
-  - The bitset is `FUTEX_BITSET_MATCH_ANY`, so the consumer's plain `FUTEX_WAKE` wakes it.
-* A send still multiplied once, turning its microseconds into the clock's unit at the first full
-  ring.
-  - `Ticks` is the unit the sends take, made once by the caller's `microsecs_to_ticks` or
-    `nanos_to_ticks`, so a send sets its deadline with an add, the user's call at review. A tick
-    is a nanosecond for now, and `Micros` is gone.
-  - The multiply inside each reading remains, the clock's own and the fold of seconds into
-    nanoseconds, and is the Todo `Clock choices for the deadline sends`.
-  - `Ticks` and `Deadline` keep their counts private, so a caller makes them only by the
-    conversions, and `Deadline::monotonic_nanos` is what a futex needs.
-* The cycle's doc comments wrapped near 70 columns, imitating the older v3 files, and some bullets
-  left their subject to be guessed, "Made once by".
-  - The user's call at review: the source width is 100, per prose.md's Line widths, which says to
-    write to the full width, and every sentence names its subject. Each item's doc opens by naming
-    the item, "`struct Ticks` is a duration", so a reader never looks elsewhere for what is being
-    defined.
-  - Every doc comment and comment this cycle wrote is rewritten so, and older text is left as it
-    is.
-  - `notes/reflow.py` rewraps a file's comment blocks to the width, keeping their structure and
-    checking their words are unchanged, kept for the Todo `Rewrap MPSC v3 to the full width`.
-* The sends' docs opened on what they do, not on how a caller uses them, and showed no use.
-  - Each opens, in the user's wording, with the claim of a free slot, the wait for one, `Err(Full)`
-    when none comes, and `fill` writing the message it captured into the slot.
-  - Each has an example, a doctest run by `cargo test`: `send_with_x` sends, fills the ring, and
-    gets `Err(Full)` at its deadline, and `send_with_backoff_x` sleeps on a full ring until a
-    consumer thread's releases wake it. The crate had no doc examples before.
-* The sends' `# Notes` held how the sends behave, apart from the intro, and "losing a slot" read
-  as a second failure beside `Full`.
-  - The user's call at review: the notes fold into the intro as paragraphs. A lost slot is never
-    an error, the send goes for the next slot at once, and `Err(Full)` means the ring was full at
-    the last look after the deadline, any slot freed in the meantime having gone to another
-    producer.
-* Checked beyond the validate list: the library lints on `wasm32-unknown-unknown` with `std`, the
-  fallback, and without, on `thumbv7em-none-eabihf` and `riscv32imac-unknown-none-elf`, no
-  `std`, and on 32- and 64-bit Arm Linux.
-
-##### refactor: mpsc v3 send takes a policy
-
-The demo, `zcr-test-ipm`, the `tp_matrix` tools, the v3 tests, and the `policy.rs` docs call the
-closure sends. Make `send(policy, fill)` public with `SendPolicy` and `Room`, rename the `_x` sends
-to `send_spin` and `send_spin_sleep`, and move each caller to one of the three.
-
-* The closure sends were three public wrappers over a private core, and a caller who wanted its
-  own wait policy could not reach the core.
-  - `send(policy, write_msg)` is the core made public. A `SendPolicy` decides at a full ring, and
-    hears of each lost slot, and a closure `|attempt| ...` is a policy, so `|_| false` probes once
-    and `policy::spin` never gives up. The core's `sleep` flag is gone: a policy sleeps through
-    `Room`, which erases the ring's mode and wake so it takes no type parameters.
-  - A policy whose state the caller reads afterward implements `SendPolicy` for `&mut` itself,
-    since a blanket impl for `&mut P` would overlap the closures' own.
-  - `send_spin(give_up, write_msg)` and `send_spin_sleep(spin_time, sleep_time, write_msg)` are
-    `send` with a policy already written, the names the user's.
-* Every caller moved off `send_with`, `send_with_backoff`, and `send_wait`, proved by building the
-  whole workspace with the three disabled.
-  - The v3 tests use `send`, with two test policies standing in for `send_wait` and
-    `send_with_backoff`, `SleepThen` and `LostThen`.
-  - The demo and tp_matrix call v3 through macros shared with v0 to v2, so a `V3Send` shim gives
-    v3 their `send_with`, forwarding to `send`, and tp_matrix's `Backoff` passes a `BackoffPolicy`.
-  - `zcr-test-ipm` uses `send_spin_sleep`, sleeping on its futex, and its `WAIT` now bounds
-    each message rather than the whole run, as its error message already said.
-* The port measured slower on some v3 flavors, and the cause was the build, not the API.
-  - `tp-stream -d 1`, three alternating runs per build, 3900X, 2026-09-29: against the pushed
-    commit, on the SMT pair, `mpsc-v3-single` 10.1 to 11.5 ns and `mpsc-v3-backoff` 10.6 to
-    12.2, each tight across runs, and with loops aligned to 64 bytes the gaps stayed.
-  - The loops are functionally identical: the core's `sleep` flag was a constant `false`, the
-    closures' `on_lost` a no-op or the same `policy::backoff`, and the `Room` unused by a closure
-    policy, and nothing was left out of line but the cold `switch` and `wake_consumer`. The user's
-    reasoning: identical loops fully inlined should run alike.
-  - With one codegen unit and fat LTO both builds run alike on every row, on the 3900X, the
-    7600X, and the Pi 5, and under the default profile the gaps go either way by machine and row,
-    up to 1.4 ns on the 7600X, where the port ran faster on the same-CCX `single` row. The
-    profile moves whole rows far more, in both directions, which is the Todo `Measurement builds
-    and the producer-consumer rhythm`.
-  - Moving the policy call out of line, tried first, reshuffled the rows under the default profile
-    rather than closing the gaps, and was backed out.
-
-##### refactor: drop mpsc v3 closure sends
-
-Delete `send_with`, `send_with_backoff`, and `send_wait`, once the port has moved every caller
-to `send`, `send_spin`, or `send_spin_sleep`.
-
-* Five sends were three too many, once no caller used the closure wrappers.
-  - The three go, with `FullAndLost`, the policy `send_with_backoff` built from its closures, so
-    the producer has `send`, `send_spin`, and `send_spin_sleep`, the user's call of 2026-09-29.
-  - The producer's doc names the three, and the safety comment on its `Sync` speaks of the sends,
-    not of `send_with`.
-* The README and the user guide taught the deleted sends.
-  - Their MPSC v3 parts now teach the three, the guide's example sleeping with
-    `send_spin_sleep`, and the README's flavor table says each v3 flavor sends by `send` with its
-    policy. The design note's MPSC v3 sections are left to the closing, outside the user's waiver.
-* Checked beyond the validate list: `cargo test --all-features` passes on the Pi 5, aarch64, the
-  deadline sends, the futex, the `libc` clock, the inter-process test, and the doctests among it.
-
-##### feat: mpsc v3 deadline sends closing
-
-Closing out the cycle.
-
-- The acceptance check passed, recorded above, and the solution statement now says what was done.
-- The design outlives the cycle in the design note: [MPSC v3
-  sends](notes/ring-buffer-design.md#mpsc-v3-sends) for the sends, the ticks, and the clock, and
-  [MPSC v3 across machines and build
-  profiles](notes/ring-buffer-design.md#mpsc-v3-across-machines-and-build-profiles) for the three
-  machines' tables, each naming its build profile. The design section's mentions of the deleted
-  sends now speak of the policy, and the measured section says its tables are the default profile's.
-- Close-out shape: a trapezoid, the default, the user choosing no other at review.
-- What closing taught: a measurement the cycle did not plan, of functionally identical loops, found
-  that the build profile and the two cores' rhythm move a stream's rows more than the change it set
-  out to measure, in both directions by machine. The cycle's widest finding came from the user's
-  question of why identical code should run differently, and three machines were needed to answer
-  it.
+- Keep the state struct: the read guard borrows `&mut ConsumerState`, so its public type stays
+  `MpscReadSlot<'c, T, W>` without the handle's lifetime and mode.
+  - Inlining the fields into the handle would make the guard borrow the handle, adding `'a` and `M`
+    to the guard's type.
+  - Borrowing the three fields the guard uses one at a time would drop the struct, at a larger
+    guard, and is left for a later look.
+- No getters or setters: private fields used directly keep the disjoint field borrows the reserve
+  loop relies on, and a trivial accessor would guard no invariant.
+- Seed the wrap test through the checkpoint, not a test-only setter and not a move: the test then
+  runs the claim's and the release's real resume path and touches no private consumer state.
+  - Moving it into a test module in `consumer.rs`, the first try, worked but imported `mod.rs`'s
+    test helpers as `super::super::tests`, made `pub(super)` for it.
+- MPSC v3 only: spsc v3, spsc v4, and mpsc v2 keep `pub(super)`, since the versions record the
+  design's evolution and their differences are the point, the user's call.
+- The producer's `segs` joined the pushed commit, amended and retitled while the bookmark was a
+  draft, the user's call, rather than a cycle of its own. The tests read the ring's segments, the
+  same addresses, so the producer needs no accessor.
+- The doc comment's wording is the user's, made direct, then given the producer docs' opening and
+  intra-doc links, which `cargo doc --document-private-items` resolves.
 
 # References
 
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[21]: #feat-mpsc-v3-deadline-sends-opening
-[22]: #feat-mpsc-v3-deadline-sends-behind-std
-[23]: #refactor-mpsc-v3-send-takes-a-policy
-[24]: #refactor-drop-mpsc-v3-closure-sends
-[25]: #feat-mpsc-v3-deadline-sends-closing
-[26]: #feat-mpsc-v3-deadline-sends-in-ticks

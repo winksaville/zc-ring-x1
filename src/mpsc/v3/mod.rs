@@ -959,8 +959,8 @@ mod tests {
     }
 
     /// Segments free by the in-use word.
-    fn free_segments<M: Mode>(prod: &MpscProducer<'_, M>) -> u32 {
-        let segs = &prod.segs;
+    fn free_segments<M: Mode, W: Wake>(ring: &MpscRing<'_, M, W>) -> u32 {
+        let segs = &ring.segs;
         !segs.in_use().load(Ordering::Acquire) & segs.all()
     }
 
@@ -1279,7 +1279,7 @@ mod tests {
         assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
         // Every segment but the current one is back.
         let probe = rings[1].claim_producer().unwrap();
-        assert_eq!(free_segments(&probe).count_ones(), 2);
+        assert_eq!(free_segments(&rings[1]).count_ones(), 2);
         assert!(probe.switches() > 3);
         assert_eq!(probe.segment(), cons.segment());
     }
@@ -1880,18 +1880,18 @@ mod tests {
         for (cap, count) in [(1u32, 2u32), (4, 3), (16, 4)] {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-            let (prod, mut cons) =
-                endpoints(&MpscRing::<Multi>::init(&mut pool, 64, cap, count).unwrap());
+            let ring = MpscRing::<Multi>::init(&mut pool, 64, cap, count).unwrap();
+            let (prod, mut cons) = endpoints(&ring);
             let total = (cap * count) as u64;
             send(&prod, 0, total);
             assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
-            assert_eq!(free_segments(&prod), 0);
+            assert_eq!(free_segments(&ring), 0);
             assert_eq!(prod.switches(), (count - 1) as u64);
             recv(&mut cons, 0, total);
             assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
             // Every segment but the current one is back.
-            assert_eq!(free_segments(&prod).count_ones(), count - 1);
-            assert_eq!(free_segments(&prod) & (1 << prod.segment()), 0);
+            assert_eq!(free_segments(&ring).count_ones(), count - 1);
+            assert_eq!(free_segments(&ring) & (1 << prod.segment()), 0);
             assert_eq!(prod.segment(), cons.segment());
             assert_eq!(cons.switches(), prod.switches());
         }
@@ -1904,8 +1904,8 @@ mod tests {
         for (cap, count) in [(1u32, 2u32), (1, 5), (2, 3), (4, 2), (16, 8)] {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-            let (prod, mut cons) =
-                endpoints(&MpscRing::<Multi>::init(&mut pool, 64, cap, count).unwrap());
+            let ring = MpscRing::<Multi>::init(&mut pool, 64, cap, count).unwrap();
+            let (prod, mut cons) = endpoints(&ring);
             let burst = (cap * count) as u64;
             let mut next = 0u64;
             for round in 0..200u64 {
@@ -1915,7 +1915,7 @@ mod tests {
                 recv(&mut cons, next, next + n);
                 next += n;
                 assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
-                assert_eq!(free_segments(&prod).count_ones(), count - 1);
+                assert_eq!(free_segments(&ring).count_ones(), count - 1);
                 assert_eq!(cons.switches(), prod.switches());
             }
             assert!(next > 10 * burst);
@@ -1932,7 +1932,8 @@ mod tests {
         // the reserve after its message, one poll late.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 1, 3).unwrap());
+        let ring = MpscRing::<Multi>::init(&mut pool, 64, 1, 3).unwrap();
+        let (prod, mut cons) = endpoints(&ring);
         for i in 0..10u64 {
             send(&prod, i, i + 1);
             recv(&mut cons, i, i + 1);
@@ -1950,7 +1951,7 @@ mod tests {
         assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
         assert_eq!(cons.switches(), prod.switches());
         assert_eq!(cons.segment(), prod.segment());
-        assert_eq!(free_segments(&prod).count_ones(), 2);
+        assert_eq!(free_segments(&ring).count_ones(), 2);
     }
 
     #[test]
@@ -1960,20 +1961,21 @@ mod tests {
         // consumer frees a slot.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 1, 2).unwrap());
+        let ring = MpscRing::<Multi>::init(&mut pool, 64, 1, 2).unwrap();
+        let (prod, mut cons) = endpoints(&ring);
         send(&prod, 0, 2);
         assert_eq!(prod.segment(), 1);
         assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
         // Segment 0 is read, but given back only at the next
         // reserve, so the producer still finds nothing free.
         recv(&mut cons, 0, 1);
-        assert_eq!(free_segments(&prod), 0);
+        assert_eq!(free_segments(&ring), 0);
         assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
         // That reserve follows the seal and gives segment 0 back,
         // and its release frees segment 1's slot.
         recv(&mut cons, 1, 2);
         assert_eq!(cons.segment(), 1);
-        assert_eq!(free_segments(&prod), 1);
+        assert_eq!(free_segments(&ring), 1);
         // A released slot in the current segment is claimable, so
         // no switch. The next send finds it unread and switches.
         send(&prod, 2, 3);
@@ -2080,18 +2082,25 @@ mod tests {
             ring.segs.seal(seg).store(start, Ordering::Relaxed);
         }
         ring.segs.claim().store(word(0, start), Ordering::Relaxed);
+        // The consumer starts two shy of the wrap too, from the
+        // checkpoint its claim reads.
+        ring.segs.store_consumer(&Checkpoint {
+            cur: 0,
+            pos: start,
+            resume: [start; MAX_SEGMENTS as usize],
+        });
         let (prod, mut cons) = endpoints(&ring);
-        cons.st.pos = start;
-        cons.st.resume = [start; MAX_SEGMENTS as usize];
         // Batches of at most the ring's 12, so no send finds Full.
         for (from, to) in [(0u64, 12u64), (12, 24), (24, 30), (30, 41)] {
             send(&prod, from, to);
             recv(&mut cons, from, to);
-            assert_eq!(free_segments(&prod).count_ones(), 2);
+            assert_eq!(free_segments(&ring).count_ones(), 2);
         }
-        // The positions did cross the wrap.
-        assert!(cons.st.pos < start);
-        assert!(word_pos(prod.segs.claim().load(Ordering::Relaxed)) < start);
+        // The positions did cross the wrap: the consumer's, by the
+        // checkpoint its release writes.
+        cons.release();
+        assert!(ring.segs.load_consumer().unwrap().pos < start);
+        assert!(word_pos(ring.segs.claim().load(Ordering::Relaxed)) < start);
     }
 
     #[test]
@@ -2131,7 +2140,7 @@ mod tests {
         // Every seal was consumed once, and every segment but the
         // current one is back.
         assert_eq!(cons.switches(), probe.switches());
-        assert_eq!(free_segments(&probe).count_ones(), seg_count - 1);
+        assert_eq!(free_segments(&ring).count_ones(), seg_count - 1);
         assert_eq!(probe.segment(), cons.segment());
     }
 
@@ -2231,7 +2240,7 @@ mod tests {
                     assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
                     assert_eq!(cons.switches(), prod.switches());
                     assert_eq!(cons.segment(), prod.segment());
-                    assert_eq!(free_segments(&prod).count_ones(), count - 1);
+                    assert_eq!(free_segments(ring).count_ones(), count - 1);
                 });
             }
         }
@@ -2256,7 +2265,7 @@ mod tests {
                         next += n;
                         assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
                         assert_eq!(cons.switches(), prod.switches());
-                        assert_eq!(free_segments(&prod).count_ones(), count - 1);
+                        assert_eq!(free_segments(ring).count_ones(), count - 1);
                     }
                 });
             }
@@ -2285,7 +2294,7 @@ mod tests {
                             probe.switches(),
                             "{count} segments at depth {depth}, {producers} producers"
                         );
-                        assert_eq!(free_segments(&probe).count_ones(), count - 1);
+                        assert_eq!(free_segments(ring).count_ones(), count - 1);
                         assert_eq!(probe.segment(), cons.segment());
                     });
                 }
