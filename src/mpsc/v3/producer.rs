@@ -1,9 +1,7 @@
-//! MPSC v3 producing endpoint: [`MpscProducer`] claims a
-//! position by CAS on the packed claim word, a closure fills the
-//! slot in place, and the commit happens on closure return, as
-//! v1's. At a full segment it takes a free one and moves the ring
-//! on, sealing the old segment behind it. The handle is one
-//! counted producer role, given back by `release`.
+//! MPSC v3 producing endpoint: [`MpscProducer`] claims a position by CAS on the packed claim word,
+//! a closure fills the slot in place, and the commit happens on closure return, as v1's. At a full
+//! segment it takes a free one and moves the ring on, sealing the old segment behind it. The handle
+//! is one counted producer role, given back by `release`.
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -35,17 +33,16 @@ pub struct MpscProducer<'a, M: Mode = Multi, W: Wake = NoWake> {
     _region: PhantomData<(&'a [u8], M, W)>,
 }
 
-// SAFETY: any number of producers is the protocol contract: the
-// shared state (the header words, the slot seqs) is atomic, slot
-// claims are exclusive by CAS, and slot writes are handed off
-// with Release/Acquire ordering.
+// SAFETY: any number of producers is the protocol contract: the shared state (the header words, the
+// slot seqs) is atomic, slot claims are exclusive by CAS, and slot writes are handed off with
+// Release/Acquire ordering.
 unsafe impl<M: Mode, W: Wake> Send for MpscProducer<'_, M, W> {}
-// SAFETY: the sends are &self and every access is protected as above, so shared references
-// across threads are equally fine.
+// SAFETY: the sends are &self and every access is protected as above, so shared references across
+// threads are equally fine.
 unsafe impl<M: Mode, W: Wake> Sync for MpscProducer<'_, M, W> {}
 
-/// Wake the consumer asleep on the claim word, out of line and
-/// cold, so the send loop compiles as it does without a wake.
+/// Wake the consumer asleep on the claim word, out of line and cold, so the send loop compiles as
+/// it does without a wake.
 #[cold]
 #[inline(never)]
 fn wake_consumer<W: Wake>(claim: &AtomicU32) {
@@ -56,8 +53,8 @@ fn wake_consumer<W: Wake>(claim: &AtomicU32) {
 enum NoSwitch {
     /// No segment is free: the ring is Full.
     NoFree,
-    /// The claim word moved under the attempt: another producer
-    /// switched, or the slot was released and claimed.
+    /// The claim word moved under the attempt: another producer switched, or the slot was released
+    /// and claimed.
     Lost,
 }
 
@@ -85,8 +82,7 @@ pub trait SendPolicy {
     ///
     /// # Returns
     ///
-    /// - `true` to look at the ring again, or `false` to give up, and the send returns
-    ///   `Err(Full)`.
+    /// - `true` to look at the ring again, or `false` to give up, and the send returns `Err(Full)`.
     fn on_full(&mut self, attempt: u32, room: &Room<'_>) -> bool;
 
     /// `on_lost` is called each time another producer takes a slot this send was about to claim.
@@ -148,8 +144,7 @@ impl<M: Mode, W: Wake> Sleeper for MpscProducer<'_, M, W> {
 }
 
 impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
-    /// Build the handle for a claimed role from the ring's
-    /// geometry snapshot.
+    /// Build the handle for a claimed role from the ring's geometry snapshot.
     pub(super) fn new(segs: Segments) -> Self {
         MpscProducer {
             segs,
@@ -157,28 +152,24 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
         }
     }
 
-    /// Give the producer role back, counting it out of the roles
-    /// word.
+    /// Give the producer role back, counting it out of the roles word.
     ///
-    /// - The producer keeps no state of its own, so nothing is
-    ///   checkpointed: a later claim, in any process, sends on
-    ///   where the ring is.
+    /// - The producer keeps no state of its own, so nothing is checkpointed: a later claim, in any
+    ///   process, sends on where the ring is.
     pub fn release(self) {
-        // Release: the ring's release, which needs no role held,
-        // sees everything this producer committed.
+        // Release: the ring's release, which needs no role held, sees everything this producer
+        // committed.
         self.segs.roles().fetch_sub(1, Ordering::Release);
     }
 
-    /// Segment switches the ring's producers have made: how many
-    /// times a producer at a full segment moved the ring to a
-    /// free one. Once the consumer has read everything sent, it
-    /// equals the consumer's count.
+    /// Segment switches the ring's producers have made: how many times a producer at a full segment
+    /// moved the ring to a free one. Once the consumer has read everything sent, it equals the
+    /// consumer's count.
     pub fn switches(&self) -> u64 {
         self.segs.switches().load(Ordering::Relaxed) as u64
     }
 
-    /// The segment the ring's producers write into, `0` to the
-    /// ring's segment count less one.
+    /// The segment the ring's producers write into, `0` to the ring's segment count less one.
     pub fn segment(&self) -> u32 {
         word_seg(self.segs.claim().load(Ordering::Relaxed))
     }
@@ -605,31 +596,27 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
         let segs = &self.segs;
         check_body_type::<T>(segs.slot_size);
         let claim = segs.claim();
-        // SeqCst on every claim word access, as v1's index: the
-        // claim is only exclusive if these are linearizable.
+        // SeqCst on every claim word access, as v1's index: the claim is only exclusive if these
+        // are linearizable.
         let mut w = claim.load(Ordering::SeqCst);
         let mut attempt = 0u32;
         let mut lost = 0u32;
         let (seg, pos) = loop {
-            // Single: segment 0 always, whatever the word's segment
-            // bits hold, so the check below folds away.
+            // Single: segment 0 always, whatever the word's segment bits hold, so the check below
+            // folds away.
             let seg = if M::MULTI { word_seg(w) } else { 0 };
             let pos = word_pos(w);
             if M::MULTI && seg >= segs.seg_count {
-                // A scribbled claim word: the ring is wedged, and
-                // this degrades toward Full, never toward a slot
-                // the ring does not have.
+                // A scribbled claim word: the ring is wedged, and this degrades toward Full, never
+                // toward a slot the ring does not have.
                 return Err(Full);
             }
-            // Acquire pairs with the consumer's Release in
-            // release(): a claimable seq means the previous lap's
-            // reads are done.
+            // Acquire pairs with the consumer's Release in release(): a claimable seq means the
+            // previous lap's reads are done.
             let seq = segs.seq(seg, pos).load(Ordering::Acquire);
             if seq == pos {
-                // Claimable. Weak CAS: a spurious failure just
-                // retries with the fresher word. The consumer's
-                // waiting flag carries over, cleared only by the
-                // consumer.
+                // Claimable. Weak CAS: a spurious failure just retries with the fresher word. The
+                // consumer's waiting flag carries over, cleared only by the consumer.
                 match claim.compare_exchange_weak(
                     w,
                     word(seg, pos.wrapping_add(1)) | (w & WAITING),
@@ -645,8 +632,8 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
                 }
                 continue;
             }
-            // Not claimable at pos: a stale word or a full
-            // segment, told apart by re-reading, as v1 does.
+            // Not claimable at pos: a stale word or a full segment, told apart by re-reading, as v1
+            // does.
             let cur = claim.load(Ordering::SeqCst);
             if cur != w {
                 w = cur;
@@ -669,23 +656,19 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
             }
             w = claim.load(Ordering::SeqCst);
         };
-        // (seg, pos) is exclusively ours until the seq commit
-        // store.
+        // (seg, pos) is exclusively ours until the seq commit store.
         let msg = segs.body(seg, pos) as *mut T;
         let commit = seq_of(pos.wrapping_add(segs.commit_add));
         let seq = segs.seq(seg, pos);
-        // SAFETY: msg is in-bounds and aligned (check_body_type
-        // against the body's offset in a line-aligned slot), any
-        // byte pattern is a valid T (FromBytes bound), and the
-        // claim CAS gives exclusive slot access until the commit
-        // store below.
+        // SAFETY: msg is in-bounds and aligned (check_body_type against the body's offset in a
+        // line-aligned slot), any byte pattern is a valid T (FromBytes bound), and the claim CAS
+        // gives exclusive slot access until the commit store below.
         write_msg(unsafe { &mut *msg });
-        // Release pairs with the consumer's Acquire seq load:
-        // observing pos + M + 1 means the filled bytes are
-        // visible.
+        // Release pairs with the consumer's Acquire seq load: observing pos + M + 1 means the
+        // filled bytes are visible.
         seq.store(commit, Ordering::Release);
-        // The claim CAS returned the word it replaced, flag and
-        // all, so learning the consumer sleeps costs nothing.
+        // The claim CAS returned the word it replaced, flag and all, so learning the consumer
+        // sleeps costs nothing.
         if W::WAKES && w & WAITING != 0 {
             wake_consumer::<W>(claim);
         }
@@ -695,13 +678,11 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     /// `sleep_full` sleeps on a full ring until the consumer frees room, a wake comes early, or the
     /// timeout passes: `deadline`, or `W`'s own timeout when `deadline` is `None`.
     ///
-    /// - Count in, then look again: the consumer's check fences
-    ///   its releases before it reads the count, and the fence here
-    ///   orders the count before the look, so either the consumer
-    ///   sees this producer or this producer sees the room.
-    /// - The wake sequence is read before the look, so a wake
-    ///   between the look and the sleep moves the word and the
-    ///   sleep returns at once.
+    /// - Count in, then look again: the consumer's check fences its releases before it reads the
+    ///   count, and the fence here orders the count before the look, so either the consumer sees
+    ///   this producer or this producer sees the room.
+    /// - The wake sequence is read before the look, so a wake between the look and the sleep moves
+    ///   the word and the sleep returns at once.
     #[cold]
     #[inline(never)]
     fn sleep_full(&self, deadline: Option<Deadline>) {
@@ -719,8 +700,8 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
         c.prod_waiters.fetch_sub(1, Ordering::SeqCst);
     }
 
-    /// Whether a claim could land now: the claim word's slot is
-    /// claimable, or a `Multi` ring has a free segment.
+    /// Whether a claim could land now: the claim word's slot is claimable, or a `Multi` ring has a
+    /// free segment.
     fn has_room(&self) -> bool {
         let segs = &self.segs;
         let w = segs.claim().load(Ordering::SeqCst);
@@ -733,32 +714,26 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
             || (M::MULTI && !segs.in_use().load(Ordering::SeqCst) & segs.all() != 0)
     }
 
-    /// Move the ring from the full segment and position `w` names
-    /// to a free segment.
+    /// Move the ring from the full segment and position `w` names to a free segment.
     ///
-    /// - Take the lowest free segment by setting its bit in the
-    ///   in-use word, which serializes producers switching at
-    ///   once and succeeds only where the bit was clear, clear its
-    ///   seal, and CAS the claim word from `w` to the new segment
-    ///   at its resume position, the position its seal held.
-    /// - On success, seal the old segment: MOVED, the new segment,
-    ///   and `w`'s position as the end. Every claim in the old
-    ///   segment lies before it.
-    /// - On a lost claim CAS, restore the seal and clear the bit:
-    ///   the ring moved under the attempt, and the caller retries
-    ///   with the fresh word.
-    /// - Out of line and cold: inlined into the send loop it made a
-    ///   ring that never switches run up to three times slower than
-    ///   `Single` (design note, MPSC v3 measured), a path taken only
-    ///   on a full ring costing every message.
+    /// - Take the lowest free segment by setting its bit in the in-use word, which serializes
+    ///   producers switching at once and succeeds only where the bit was clear, clear its seal, and
+    ///   CAS the claim word from `w` to the new segment at its resume position, the position its
+    ///   seal held.
+    /// - On success, seal the old segment: MOVED, the new segment, and `w`'s position as the end.
+    ///   Every claim in the old segment lies before it.
+    /// - On a lost claim CAS, restore the seal and clear the bit: the ring moved under the attempt,
+    ///   and the caller retries with the fresh word.
+    /// - Out of line and cold: inlined into the send loop it made a ring that never switches run up
+    ///   to three times slower than `Single` (design note, MPSC v3 measured), a path taken only on
+    ///   a full ring costing every message.
     #[cold]
     #[inline(never)]
     fn switch(&self, w: u32) -> Result<(), NoSwitch> {
         let segs = &self.segs;
         let in_use = segs.in_use();
         loop {
-            // Acquire: a consumer's give-back is visible with its
-            // released seqs.
+            // Acquire: a consumer's give-back is visible with its released seqs.
             let free = !in_use.load(Ordering::Acquire) & segs.all();
             if free == 0 {
                 return Err(NoSwitch::NoFree);
@@ -768,14 +743,12 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
                 // Another producer set it first.
                 continue;
             }
-            // Segment k is ours among producers, and the consumer
-            // cannot enter it until a seal names it, so nobody else
-            // reads or writes its seal here.
+            // Segment k is ours among producers, and the consumer cannot enter it until a seal
+            // names it, so nobody else reads or writes its seal here.
             let seal = segs.seal(k);
             let start = word_pos(seal.load(Ordering::Acquire));
-            // Cleared before the claim CAS: a clear after it could
-            // land after a later producer's seal of k, once the ring
-            // has filled k and left it again, and wipe that seal.
+            // Cleared before the claim CAS: a clear after it could land after a later producer's
+            // seal of k, once the ring has filled k and left it again, and wipe that seal.
             seal.store(0, Ordering::Relaxed);
             match segs.claim().compare_exchange(
                 w,
@@ -784,16 +757,15 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
                 Ordering::SeqCst,
             ) {
                 Ok(_) => {
-                    // Release pairs with the consumer's Acquire seal
-                    // load: seeing MOVED means k's seal is clear.
+                    // Release pairs with the consumer's Acquire seal load: seeing MOVED means k's
+                    // seal is clear.
                     segs.seal(word_seg(w))
                         .store(MOVED | word(k, word_pos(w)), Ordering::Release);
                     segs.switches().fetch_add(1, Ordering::Relaxed);
                     return Ok(());
                 }
                 Err(_) => {
-                    // Put k back as it was: its resume position for
-                    // the next taker, then its bit.
+                    // Put k back as it was: its resume position for the next taker, then its bit.
                     seal.store(start, Ordering::Relaxed);
                     in_use.fetch_and(!(1 << k), Ordering::AcqRel);
                     return Err(NoSwitch::Lost);

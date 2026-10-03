@@ -63,7 +63,7 @@ Rewrap every comment in the three files to the full width, then lighten the exam
 #### Ladder
 
 - [docs: mpsc v3 doc pass opening][1] (done)
-- [docs: mpsc v3 doc pass rewrap][2]
+- [docs: mpsc v3 doc pass rewrap][2] (done)
 - [docs: mpsc v3 doc pass examples][3]
 - [docs: mpsc v3 doc pass closing][4]
 
@@ -99,6 +99,14 @@ Todo entry into this block, bump the version-of-record, and rename the package a
 
 The three files' comments wrap near 70 columns where the source width is 100. Run reflow.py over
 each, so the lines move and no word changes.
+
+- The three files went from 3471 lines to 3286, `mod.rs` 121 shorter, `producer.rs` 28, and
+  `consumer.rs` 36.
+- Every word and every code line is where it was: each file's words, comment markers aside, are the
+  same sequence before and after, and its lines that are not comments are identical.
+- Four lines stay past 100 columns, all in `mod.rs`'s tests, each a line of code that `cargo fmt`
+  leaves long, not a comment.
+- A second run of reflow.py changes nothing, so the rewrap is stable.
 
 ##### docs: mpsc v3 doc pass examples
 
