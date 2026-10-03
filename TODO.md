@@ -46,25 +46,25 @@ Rewrap every comment in the three files to the full width, then lighten the exam
 
 - The rewrap: `python3 notes/reflow.py <file>` on each file, which keeps paragraphs, bullets at
   any depth, headings, and fenced code, and refuses to write a block whose words changed.
-- The examples: each method example's setup goes behind rustdoc's `# ` lines, so a reader sees the
-  call and its result and the doctest still runs the whole program.
-- One complete, visible walkthrough, pool to release, in one home, README.md, compiled and run as a
-  doctest, with the `mpsc::v3` module docs and `user-guide.md` linking to it.
+- The examples: the examples on `send`, `send_spin`, and `send_spin_sleep` are removed, and the
+  two deadline sends' docs are cut to what each adds to `send`.
+- One complete program, pool to release, in one home, `examples/guide_mpsc_v3.rs`, a producer
+  thread and a consumer thread, with README.md, the `mpsc::v3` module docs, and `user-guide.md`
+  linking to it.
 
 #### Acceptance check
 
 - `python3 notes/reflow.py` on each of the three files leaves it unchanged.
 - The rewrap rung's diff changes no word: reflow.py's same-words check passed on every block, and
   the rung holds no edit but reflow.py's and `cargo fmt`'s.
-- The rendered examples of `send`, `send_spin`, and `send_spin_sleep` each show 15 lines or fewer.
-- `cargo test --doc --all-features` passes, the hidden setup and the README.md walkthrough
-  included.
+- `grep -n "# Example" src/mpsc/v3/producer.rs` finds nothing.
+- `cargo run --release --example guide_mpsc_v3` runs to its last line.
 
 #### Ladder
 
 - [docs: mpsc v3 doc pass opening][1] (done)
 - [docs: mpsc v3 doc pass rewrap][2] (done)
-- [docs: mpsc v3 doc pass examples][3]
+- [docs: mpsc v3 doc pass examples][3] (done)
 - [docs: mpsc v3 doc pass closing][4]
 
 #### Deliberation
@@ -77,13 +77,23 @@ Rewrap every comment in the three files to the full width, then lighten the exam
   - Lines that read better long stay long, as Line widths allows: the `// OK:` comments on `unwrap`
     calls, a URL.
   - A trial on copies of the three files kept every word and shortened them by about 200 lines.
-- The examples went overboard and the full example belongs in README.md, the user's call of
-  2026-10-02.
+- The examples went overboard, the user's call of 2026-10-02, which put the full example in
+  README.md.
   - `user-guide.md` teaches the sends too, so one home keeps one copy.
-  - How README.md's block is tested is open until the examples rung. We think a doctest-only item
-    in `lib.rs`, `#[cfg(doctest)] #[doc = include_str!("../README.md")]`, is the lighter way, since
-    `#![doc = include_str!("../README.md")]` would also make README.md the crate's front page.
-    Either makes every README.md Rust block compile or be marked `ignore`.
+- The full example is a program in `examples/`, in two threads, not a README.md block, the user's
+  call of 2026-10-03 at this rung's review.
+  - The README.md block was built first, run through a doctest-only item in `lib.rs`,
+    `#[cfg(doctest)] #[doc = include_str!("../README.md")]`. `cargo test --doc` listed its blocks
+    under that item's name with line numbers counted as if README.md were pasted into `lib.rs`,
+    README.md's line plus 75, so a failure would not say where in README.md it was.
+  - An example is a file cargo names in its output, built by every `cargo test` and linted by
+    `cargo clippy --all-targets`, as `guide_spsc_v3.rs` and `guide_mpsc_v2.rs` are.
+- The sends' doc examples are removed, not lightened, and the sends' docs made more concise, the
+  user's call of 2026-10-03 at this rung's second review.
+  - Hiding each example's setup behind rustdoc's `# ` lines was built first: `send_spin` showed 14
+    lines, `send_spin_sleep` 10, and `send` 32 with its policy.
+  - The acceptance check follows: the checks on the rendered examples' length and on the doctests
+    are gone, since no doctest is left, and a check that no example remains takes their place.
 - The consumer's v3 methods' docs stay in their old form: moving them to the Parameters form the
   producer's sends use is a wording change, outside a rewrap and outside the examples.
 
@@ -111,7 +121,25 @@ each, so the lines move and no word changes.
 ##### docs: mpsc v3 doc pass examples
 
 The examples on `send`, `send_spin`, and `send_spin_sleep` are mostly the same setup around a send
-of about five lines. Hide the setup, and give the complete walkthrough one visible home.
+of about five lines, and the three sends' docs repeat each other. Remove the examples, give one
+complete program a home in `examples/`, and cut the deadline sends' docs to what they add.
+
+- The whole program is `examples/guide_mpsc_v3.rs`: a pool, a `Multi` ring of 2 segments of 8
+  slots with the `Futex` wake, the two claims, a producer thread sending 100000 messages with
+  `send_spin_sleep`, a consumer thread reading them in order with `reserve_slot_wait`, each
+  releasing its role, and `release_ring`, which no example showed before.
+  - The ring is small on purpose, so it fills, the producer sleeps, and the segments switch.
+  - Linux only, since the sides sleep on a futex.
+  - README.md's MPSC v3 section, the `mpsc::v3` module docs, and the user guide's MPSC v3 section
+    link to it.
+- `send` is the one home of what every send shares: the claim and the commit, a slot lost to
+  another producer, what `write_msg` must do and what a slow or panicking one costs, and the limits
+  on `T`.
+  - `send_spin` and `send_spin_sleep` say they are `send` with a policy, and document only that
+    policy, their times, and their `Err(Full)`, pointing at `send` for `write_msg` and `T`.
+  - The three sends' docs are 237 lines shorter, `producer.rs` going from 776 lines to 538.
+- The crate has no doctest left, and no example of a `SendPolicy` written as a type, which
+  `send`'s example was: the `SendPolicy` docs still say how, without showing it.
 
 ##### docs: mpsc v3 doc pass closing
 

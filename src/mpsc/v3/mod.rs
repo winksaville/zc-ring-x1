@@ -47,6 +47,9 @@
 //!     mark, so the checks miss no sleeper.
 //!   - With [`NoWake`] every check folds away and a wait polls.
 //! - Gated with the rest of `mpsc` on `target_has_atomic = "32"`.
+//! - A complete program in two threads, pool to release, is `examples/`'s [guide_mpsc_v3.rs].
+//!
+//! [guide_mpsc_v3.rs]: https://github.com/winksaville/zc-ring-x1/blob/main/examples/guide_mpsc_v3.rs
 
 use core::marker::PhantomData;
 use core::mem::size_of;

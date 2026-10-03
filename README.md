@@ -408,6 +408,9 @@ guide's [MPSC v3](notes/user-guide.md#mpsc-v3-joining-counted-roles-and-waiting)
   and `Multi`, v2's switching.
 - Waiting: `send_spin_sleep` and `reserve_slot_wait` sleep on a full or empty ring through a
   `Wake` type, a futex on Linux, where `send_spin` and `reserve_slot_with` spin or give up.
+- A complete program: [examples/guide_mpsc_v3.rs](examples/guide_mpsc_v3.rs) goes from a pool to
+  the ring's release in two threads, a producer and a consumer that sleep on a full or empty ring,
+  run with `cargo run --release --example guide_mpsc_v3`.
 - Proven between processes: `zcr-test-ipm`'s MPSC mode, run by `cargo test --test ipm`, sends
   from two producer processes to a consumer that hands off to a second consumer process
   mid-stream, then releases the ring. By hand, each step after the one before it, the producers
