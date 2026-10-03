@@ -30,7 +30,84 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### docs: mpsc v3 doc pass
+
+#### Problem
+
+The MPSC v3 source, `src/mpsc/v3/mod.rs`, `producer.rs`, and `consumer.rs`, wraps its doc comments
+and comments near 70 columns, where the source width is 100, per prose.md's [Line
+widths](agent-data/prose.md#line-widths). And the examples on `send`, `send_spin`, and
+`send_spin_sleep` run 55 to 60 lines each, mostly the same setup, the message type, the region, the
+pool, the ring, and the claims, around a send of about five lines.
+
+#### Solution
+
+Rewrap every comment in the three files to the full width, then lighten the examples.
+
+- The rewrap: `python3 notes/reflow.py <file>` on each file, which keeps paragraphs, bullets at
+  any depth, headings, and fenced code, and refuses to write a block whose words changed.
+- The examples: each method example's setup goes behind rustdoc's `# ` lines, so a reader sees the
+  call and its result and the doctest still runs the whole program.
+- One complete, visible walkthrough, pool to release, in one home, README.md, compiled and run as a
+  doctest, with the `mpsc::v3` module docs and `user-guide.md` linking to it.
+
+#### Acceptance check
+
+- `python3 notes/reflow.py` on each of the three files leaves it unchanged.
+- The rewrap rung's diff changes no word: reflow.py's same-words check passed on every block, and
+  the rung holds no edit but reflow.py's and `cargo fmt`'s.
+- The rendered examples of `send`, `send_spin`, and `send_spin_sleep` each show 15 lines or fewer.
+- `cargo test --doc --all-features` passes, the hidden setup and the README.md walkthrough
+  included.
+
+#### Ladder
+
+- [docs: mpsc v3 doc pass opening][1] (done)
+- [docs: mpsc v3 doc pass rewrap][2]
+- [docs: mpsc v3 doc pass examples][3]
+- [docs: mpsc v3 doc pass closing][4]
+
+#### Deliberation
+
+- One cycle, two work rungs, the user's call of 2026-10-02: the rewrap first, reviewed as a rewrap,
+  then the examples, reviewed line by line, since the rewrap's review rests on no word changing.
+- The rewrap is a deliberate sweep, the user's call of 2026-09-29, where Line widths otherwise
+  rewraps text only when it is touched.
+  - Text only: the words stay, the lines move, with any wording fix left to its own commit.
+  - Lines that read better long stay long, as Line widths allows: the `// OK:` comments on `unwrap`
+    calls, a URL.
+  - A trial on copies of the three files kept every word and shortened them by about 200 lines.
+- The examples went overboard and the full example belongs in README.md, the user's call of
+  2026-10-02.
+  - `user-guide.md` teaches the sends too, so one home keeps one copy.
+  - How README.md's block is tested is open until the examples rung. We think a doctest-only item
+    in `lib.rs`, `#[cfg(doctest)] #[doc = include_str!("../README.md")]`, is the lighter way, since
+    `#![doc = include_str!("../README.md")]` would also make README.md the crate's front page.
+    Either makes every README.md Rust block compile or be marked `ignore`.
+- The consumer's v3 methods' docs stay in their old form: moving them to the Parameters form the
+  producer's sends use is a wording change, outside a rewrap and outside the examples.
+
+#### Ladder details
+
+##### docs: mpsc v3 doc pass opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
+Todo entry into this block, bump the version-of-record, and rename the package and bins to their
+`-dev` names.
+
+##### docs: mpsc v3 doc pass rewrap
+
+The three files' comments wrap near 70 columns where the source width is 100. Run reflow.py over
+each, so the lines move and no word changes.
+
+##### docs: mpsc v3 doc pass examples
+
+The examples on `send`, `send_spin`, and `send_spin_sleep` are mostly the same setup around a send
+of about five lines. Hide the setup, and give the complete walkthrough one visible home.
+
+##### docs: mpsc v3 doc pass closing
+
+Closing out the cycle.
 
 ## Waiting
 
@@ -46,43 +123,6 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 `###` heading, so a citation is a link to its anchor. Long-tail entries live in
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
-
-### MPSC v3 doc pass: full width and lighter examples
-
-The MPSC v3 source, `src/mpsc/v3/mod.rs`, `producer.rs`, and `consumer.rs`, wraps its doc comments
-and comments near 70 columns, where the source width is 100, per prose.md's [Line
-widths](agent-data/prose.md#line-widths). And the examples on `send`, `send_spin`, and
-`send_spin_sleep` run 55 to 60 lines each, mostly the same setup, the message type, the region,
-the pool, the ring, and the claims, around a send of about five lines. Rewrap every comment in the
-three files to the full width, then lighten the examples.
-
-- One cycle, two rungs, the user's call of 2026-10-02: the rewrap first, reviewed as a rewrap, then
-  the examples, reviewed line by line, since the rewrap's review rests on no word changing.
-
-Rewrap:
-
-- A deliberate sweep, the user's call of 2026-09-29, where Line widths otherwise rewraps text only
-  when it is touched.
-- Text only: the words stay, the lines move, so the diff is reviewed as a rewrap, with any wording
-  fix left to its own commit.
-- Lines that read better long stay long, as Line widths allows: the `// OK:` comments on `unwrap`
-  calls, a URL.
-- `python3 notes/reflow.py <file>` does the rewrap: it keeps paragraphs, bullets at any depth,
-  headings, and fenced code, and refuses to write a block whose words changed. A trial on copies
-  of the three files kept every word and shortened them by about 200 lines.
-- After `feat: mpsc v3 deadline sends`, the user's call of 2026-09-29, ahead of `Wake count for
-  sleeping producers`, since both touch `mpsc::v3` and a rewrap first keeps that cycle's diff to
-  its own change.
-
-Examples, the user's call of 2026-10-02 that they went overboard and the full example belongs in
-README.md:
-
-- Hide each method example's setup behind rustdoc's `# ` lines, so a reader sees the call and its
-  result and the doctest still runs the whole program.
-- One complete, visible walkthrough, pool to release, in one home: the `mpsc::v3` module docs, with
-  README.md carrying it as a tested block (`#![doc = include_str!("../README.md")]`, which makes
-  every README Rust block compile or be marked `ignore`) or linking to it. `user-guide.md` teaches
-  the sends too, so the choice keeps one copy.
 
 ### Measurement builds and the producer-consumer rhythm
 
@@ -728,61 +768,12 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### refactor: make mpsc v3 producer and consumer states private
-
-#### Problem
-
-MPSC v3's `ConsumerState`, every field of it, `MpscConsumer::st`, and `MpscProducer::segs` are
-`pub(super)`, though the consumer's doc comment calls its state private. Only tests reach them from
-outside their files: `positions_survive_the_wrap` in `mod.rs` sets the consumer's position and
-resume positions, and the `free_segments` test helper reads the producer's segments.
-
-#### Solution
-
-`ConsumerState`, its fields, `MpscConsumer::st`, and `MpscProducer::segs` are private to their
-files. The test `positions_survive_the_wrap` stays in `mod.rs` and starts its consumer the way
-production does: it writes the checkpoint the claim reads, through `Segments::store_consumer`, and
-checks the wrap in the checkpoint the consumer's release writes back, so it touches no consumer
-field. `free_segments` reads the ring's segments instead of a producer's, so four
-tests that built their ring inline bind it first. The consumer's doc comment now opens as the
-producer's do, `struct ConsumerState` is the consumer's state, and names the handle and the guard
-as intra-doc links.
-
-#### Acceptance check
-
-`grep -n "pub(super)" src/mpsc/v3/consumer.rs src/mpsc/v3/producer.rs` lists no field and no
-struct, only functions, `grep -n "\.st\.\|prod\.segs" src/mpsc/v3/mod.rs` finds nothing, and
-`positions_survive_the_wrap` passes.
-
-Passed: the two files keep `pub(super)` on functions alone, `mod.rs` has no `.st.` and no
-`prod.segs`, and `positions_survive_the_wrap` passes, failing when its checkpoint is not written.
-
-#### Ladder
-
-- refactor: make mpsc v3 producer and consumer states private (done)
-
-#### Deliberation
-
-- Keep the state struct: the read guard borrows `&mut ConsumerState`, so its public type stays
-  `MpscReadSlot<'c, T, W>` without the handle's lifetime and mode.
-  - Inlining the fields into the handle would make the guard borrow the handle, adding `'a` and `M`
-    to the guard's type.
-  - Borrowing the three fields the guard uses one at a time would drop the struct, at a larger
-    guard, and is left for a later look.
-- No getters or setters: private fields used directly keep the disjoint field borrows the reserve
-  loop relies on, and a trivial accessor would guard no invariant.
-- Seed the wrap test through the checkpoint, not a test-only setter and not a move: the test then
-  runs the claim's and the release's real resume path and touches no private consumer state.
-  - Moving it into a test module in `consumer.rs`, the first try, worked but imported `mod.rs`'s
-    test helpers as `super::super::tests`, made `pub(super)` for it.
-- MPSC v3 only: spsc v3, spsc v4, and mpsc v2 keep `pub(super)`, since the versions record the
-  design's evolution and their differences are the point, the user's call.
-- The producer's `segs` joined the pushed commit, amended and retitled while the bookmark was a
-  draft, the user's call, rather than a cycle of its own. The tests read the ring's segments, the
-  same addresses, so the producer needs no accessor.
-- The doc comment's wording is the user's, made direct, then given the producer docs' opening and
-  intra-doc links, which `cargo doc --document-private-items` resolves.
+_None._
 
 # References
 
+[1]: #docs-mpsc-v3-doc-pass-opening
+[2]: #docs-mpsc-v3-doc-pass-rewrap
+[3]: #docs-mpsc-v3-doc-pass-examples
+[4]: #docs-mpsc-v3-doc-pass-closing
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
