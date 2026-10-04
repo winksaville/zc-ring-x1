@@ -310,7 +310,9 @@ v3's, and the rows for both are in the measurement tools.
 simpler contract for its holders: one consumer and any number of producers up to a most, each role
 claimed and released by count, and a holder that dies recovered by restarting its set, not by a
 takeover. The design and its measurements are the design note's [MPSC
-v3](ring-buffer-design.md#mpsc-v3-attachable-segments-with-counted-roles).
+v3](ring-buffer-design.md#mpsc-v3-attachable-segments-with-counted-roles). A complete program in two
+threads, pool to release, is [examples/guide_mpsc_v3.rs](../examples/guide_mpsc_v3.rs), and the
+fragment below is the part two processes add.
 
 ```rust
 use zc_ring_x1::mpsc::v3::{MpscRing, Multi};

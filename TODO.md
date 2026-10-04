@@ -47,43 +47,6 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
 
-### MPSC v3 doc pass: full width and lighter examples
-
-The MPSC v3 source, `src/mpsc/v3/mod.rs`, `producer.rs`, and `consumer.rs`, wraps its doc comments
-and comments near 70 columns, where the source width is 100, per prose.md's [Line
-widths](agent-data/prose.md#line-widths). And the examples on `send`, `send_spin`, and
-`send_spin_sleep` run 55 to 60 lines each, mostly the same setup, the message type, the region,
-the pool, the ring, and the claims, around a send of about five lines. Rewrap every comment in the
-three files to the full width, then lighten the examples.
-
-- One cycle, two rungs, the user's call of 2026-10-02: the rewrap first, reviewed as a rewrap, then
-  the examples, reviewed line by line, since the rewrap's review rests on no word changing.
-
-Rewrap:
-
-- A deliberate sweep, the user's call of 2026-09-29, where Line widths otherwise rewraps text only
-  when it is touched.
-- Text only: the words stay, the lines move, so the diff is reviewed as a rewrap, with any wording
-  fix left to its own commit.
-- Lines that read better long stay long, as Line widths allows: the `// OK:` comments on `unwrap`
-  calls, a URL.
-- `python3 notes/reflow.py <file>` does the rewrap: it keeps paragraphs, bullets at any depth,
-  headings, and fenced code, and refuses to write a block whose words changed. A trial on copies
-  of the three files kept every word and shortened them by about 200 lines.
-- After `feat: mpsc v3 deadline sends`, the user's call of 2026-09-29, ahead of `Wake count for
-  sleeping producers`, since both touch `mpsc::v3` and a rewrap first keeps that cycle's diff to
-  its own change.
-
-Examples, the user's call of 2026-10-02 that they went overboard and the full example belongs in
-README.md:
-
-- Hide each method example's setup behind rustdoc's `# ` lines, so a reader sees the call and its
-  result and the doctest still runs the whole program.
-- One complete, visible walkthrough, pool to release, in one home: the `mpsc::v3` module docs, with
-  README.md carrying it as a tested block (`#![doc = include_str!("../README.md")]`, which makes
-  every README Rust block compile or be marked `ignore`) or linking to it. `user-guide.md` teaches
-  the sends too, so the choice keeps one copy.
-
 ### Measurement builds and the producer-consumer rhythm
 
 A stream's ns per message measures two cores in a rhythm, and a build that changes either side's
@@ -728,61 +691,141 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### refactor: make mpsc v3 producer and consumer states private
+### docs: mpsc v3 doc pass
 
 #### Problem
 
-MPSC v3's `ConsumerState`, every field of it, `MpscConsumer::st`, and `MpscProducer::segs` are
-`pub(super)`, though the consumer's doc comment calls its state private. Only tests reach them from
-outside their files: `positions_survive_the_wrap` in `mod.rs` sets the consumer's position and
-resume positions, and the `free_segments` test helper reads the producer's segments.
+The MPSC v3 source, `src/mpsc/v3/mod.rs`, `producer.rs`, and `consumer.rs`, wraps its doc comments
+and comments near 70 columns, where the source width is 100, per prose.md's [Line
+widths](agent-data/prose.md#line-widths). And the examples on `send`, `send_spin`, and
+`send_spin_sleep` run 55 to 60 lines each, mostly the same setup, the message type, the region, the
+pool, the ring, and the claims, around a send of about five lines.
 
 #### Solution
 
-`ConsumerState`, its fields, `MpscConsumer::st`, and `MpscProducer::segs` are private to their
-files. The test `positions_survive_the_wrap` stays in `mod.rs` and starts its consumer the way
-production does: it writes the checkpoint the claim reads, through `Segments::store_consumer`, and
-checks the wrap in the checkpoint the consumer's release writes back, so it touches no consumer
-field. `free_segments` reads the ring's segments instead of a producer's, so four
-tests that built their ring inline bind it first. The consumer's doc comment now opens as the
-producer's do, `struct ConsumerState` is the consumer's state, and names the handle and the guard
-as intra-doc links.
+Every comment in the three files is rewrapped to the full width, the sends' examples are removed,
+and one complete program takes their place.
+
+- The rewrap: `python3 notes/reflow.py <file>` ran on each file, keeping paragraphs, bullets at any
+  depth, headings, and fenced code, and moving no word. The three files are 185 lines shorter for
+  it.
+- The examples: the examples on `send`, `send_spin`, and `send_spin_sleep` are gone, and the two
+  deadline sends' docs say only what each adds to `send`, which alone describes what every send
+  shares.
+- One complete program, pool to release, has one home, `examples/guide_mpsc_v3.rs`, a producer
+  thread and a consumer thread, and README.md, the `mpsc::v3` module docs, and `user-guide.md` link
+  to it.
 
 #### Acceptance check
 
-`grep -n "pub(super)" src/mpsc/v3/consumer.rs src/mpsc/v3/producer.rs` lists no field and no
-struct, only functions, `grep -n "\.st\.\|prod\.segs" src/mpsc/v3/mod.rs` finds nothing, and
-`positions_survive_the_wrap` passes.
+- `python3 notes/reflow.py` on each of the three files leaves it unchanged.
+- The rewrap rung's diff changes no word: reflow.py's same-words check passed on every block, and
+  the rung holds no edit but reflow.py's and `cargo fmt`'s.
+- `grep -n "# Example" src/mpsc/v3/producer.rs` finds nothing.
+- `cargo run --release --example guide_mpsc_v3` runs to its last line.
 
-Passed: the two files keep `pub(super)` on functions alone, `mod.rs` has no `.st.` and no
-`prod.segs`, and `positions_survive_the_wrap` passes, failing when its checkpoint is not written.
+Passed: reflow.py leaves each of the three files byte for byte as it is, the rewrap rung's source
+changes are reflow.py's alone with each file's words in the same order and its code lines
+identical, `producer.rs` has no `# Example`, and the example prints `mpsc v3: 100000 messages, 2
+segments of 8, 68 switches, roles and ring released`, the switch count varying by run.
 
 #### Ladder
 
-- refactor: make mpsc v3 producer and consumer states private (done)
+- [docs: mpsc v3 doc pass opening][1] (done)
+- [docs: mpsc v3 doc pass rewrap][2] (done)
+- [docs: mpsc v3 doc pass examples][3] (done)
+- [docs: mpsc v3 doc pass closing][4] (done)
 
 #### Deliberation
 
-- Keep the state struct: the read guard borrows `&mut ConsumerState`, so its public type stays
-  `MpscReadSlot<'c, T, W>` without the handle's lifetime and mode.
-  - Inlining the fields into the handle would make the guard borrow the handle, adding `'a` and `M`
-    to the guard's type.
-  - Borrowing the three fields the guard uses one at a time would drop the struct, at a larger
-    guard, and is left for a later look.
-- No getters or setters: private fields used directly keep the disjoint field borrows the reserve
-  loop relies on, and a trivial accessor would guard no invariant.
-- Seed the wrap test through the checkpoint, not a test-only setter and not a move: the test then
-  runs the claim's and the release's real resume path and touches no private consumer state.
-  - Moving it into a test module in `consumer.rs`, the first try, worked but imported `mod.rs`'s
-    test helpers as `super::super::tests`, made `pub(super)` for it.
-- MPSC v3 only: spsc v3, spsc v4, and mpsc v2 keep `pub(super)`, since the versions record the
-  design's evolution and their differences are the point, the user's call.
-- The producer's `segs` joined the pushed commit, amended and retitled while the bookmark was a
-  draft, the user's call, rather than a cycle of its own. The tests read the ring's segments, the
-  same addresses, so the producer needs no accessor.
-- The doc comment's wording is the user's, made direct, then given the producer docs' opening and
-  intra-doc links, which `cargo doc --document-private-items` resolves.
+- One cycle, two work rungs, the user's call of 2026-10-02: the rewrap first, reviewed as a rewrap,
+  then the examples, reviewed line by line, since the rewrap's review rests on no word changing.
+- The rewrap is a deliberate sweep, the user's call of 2026-09-29, where Line widths otherwise
+  rewraps text only when it is touched.
+  - Text only: the words stay, the lines move, with any wording fix left to its own commit.
+  - Lines that read better long stay long, as Line widths allows: the `// OK:` comments on `unwrap`
+    calls, a URL.
+  - A trial on copies of the three files kept every word and shortened them by about 200 lines.
+- The examples went overboard, the user's call of 2026-10-02, which put the full example in
+  README.md.
+  - `user-guide.md` teaches the sends too, so one home keeps one copy.
+- The full example is a program in `examples/`, in two threads, not a README.md block, the user's
+  call of 2026-10-03 at this rung's review.
+  - The README.md block was built first, run through a doctest-only item in `lib.rs`,
+    `#[cfg(doctest)] #[doc = include_str!("../README.md")]`. `cargo test --doc` listed its blocks
+    under that item's name with line numbers counted as if README.md were pasted into `lib.rs`,
+    README.md's line plus 75, so a failure would not say where in README.md it was.
+  - An example is a file cargo names in its output, built by every `cargo test` and linted by
+    `cargo clippy --all-targets`, as `guide_spsc_v3.rs` and `guide_mpsc_v2.rs` are.
+- The sends' doc examples are removed, not lightened, and the sends' docs made more concise, the
+  user's call of 2026-10-03 at this rung's second review.
+  - Hiding each example's setup behind rustdoc's `# ` lines was built first: `send_spin` showed 14
+    lines, `send_spin_sleep` 10, and `send` 32 with its policy.
+  - The acceptance check follows: the checks on the rendered examples' length and on the doctests
+    are gone, since no doctest is left, and a check that no example remains takes their place.
+- The consumer's v3 methods' docs stay in their old form: moving them to the Parameters form the
+  producer's sends use is a wording change, outside a rewrap and outside the examples.
+
+#### Ladder details
+
+##### docs: mpsc v3 doc pass opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
+Todo entry into this block, bump the version-of-record, and rename the package and bins to their
+`-dev` names.
+
+##### docs: mpsc v3 doc pass rewrap
+
+The three files' comments wrap near 70 columns where the source width is 100. Run reflow.py over
+each, so the lines move and no word changes.
+
+- The three files went from 3471 lines to 3286, `mod.rs` 121 shorter, `producer.rs` 28, and
+  `consumer.rs` 36.
+- Every word and every code line is where it was: each file's words, comment markers aside, are the
+  same sequence before and after, and its lines that are not comments are identical.
+- Four lines stay past 100 columns, all in `mod.rs`'s tests, each a line of code that `cargo fmt`
+  leaves long, not a comment.
+- A second run of reflow.py changes nothing, so the rewrap is stable.
+
+##### docs: mpsc v3 doc pass examples
+
+The examples on `send`, `send_spin`, and `send_spin_sleep` are mostly the same setup around a send
+of about five lines, and the three sends' docs repeat each other. Remove the examples, give one
+complete program a home in `examples/`, and cut the deadline sends' docs to what they add.
+
+- The whole program is `examples/guide_mpsc_v3.rs`: a pool, a `Multi` ring of 2 segments of 8
+  slots with the `Futex` wake, the two claims, a producer thread sending 100000 messages with
+  `send_spin_sleep`, a consumer thread reading them in order with `reserve_slot_wait`, each
+  releasing its role, and `release_ring`, which no example showed before.
+  - The ring is small on purpose, so it fills, the producer sleeps, and the segments switch.
+  - Linux only, since the sides sleep on a futex.
+  - README.md's MPSC v3 section, the `mpsc::v3` module docs, and the user guide's MPSC v3 section
+    link to it.
+- `send` is the one home of what every send shares: the claim and the commit, a slot lost to
+  another producer, what `write_msg` must do and what a slow or panicking one costs, and the limits
+  on `T`.
+  - `send_spin` and `send_spin_sleep` say they are `send` with a policy, and document only that
+    policy, their times, and their `Err(Full)`, pointing at `send` for `write_msg` and `T`.
+  - The three sends' docs are 237 lines shorter, `producer.rs` going from 776 lines to 538.
+- The crate has no doctest left, and no example of a `SendPolicy` written as a type, which
+  `send`'s example was: the `SendPolicy` docs still say how, without showing it.
+
+##### docs: mpsc v3 doc pass closing
+
+Closing out the cycle.
+
+- The examples rung was built three ways: its setup hidden with a walkthrough in README.md, then
+  the walkthrough moved to a program in `examples/`, then the examples removed and the sends' docs
+  shortened. Each change came at a review of finished work.
+  - We think a rung whose design is a matter of taste is cheaper shown as one sample, one method's
+    docs, before the rest is built.
+- Close-out shape: trapezoid, the default, the user's choice.
+- No agent-file changed, so `notes/agent-files-size.md` gets no row.
 
 # References
 
+[1]: #docs-mpsc-v3-doc-pass-opening
+[2]: #docs-mpsc-v3-doc-pass-rewrap
+[3]: #docs-mpsc-v3-doc-pass-examples
+[4]: #docs-mpsc-v3-doc-pass-closing
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
