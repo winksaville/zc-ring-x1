@@ -139,10 +139,22 @@ pub enum Flavor {
     /// The MPSC v3 ring in its `Multi` mode, each producer backing
     /// off after a lost claim race by `policy::backoff`.
     MpscV3Backoff,
+    /// The MPSC v4 ring, v3 with a consumer that receives by `recv`, as a producer sends, in its
+    /// `Multi` mode over `SpinOnly` (same surface through an adapter, the segment count a knob).
+    MpscV4,
+    /// The MPSC v4 ring in its `Single` mode: one segment, the segment count ignored.
+    MpscV4Single,
+    /// The MPSC v4 ring in its `Multi` mode over `SpinOrSleep` of a futex (on Linux, else as
+    /// `mpsc-v4`), every endpoint spinning, so the wake's checks are on the paths though nothing
+    /// sleeps.
+    MpscV4Futex,
+    /// The MPSC v4 ring in its `Multi` mode, each producer backing off after a lost claim race by
+    /// `policy::backoff`.
+    MpscV4Backoff,
 }
 
 /// Every flavor, in report order.
-pub const FLAVORS: [Flavor; 12] = [
+pub const FLAVORS: [Flavor; 16] = [
     Flavor::SpscV0,
     Flavor::SpscV1,
     Flavor::SpscV2,
@@ -155,6 +167,10 @@ pub const FLAVORS: [Flavor; 12] = [
     Flavor::MpscV3Single,
     Flavor::MpscV3Futex,
     Flavor::MpscV3Backoff,
+    Flavor::MpscV4,
+    Flavor::MpscV4Single,
+    Flavor::MpscV4Futex,
+    Flavor::MpscV4Backoff,
 ];
 
 impl Flavor {
@@ -173,6 +189,10 @@ impl Flavor {
             Flavor::MpscV3Single => "mpsc-v3-single",
             Flavor::MpscV3Futex => "mpsc-v3-futex",
             Flavor::MpscV3Backoff => "mpsc-v3-backoff",
+            Flavor::MpscV4 => "mpsc-v4",
+            Flavor::MpscV4Single => "mpsc-v4-single",
+            Flavor::MpscV4Futex => "mpsc-v4-futex",
+            Flavor::MpscV4Backoff => "mpsc-v4-backoff",
         }
     }
 
@@ -188,6 +208,10 @@ impl Flavor {
                 | Flavor::MpscV3Single
                 | Flavor::MpscV3Futex
                 | Flavor::MpscV3Backoff
+                | Flavor::MpscV4
+                | Flavor::MpscV4Single
+                | Flavor::MpscV4Futex
+                | Flavor::MpscV4Backoff
         )
     }
 
@@ -380,6 +404,10 @@ pub fn run_cell(
         Flavor::MpscV3Single => run_mpsc_v3_single(dur, worker, depth, segments),
         Flavor::MpscV3Futex => run_mpsc_v3_futex(dur, worker, depth, segments),
         Flavor::MpscV3Backoff => run_mpsc_v3_backoff(dur, worker, depth, segments),
+        Flavor::MpscV4 => run_mpsc_v4(dur, worker, depth, segments),
+        Flavor::MpscV4Single => run_mpsc_v4_single(dur, worker, depth, segments),
+        Flavor::MpscV4Futex => run_mpsc_v4_futex(dur, worker, depth, segments),
+        Flavor::MpscV4Backoff => run_mpsc_v4_backoff(dur, worker, depth, segments),
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(Fills::finish);
@@ -536,6 +564,135 @@ type V3Futex = zc_ring_x1::wake::Futex<10>;
 /// so the flavor runs as `mpsc-v3`.
 #[cfg(not(target_os = "linux"))]
 type V3Futex = zc_ring_x1::wake::NoWake;
+
+impl<M: zc_ring_x1::mpsc::v4::Mode, W: zc_ring_x1::wake::Waits> SegmentSwitches
+    for zc_ring_x1::mpsc::v4::MpscProducer<'_, M, W>
+{
+    fn segment_switches(&self) -> Option<u64> {
+        M::MULTI.then(|| self.switches())
+    }
+}
+
+/// `struct V4Send` is an MPSC v4 producer with a `send_with`, as [`V3Send`] is v3's, forwarding to
+/// v4's `send`, whose policy a closure is.
+struct V4Send<P>(P);
+
+impl<M: zc_ring_x1::mpsc::v4::Mode, W: zc_ring_x1::wake::Waits>
+    V4Send<zc_ring_x1::mpsc::v4::MpscProducer<'_, M, W>>
+{
+    /// `send_with` is v4's `send` with `on_full` as its policy.
+    #[inline]
+    fn send_with<T>(
+        &self,
+        on_full: impl FnMut(u32) -> bool,
+        write_msg: impl FnOnce(&mut T),
+    ) -> Result<(), zc_ring_x1::Full>
+    where
+        T: zerocopy::FromBytes + zerocopy::IntoBytes + zerocopy::KnownLayout,
+    {
+        self.0.send(on_full, write_msg)
+    }
+}
+
+impl<P: SegmentSwitches> SegmentSwitches for V4Send<P> {
+    fn segment_switches(&self) -> Option<u64> {
+        self.0.segment_switches()
+    }
+}
+
+/// `struct V4Backoff` is an MPSC v4 producer whose `send_with` backs off after each lost slot, as
+/// [`Backoff`] is v3's.
+struct V4Backoff<P>(P);
+
+/// `struct V4BackoffPolicy` is `on_full` for a full ring and
+/// [`policy::backoff`](zc_ring_x1::policy::backoff) for each lost slot.
+struct V4BackoffPolicy<F>(F);
+
+impl<F: FnMut(u32) -> bool> zc_ring_x1::mpsc::v4::WaitPolicy for V4BackoffPolicy<F> {
+    #[inline]
+    fn on_wait(&mut self, attempt: u32, _waiter: &zc_ring_x1::mpsc::v4::Waiter<'_>) -> bool {
+        (self.0)(attempt)
+    }
+
+    #[inline]
+    fn on_lost(&mut self, lost: u32) {
+        zc_ring_x1::policy::backoff(lost)
+    }
+}
+
+impl<M: zc_ring_x1::mpsc::v4::Mode, W: zc_ring_x1::wake::Waits>
+    V4Backoff<zc_ring_x1::mpsc::v4::MpscProducer<'_, M, W>>
+{
+    /// `send_with` is v4's `send` with [`V4BackoffPolicy`].
+    #[inline]
+    fn send_with<T>(
+        &self,
+        on_full: impl FnMut(u32) -> bool,
+        write_msg: impl FnOnce(&mut T),
+    ) -> Result<(), zc_ring_x1::Full>
+    where
+        T: zerocopy::FromBytes + zerocopy::IntoBytes + zerocopy::KnownLayout,
+    {
+        self.0.send(V4BackoffPolicy(on_full), write_msg)
+    }
+}
+
+impl<P: SegmentSwitches> SegmentSwitches for V4Backoff<P> {
+    fn segment_switches(&self) -> Option<u64> {
+        self.0.segment_switches()
+    }
+}
+
+/// `struct V4Recv` is an MPSC v4 consumer with a `reserve_slot_with`, which the cell and stream
+/// bodies shared with v0 to v3 call. v4 has no read guard: its `recv` reads the message in a
+/// closure and frees the slot when the closure returns, so `reserve_slot_with` copies the value
+/// out and hands it back in a [`V4Slot`].
+struct V4Recv<C>(C);
+
+/// `struct V4Slot` is the value a [`V4Recv`] read, standing in for the read guard of v0 to v3. Its
+/// slot is already free, so `release` does nothing.
+struct V4Slot<T>(T);
+
+impl<T> core::ops::Deref for V4Slot<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> V4Slot<T> {
+    /// `release` is the guard's `release`, with nothing left to do.
+    #[inline]
+    fn release(self) {}
+}
+
+impl<M: zc_ring_x1::mpsc::v4::Mode, W: zc_ring_x1::wake::Waits>
+    V4Recv<zc_ring_x1::mpsc::v4::MpscConsumer<'_, M, W>>
+{
+    /// `reserve_slot_with` is v4's `recv` with `on_empty` as its policy and a copy for its read.
+    #[inline]
+    fn reserve_slot_with<T>(
+        &mut self,
+        on_empty: impl FnMut(u32) -> bool,
+    ) -> Result<V4Slot<T>, zc_ring_x1::Empty>
+    where
+        T: Copy + zerocopy::FromBytes + zerocopy::KnownLayout + zerocopy::Immutable,
+    {
+        self.0.recv(on_empty, |m: &T| V4Slot(*m))
+    }
+}
+
+/// The wait the `mpsc-v4-futex` flavor measures: spin or sleep on a futex on Linux, where it
+/// exists, with `mpsc-v3-futex`'s timeout.
+#[cfg(target_os = "linux")]
+type V4Futex = zc_ring_x1::wake::SpinOrSleep<zc_ring_x1::wake::Futex<10>>;
+
+/// The wait the `mpsc-v4-futex` flavor measures: spin only off Linux, so the flavor runs as
+/// `mpsc-v4`.
+#[cfg(not(target_os = "linux"))]
+type V4Futex = zc_ring_x1::wake::SpinOnly;
 
 /// Bind one SPSC ring's `$tx` and `$rx` endpoints, one-line
 /// slots at `$depth`, the storage held in `$store` (and, for a
@@ -747,6 +904,10 @@ spsc_cell!(
 /// - `v3 $mode, $wake`: a v3 ring of that mode and wake, `$segments`
 ///   segments for `Multi` and one for `Single`, over a pool holding
 ///   exactly those, the roles claimed.
+/// - `v3_backoff`: the `v3` `Multi` ring with no wake, its producer a [`Backoff`].
+/// - `v4 $mode, $wait`: a v4 ring of that mode and wait, sized as `v3`'s, the roles taken, the
+///   consumer a [`V4Recv`].
+/// - `v4_backoff`: the `v4` `Multi` ring over `SpinOnly`, its producer a [`V4Backoff`].
 macro_rules! mpsc_pair {
     ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr,
      single $ring:path, $size:path) => {
@@ -794,6 +955,31 @@ macro_rules! mpsc_pair {
         mpsc_pair!(inner, $rx, $store, $pool, $depth, $segments,
             v3 zc_ring_x1::mpsc::v3::Multi, zc_ring_x1::wake::NoWake);
         let $tx = Backoff(inner.0);
+    };
+    ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr,
+     v4 $mode:ty, $wait:ty) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let buf = zc_ring_x1::mpsc::v4::segment_size(slot, $depth);
+        let count: u32 = if <$mode as zc_ring_x1::mpsc::v4::Mode>::MULTI {
+            $segments
+        } else {
+            1
+        };
+        let mut $store =
+            LineBuf::new(size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * count as u64);
+        let mut $pool = zc_ring_x1::Pool::init($store.as_mut_bytes(), buf as u32, count)
+            .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
+        let ring =
+            zc_ring_x1::mpsc::v4::MpscRing::<$mode, $wait>::init(&mut $pool, slot, $depth, count)
+                .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
+        let $tx = V4Send(ring.producer().unwrap()); // OK: a fresh ring holds no role
+        let mut $rx = V4Recv(ring.consumer().unwrap()); // OK: a fresh ring holds no role
+    };
+    ($tx:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr,
+     v4_backoff) => {
+        mpsc_pair!(inner, $rx, $store, $pool, $depth, $segments,
+            v4 zc_ring_x1::mpsc::v4::Multi, zc_ring_x1::wake::SpinOnly);
+        let $tx = V4Backoff(inner.0);
     };
 }
 
@@ -940,6 +1126,25 @@ mpsc_cell!(
     v3 zc_ring_x1::mpsc::v3::Multi,
     V3Futex
 );
+mpsc_cell!(
+    run_mpsc_v4,
+    Flavor::MpscV4,
+    v4 zc_ring_x1::mpsc::v4::Multi,
+    zc_ring_x1::wake::SpinOnly
+);
+mpsc_cell!(
+    run_mpsc_v4_single,
+    Flavor::MpscV4Single,
+    v4 zc_ring_x1::mpsc::v4::Single,
+    zc_ring_x1::wake::SpinOnly
+);
+mpsc_cell!(run_mpsc_v4_backoff, Flavor::MpscV4Backoff, v4_backoff);
+mpsc_cell!(
+    run_mpsc_v4_futex,
+    Flavor::MpscV4Futex,
+    v4 zc_ring_x1::mpsc::v4::Multi,
+    V4Futex
+);
 
 /// One streaming cell's outcome.
 pub struct StreamResult {
@@ -1069,6 +1274,10 @@ pub fn run_stream(
         Flavor::MpscV3Single => stream_mpsc_v3_single(dur, pins, depth, segments),
         Flavor::MpscV3Futex => stream_mpsc_v3_futex(dur, pins, depth, segments),
         Flavor::MpscV3Backoff => stream_mpsc_v3_backoff(dur, pins, depth, segments),
+        Flavor::MpscV4 => stream_mpsc_v4(dur, pins, depth, segments),
+        Flavor::MpscV4Single => stream_mpsc_v4_single(dur, pins, depth, segments),
+        Flavor::MpscV4Futex => stream_mpsc_v4_futex(dur, pins, depth, segments),
+        Flavor::MpscV4Backoff => stream_mpsc_v4_backoff(dur, pins, depth, segments),
     };
     #[cfg(target_os = "linux")]
     let fills = fills.and_then(Fills::finish);
@@ -1230,7 +1439,7 @@ spsc_stream!(
 
 /// Bind `$n` producers of one MPSC ring as `$txs` and its
 /// consumer as `$rx`, as `mpsc_pair` binds one: v0 through v2's
-/// producer cloned, v3's roles claimed.
+/// producer cloned, v3's roles claimed, v4's taken.
 macro_rules! mpsc_pair_n {
     ($txs:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr, $n:expr,
      v3 $mode:ty, $wake:ty) => {
@@ -1258,6 +1467,33 @@ macro_rules! mpsc_pair_n {
         mpsc_pair_n!(inner, $rx, $store, $pool, $depth, $segments, $n,
             v3 zc_ring_x1::mpsc::v3::Multi, zc_ring_x1::wake::NoWake);
         let $txs: Vec<_> = inner.into_iter().map(|tx| Backoff(tx.0)).collect();
+    };
+    ($txs:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr, $n:expr,
+     v4 $mode:ty, $wait:ty) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let buf = zc_ring_x1::mpsc::v4::segment_size(slot, $depth);
+        let count: u32 = if <$mode as zc_ring_x1::mpsc::v4::Mode>::MULTI {
+            $segments
+        } else {
+            1
+        };
+        let mut $store =
+            LineBuf::new(size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * count as u64);
+        let mut $pool = zc_ring_x1::Pool::init($store.as_mut_bytes(), buf as u32, count)
+            .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
+        let ring =
+            zc_ring_x1::mpsc::v4::MpscRing::<$mode, $wait>::init(&mut $pool, slot, $depth, count)
+                .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
+        let $txs: Vec<_> = (0..$n)
+            .map(|_| V4Send(ring.producer().unwrap())) // OK: at most MAX_PRODUCERS, under the ring's most
+            .collect();
+        let mut $rx = V4Recv(ring.consumer().unwrap()); // OK: a fresh ring holds no consumer
+    };
+    ($txs:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr, $n:expr,
+     v4_backoff) => {
+        mpsc_pair_n!(inner, $rx, $store, $pool, $depth, $segments, $n,
+            v4 zc_ring_x1::mpsc::v4::Multi, zc_ring_x1::wake::SpinOnly);
+        let $txs: Vec<_> = inner.into_iter().map(|tx| V4Backoff(tx.0)).collect();
     };
     ($txs:ident, $rx:ident, $store:ident, $pool:ident, $depth:expr, $segments:expr, $n:expr,
      $($pair:tt)+) => {
@@ -1370,3 +1606,15 @@ mpsc_stream!(
 );
 mpsc_stream!(stream_mpsc_v3_futex, v3 zc_ring_x1::mpsc::v3::Multi, V3Futex);
 mpsc_stream!(stream_mpsc_v3_backoff, v3_backoff);
+mpsc_stream!(
+    stream_mpsc_v4,
+    v4 zc_ring_x1::mpsc::v4::Multi,
+    zc_ring_x1::wake::SpinOnly
+);
+mpsc_stream!(
+    stream_mpsc_v4_single,
+    v4 zc_ring_x1::mpsc::v4::Single,
+    zc_ring_x1::wake::SpinOnly
+);
+mpsc_stream!(stream_mpsc_v4_futex, v4 zc_ring_x1::mpsc::v4::Multi, V4Futex);
+mpsc_stream!(stream_mpsc_v4_backoff, v4_backoff);

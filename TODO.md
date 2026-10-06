@@ -84,7 +84,7 @@ reference to measure against.
 - [feat: mpsc v4 waiters say their cost][9] (done)
 - [feat: ticks from millis and secs][12] (done)
 - [feat: mpsc v4 refuses a wake mismatch][10] (done)
-- [feat: mpsc v4 in the tools][4]
+- [feat: mpsc v4 in the tools][4] (done)
 - [docs: mpsc v4 consumer waits measured][5]
 - [docs: mpsc v4 guide and example][6]
 - [feat: mpsc v4 closing][7]
@@ -378,6 +378,32 @@ disagrees.
 ##### feat: mpsc v4 in the tools
 
 No tool can run v4. Add v4 flavors to `tp-stream` and the other tools, beside v3's.
+
+- Four flavors, each the twin of a v3 one, in `tp-stream`, `tp-matrix`, and `tp-cell`: `mpsc-v4`,
+  `Multi` over `SpinOnly`, `mpsc-v4-single`, `mpsc-v4-futex`, and `mpsc-v4-backoff`. They follow
+  the v3 block in every table, so a v4 row sits four rows under its v3 twin.
+  - `mpsc-v4-futex` is `Multi` over `SpinOrSleep<Futex<10>>` with every endpoint spinning, the
+    honest name for what `mpsc-v3-futex` does over a bare `Futex<10>`: the checks run though
+    nothing sleeps. The flavor's own name keeps `futex`, so it lines up with its twin.
+  - Every v4 flavor sends and receives by the general `send` and `recv` with the spin policies the
+    v3 flavors use, not by the timed forms, so a v4 row differs from its v3 twin in the ring alone.
+- The tools' shared loops reserve a slot, read it, and release it, which v4's consumer does not
+  do. An adapter in the tools gives the v4 consumer that shape: its reserve is a `recv` whose
+  closure copies the message out, and its release does nothing. The loops for v0 to v3 expand as
+  they did.
+  - So a v4 row's receive copies a small message out of the slot inside the closure, where a v3
+    row reads it through the guard, the same work in another place.
+  - The probe labels a v4 cell prints still read `reserve+release`, the shared loop's words.
+- Not done, the agent's choices under the waiver: no v4 in `zc-ring-x1-demo` or `zcr-test-ipm`,
+  which the measured rung and the acceptance check do not need. `tp-cell` cannot select `spsc-v4`
+  by name, found here and left. `tp_matrix/README.md` says "the seven rings" and shows a banner
+  from before `mpsc-v3`, found here and left, and its flavor paragraph now names
+  `mpsc-v3-backoff`, which it lacked.
+- `vc-x1 validate`'s clippy and tests cover the root package alone, found here: the tools are a
+  workspace, so they were also linted and tested with `--workspace` by hand, and pass. A default
+  `tp-stream` or `tp-matrix` run is 64 cells where it was 48.
+- The work was done by a second agent given the v4 API and limited to `tp_matrix/` and
+  `tp_runner/`, and checked here by its diff and a run.
 
 ##### docs: mpsc v4 consumer waits measured
 

@@ -17,16 +17,25 @@ SMT siblings share one core's caches, so there xfills reads
 near 0, which is expected.
 Runs vary by **flavor**, which ring (`spsc-v0`, `spsc-v1`,
 `spsc-v2`, `spsc-v3`, `spsc-v4`, `mpsc-v0`, `mpsc-v1`,
-`mpsc-v2`, `mpsc-v3`, named after their module paths, with
-`mpsc-v3-single` for v3's one-segment mode and `mpsc-v3-futex`
-for v3 waking with a futex), and by
+`mpsc-v2`, `mpsc-v3`, `mpsc-v4`, named after their module
+paths, with `mpsc-v3-single` for v3's one-segment mode,
+`mpsc-v3-futex` for v3 waking with a futex, `mpsc-v3-backoff`
+for v3 backing off after a lost claim race, and
+`mpsc-v4-single`, `mpsc-v4-futex`, and `mpsc-v4-backoff` their
+v4 twins, the futex one a ring over `SpinOrSleep` of a futex
+whose endpoints all spin), and by
 **placement**, which CPUs the two threads sit on: same L3,
 different L3, SMT siblings, or unpinned. `spsc-v3`, `spsc-v4`,
-`mpsc-v2`, and `mpsc-v3` are rings of segments:
+`mpsc-v2`, `mpsc-v3`, and `mpsc-v4` are rings of segments:
 `--segments N`, 1 to 32 and default 2, sets how many per ring,
 the depth is each segment's, and their rows add how often they
 switched segments, `switches/RT` in `tp-matrix` and
 `switches/msg` in `tp-stream`, `-` for every other flavor.
+v4's consumer receives by `recv`, which reads the message in a
+closure and frees the slot, where the earlier rings hand out a
+read guard. The cells call it through an adapter that copies
+the counter out, so a v4 row runs the same body and the same
+spin policies as its v3 twin and the two compare directly.
 
 - `tp-cell`: one round trip, main sends a counter to a worker
   and the worker sends it back, for one ring and one
@@ -171,8 +180,8 @@ tp-stream 0.1.0 - run the streaming matrix, one markdown table out
 
 `--producers N`, 1 to 64 and default 1, streams from N
 producer threads into the one consumer, the MPSC flavors only,
-`mpsc-v3-backoff` among them, whose producers back off after a
-lost claim race. Every thread has a cpu of its own, printed
+`mpsc-v3-backoff` and `mpsc-v4-backoff` among them, whose
+producers back off after a lost claim race. Every thread has a cpu of its own, printed
 above the table: the consumer on the base cpu, and the
 producers each on a core of their own near the base (`own cores
 near`), outside the base's L3 (`own cores x-L3`), or two to a
