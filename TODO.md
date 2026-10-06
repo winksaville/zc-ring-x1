@@ -85,7 +85,7 @@ reference to measure against.
 - [feat: ticks from millis and secs][12] (done)
 - [feat: mpsc v4 refuses a wake mismatch][10] (done)
 - [feat: mpsc v4 in the tools][4] (done)
-- [docs: mpsc v4 consumer waits measured][5]
+- [docs: mpsc v4 consumer waits measured][5] (done)
 - [docs: mpsc v4 guide and example][6]
 - [feat: mpsc v4 closing][7]
 
@@ -409,6 +409,27 @@ No tool can run v4. Add v4 flavors to `tp-stream` and the other tools, beside v3
 
 Whether the copy and the new reserve cost anything is not known. Measure each v4 flavor against its
 v3 flavor under one named build profile, and put the rows in the design note.
+
+- The design note has a new section, `MPSC v4 measured`: `tp-stream` at depth 8, one and two
+  producers, three runs each, on the 3900X, built with one codegen unit and fat LTO, each v4 flavor
+  beside its v3 twin.
+- v4 runs as v3 does: 28 of the 32 medians are within 3% of their twin, and all are within 8% above
+  and 7% below. So the closure `recv`, the shared policy trait, and the control block's new word
+  cost nothing the streams can show.
+- The wake checks cost less under this profile than the docs' figure from the default one: 2% at
+  most on v3 and 8% at most on v4, against 28%. The v4 module docs still give the range "from no
+  difference to about 28%", which stays true of what has been measured, and they name no profile.
+  - Left for the user: whether the docs should say the profile, or lead with the smaller figures.
+- The rung's title says the consumer's waits are measured, and they are not: the tools send and
+  receive by the general forms with a spin policy, so the rows compare the rings. The timed forms
+  and an endpoint asleep are in no row. The agent's finding under the waiver, with the title left
+  as the ladder has it.
+  - iiac-perf's benches, named by spin and wait, are where the timed forms get measured, once v4
+    is on `main`.
+- Measured on one machine only. The 7600X and the Pi 5, which the v3 tables have, were not reached
+  from this session.
+- The tools were built in a target directory of their own, `target/lto`, with the profile set by
+  two environment variables, so the default build is as it was.
 
 ##### docs: mpsc v4 guide and example
 

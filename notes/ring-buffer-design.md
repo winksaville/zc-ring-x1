@@ -2481,6 +2481,90 @@ says otherwise, ns per message.
   before calling a change a cost or a win, the Todo `Measurement builds and the producer-consumer
   rhythm`. `Single` and `Multi` cannot be told apart, the Todo `MPSC without Single and Multi`.
 
+### MPSC v4 measured
+
+Measured 2026-10-06 at the rung `feat: mpsc v4 in the tools`, with `tp-stream -d 1 --depth 8` and
+`tp-stream -d 1 --depth 8 -p 2`, on the 3900X alone, two segments. The build profile is `lto`, one
+codegen unit with fat LTO, the profile [MPSC v3 across machines and build
+profiles](#mpsc-v3-across-machines-and-build-profiles) found the steadier. Three runs of each, ns
+per message, every run shown beside its median. Each v4 flavor is beside the v3 flavor of the same
+name: `plain` is `mpsc-v3` and `mpsc-v4`, `Multi` with nothing sleeping, `single` the one-segment
+mode, `futex` a ring whose wake checks run though every endpoint spins, and `backoff` producers
+that back off after a lost slot.
+
+- One producer:
+
+  | placement | flavor | v3 runs | v3 median | v4 runs | v4 median | v4 / v3 |
+  |---|---|---|---:|---|---:|---:|
+  | 11,10 CCX | plain | 9.6, 9.6, 9.6 | 9.6 | 9.7, 10.1, 10.3 | 10.1 | 1.05 |
+  | 11,10 CCX | single | 9.4, 9.4, 9.3 | 9.4 | 9.2, 9.2, 9.2 | 9.2 | 0.98 |
+  | 11,10 CCX | futex | 9.7, 9.7, 9.7 | 9.7 | 9.9, 9.9, 9.9 | 9.9 | 1.02 |
+  | 11,10 CCX | backoff | 9.7, 9.7, 9.7 | 9.7 | 9.4, 9.4, 9.5 | 9.4 | 0.97 |
+  | 11,8 x-CCX | plain | 31.8, 31.7, 31.9 | 31.8 | 31.3, 32.3, 31.2 | 31.3 | 0.98 |
+  | 11,8 x-CCX | single | 27.0, 27.0, 27.0 | 27.0 | 27.2, 27.4, 27.2 | 27.2 | 1.01 |
+  | 11,8 x-CCX | futex | 31.8, 31.6, 31.7 | 31.7 | 31.8, 31.9, 31.5 | 31.8 | 1.00 |
+  | 11,8 x-CCX | backoff | 31.9, 31.8, 31.9 | 31.9 | 33.0, 31.7, 31.8 | 31.8 | 1.00 |
+  | 11,23 SMT | plain | 6.4, 6.5, 6.4 | 6.4 | 6.5, 6.5, 6.4 | 6.5 | 1.02 |
+  | 11,23 SMT | single | 6.5, 6.5, 6.5 | 6.5 | 6.5, 6.5, 6.5 | 6.5 | 1.00 |
+  | 11,23 SMT | futex | 6.5, 6.5, 6.5 | 6.5 | 6.9, 7.1, 7.0 | 7.0 | 1.08 |
+  | 11,23 SMT | backoff | 6.3, 6.3, 6.3 | 6.3 | 6.5, 6.6, 6.5 | 6.5 | 1.03 |
+  | unpinned | plain | 9.6, 9.6, 9.5 | 9.6 | 9.4, 9.4, 9.4 | 9.4 | 0.98 |
+  | unpinned | single | 9.4, 9.3, 9.7 | 9.4 | 9.1, 9.0, 8.8 | 9.0 | 0.96 |
+  | unpinned | futex | 9.8, 9.8, 9.5 | 9.8 | 9.7, 9.6, 9.5 | 9.6 | 0.98 |
+  | unpinned | backoff | 9.3, 9.4, 9.5 | 9.4 | 9.3, 9.6, 9.5 | 9.5 | 1.01 |
+
+- Two producers, the consumer on cpu 11, and the producers on 10 and 9 for own cores near, 8 and 7
+  for own cores x-L3, and 10 and 22 for shared cores:
+
+  | placement | flavor | v3 runs | v3 median | v4 runs | v4 median | v4 / v3 |
+  |---|---|---|---:|---|---:|---:|
+  | own cores near | plain | 48.9, 49.0, 49.0 | 49.0 | 49.1, 49.4, 49.5 | 49.4 | 1.01 |
+  | own cores near | single | 48.9, 48.9, 49.0 | 48.9 | 48.7, 48.8, 48.8 | 48.8 | 1.00 |
+  | own cores near | futex | 49.4, 49.4, 49.4 | 49.4 | 48.1, 48.3, 48.2 | 48.2 | 0.98 |
+  | own cores near | backoff | 21.1, 21.2, 21.1 | 21.1 | 19.7, 19.8, 19.7 | 19.7 | 0.93 |
+  | own cores x-L3 | plain | 69.5, 69.4, 69.5 | 69.5 | 69.1, 69.6, 69.3 | 69.3 | 1.00 |
+  | own cores x-L3 | single | 74.9, 75.0, 75.0 | 75.0 | 75.2, 75.2, 74.8 | 75.2 | 1.00 |
+  | own cores x-L3 | futex | 71.6, 71.6, 71.6 | 71.6 | 71.6, 71.5, 71.6 | 71.6 | 1.00 |
+  | own cores x-L3 | backoff | 67.6, 67.8, 68.0 | 67.8 | 67.6, 67.4, 67.9 | 67.6 | 1.00 |
+  | shared cores | plain | 24.8, 24.9, 24.9 | 24.9 | 25.2, 25.0, 25.2 | 25.2 | 1.01 |
+  | shared cores | single | 24.7, 24.7, 24.8 | 24.7 | 24.5, 24.5, 24.5 | 24.5 | 0.99 |
+  | shared cores | futex | 25.5, 25.6, 25.5 | 25.5 | 25.3, 25.3, 25.3 | 25.3 | 0.99 |
+  | shared cores | backoff | 13.3, 13.3, 13.3 | 13.3 | 13.3, 13.3, 13.4 | 13.3 | 1.00 |
+  | unpinned | plain | 48.6, 160.4, 48.9 | 48.9 | 49.8, 46.8, 48.2 | 48.2 | 0.99 |
+  | unpinned | single | 49.0, 52.2, 50.3 | 50.3 | 49.1, 48.7, 48.1 | 48.7 | 0.97 |
+  | unpinned | futex | 49.5, 52.4, 48.5 | 49.5 | 50.4, 47.9, 50.6 | 50.4 | 1.02 |
+  | unpinned | backoff | 21.1, 20.7, 21.1 | 21.1 | 21.0, 20.5, 20.4 | 20.5 | 0.97 |
+
+- v4 runs as v3 does. Of the 32 medians, 28 are within 3% of their v3 twin, and all are within 8%
+  above and 7% below.
+  - v4's message paths are v3's: the producer's `send` is unchanged, and the consumer's `recv` is
+    v3's reserve and release in one call around a closure.
+  - The tools read a v4 message by copying it out inside that closure, where they read a v3
+    message through its guard, and the rows do not tell the two apart.
+- The row farthest above its twin is `futex` on the SMT pair at one producer, 7.0 against 6.5, each
+  of its three runs within 0.1 of its median. v4's `futex` flavor is a ring over
+  `SpinOrSleep<Futex<10>>` where v3's is over `Futex<10>`, and the first forwards to the second on
+  the sleep path alone, which no endpoint takes here. We think the gap is how the two loops were
+  compiled and fall into step, as the Todo `Measurement builds and the producer-consumer rhythm`
+  describes, and not the forwarding.
+- The row farthest below is `backoff` at two producers on own cores near, 19.7 against 21.1.
+- The wake checks cost less under `lto` than the first v3 tables showed under the default profile.
+  At one producer, `futex` against `plain`:
+  - v3: 9.7 against 9.6 same-CCX, 31.7 against 31.8 cross-CCX, 6.5 against 6.4 on the SMT pair, 2%
+    at most.
+  - v4: 9.9 against 10.1 same-CCX, 31.8 against 31.3 cross-CCX, 7.0 against 6.5 on the SMT pair,
+    8% at most.
+  - Under the default profile [MPSC v3 measured](#mpsc-v3-measured) has 15.6 against 12.2 on the
+    SMT pair at this depth, 28%.
+- One run is an outlier and its median stands: `plain` v3, two producers unpinned, 160.4 in the
+  second run against 48.6 and 48.9.
+- Not measured here:
+  - The timed forms, `recv_spin`, `recv_spin_sleep`, `send_spin`, and `send_spin_sleep`. Every
+    flavor sends and receives by the general `send` and `recv` with a spin policy, as the v3
+    flavors do, so a row compares the rings and not the waits. An endpoint asleep is in no row.
+  - The 7600X and the Pi 5, the default profile, depths 1 and 64, and the round trips of
+    `tp-matrix`.
+
 ### MPSC v3 long-term possibilities
 
 Where the restart contract leads, recorded 2026-09-27 as possibilities, none of them built.
