@@ -60,7 +60,7 @@ pub mod spsc;
 pub mod wake;
 
 #[cfg(any(target_os = "linux", feature = "std"))]
-pub use clock::{microsecs_to_ticks, nanos_to_ticks};
+pub use clock::{microsecs_to_ticks, millis_to_ticks, nanos_to_ticks, secs_to_ticks};
 #[cfg(target_has_atomic = "32")]
 pub use mpsc::{MpscConsumer, MpscHeader, MpscProducer, MpscReadSlot, MpscRing, mpsc_region_size};
 pub use pool::{BufSlot, Exhausted, Pool, PoolHeader, PoolView};
@@ -97,8 +97,9 @@ pub struct Empty;
 ///
 /// - A send's `give_up`, `spin`, and `wait` are each a `Ticks`.
 /// - A `Ticks` is not a point in time. A point in time is a [`Deadline`].
-/// - A caller makes a `Ticks` with [`microsecs_to_ticks`] or [`nanos_to_ticks`], once, when it sets
-///   up its times, so a send only adds and compares ticks and never converts a unit.
+/// - A caller makes a `Ticks` with [`secs_to_ticks`], [`millis_to_ticks`], [`microsecs_to_ticks`], or
+///   [`nanos_to_ticks`], once, when it sets up its times, so a send only adds and compares ticks
+///   and never converts a unit.
 /// - A tick is one nanosecond today. A later clock may count the CPU's own counter instead, and a
 ///   caller that makes its `Ticks` with the conversions does not change.
 /// - `Ticks` lives in the crate core, as [`Full`] does, because the sends and the waits share it.

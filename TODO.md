@@ -82,7 +82,7 @@ reference to measure against.
 - [feat: mpsc v4 consumer policy][3] (done)
 - [feat: mpsc v4 plain names][8] (done)
 - [feat: mpsc v4 waiters say their cost][9] (done)
-- [feat: ticks from millis and secs][12]
+- [feat: ticks from millis and secs][12] (done)
 - [feat: mpsc v4 refuses a wake mismatch][10]
 - [feat: mpsc v4 in the tools][4]
 - [docs: mpsc v4 consumer waits measured][5]
@@ -309,9 +309,32 @@ sleep on a `NoWake` ring do not compile. The general `send` and `recv` over a po
 ##### feat: ticks from millis and secs
 
 A caller makes a `Ticks` from microseconds or nanoseconds only, so 20 ms is written
-`microsecs_to_ticks(20_000)`, and none of the conversions can make a constant. Add
-`millis_to_ticks` and `secs_to_ticks`, make all four `const fn`, a tick being one nanosecond, and
-give the times in v4's tests names that say spin or sleep and how long.
+`microsecs_to_ticks(20_000)`. Add `millis_to_ticks` and `secs_to_ticks`, and give the times in
+v4's tests names that say spin or sleep and how long.
+
+- A tick has no dimension a caller may rely on, the user's notion, restated on 2026-10-06: it is a
+  nanosecond today, and a later clock may count a CPU's cycle counter, whose rate is found when
+  the program runs.
+  - So the conversions stay ordinary functions. Making the four `const fn` was this rung's first
+    plan, for constants a caller could name, and it would have fixed the tick at a nanosecond in
+    the public API, since a `const fn` cannot read a rate found at run time.
+  - `Ticks`'s own docs already said a later clock may count the CPU's counter. The clock module's
+    said only "a tick is one nanosecond", and now say the rest.
+- The two existing conversions are untouched, and the two new ones are beside them, so `clock.rs`
+  only gains. A test, the clock module's first, holds that each unit is a thousand of the next and
+  that a duration too long to count is `Ticks::FOREVER`, neither of which says what a tick is.
+- v4's tests name each time where it is used, by role and length, `spin_100us`, `sleep_20ms`,
+  `sleep_500ms`, with `let`, since a conversion is not `const`. A constant, the futex's timeout in
+  microseconds, is gone, and the two tests that used it say in a comment why 500 ms.
+- Where the clock runs, as the code reads, the user's question of 2026-10-06:
+  - Any Linux, the Pi 5's arm64 and RISC-V included: `clock_gettime(CLOCK_MONOTONIC)` through
+    `libc`, with `Futex` to sleep on.
+  - macOS and Windows: `std::time::Instant` with the `std` feature, and no timed sends or receives
+    without it. `Futex` is Linux only, so `SpinOnly` is the one choice there.
+  - A target with no operating system: no clock, so no timed sends or receives.
+  - Run so far on the 3900X, the 7600X, and the Pi 5. RISC-V, macOS, and Windows are not built or
+    run in any record we have.
+- v3's tests keep their times as they are.
 
 ##### feat: mpsc v4 refuses a wake mismatch
 

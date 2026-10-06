@@ -966,6 +966,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     use crate::wake::{Futex, Sleep, SpinOrSleep};
     use crate::{Empty, Exhausted, Full, PoolHeader, Ticks};
+    #[cfg(any(target_os = "linux", feature = "std"))]
+    use crate::{microsecs_to_ticks, millis_to_ticks};
     use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
     /// Test message, two words so a torn write would be visible.
@@ -1760,11 +1762,6 @@ mod tests {
     #[cfg(any(target_os = "linux", feature = "std"))]
     const LONG: std::time::Duration = std::time::Duration::from_millis(250);
 
-    /// `TIMEOUT_US` is the timeout of the tests' `Futex<500>`, in microseconds: a deadline well
-    /// over [`WOKEN`], so a send or a receive that returns sooner was woken.
-    #[cfg(target_os = "linux")]
-    const TIMEOUT_US: u64 = 500_000;
-
     #[cfg(any(target_os = "linux", feature = "std"))]
     #[test]
     fn a_deadline_send_gives_up_at_its_time() {
@@ -1781,12 +1778,9 @@ mod tests {
         })
         .unwrap();
         assert_eq!(prod.send_spin::<Msg>(Ticks::ZERO, |_| {}).err(), Some(Full));
+        let spin_20ms = millis_to_ticks(20);
         let start = std::time::Instant::now();
-        assert_eq!(
-            prod.send_spin::<Msg>(crate::microsecs_to_ticks(20_000), |_| {})
-                .err(),
-            Some(Full)
-        );
+        assert_eq!(prod.send_spin::<Msg>(spin_20ms, |_| {}).err(), Some(Full));
         let waited = start.elapsed();
         assert!(waited >= std::time::Duration::from_millis(20), "{waited:?}");
         assert!(waited < LONG, "{waited:?}");
@@ -1832,15 +1826,14 @@ mod tests {
             let waiters = &ring.segs.claims().prod_waiters;
             std::thread::scope(|s| {
                 let writer = s.spawn(move || {
+                    // The futex's own timeout, well over WOKEN, so a send that returns sooner
+                    // was woken.
+                    let sleep_500ms = millis_to_ticks(500);
                     let start = std::time::Instant::now();
-                    let sent = prod.send_spin_sleep::<Msg>(
-                        Ticks::ZERO,
-                        crate::microsecs_to_ticks(TIMEOUT_US),
-                        |m| {
-                            m.seq = full;
-                            m.val = full * 10;
-                        },
-                    );
+                    let sent = prod.send_spin_sleep::<Msg>(Ticks::ZERO, sleep_500ms, |m| {
+                        m.seq = full;
+                        m.val = full * 10;
+                    });
                     (sent, start.elapsed())
                 });
                 // Asleep before the room comes, so the room wakes it.
@@ -1871,14 +1864,12 @@ mod tests {
         let ring = MpscRing::<Single, Sleep<Futex<500>>>::init(&mut pool, 64, 2, 1).unwrap();
         let (prod, _cons) = endpoints(&ring);
         send(&prod, 0, 2);
+        let spin_100us = microsecs_to_ticks(100);
+        let sleep_20ms = millis_to_ticks(20);
         let start = std::time::Instant::now();
         assert_eq!(
-            prod.send_spin_sleep::<Msg>(
-                crate::microsecs_to_ticks(100),
-                crate::microsecs_to_ticks(20_000),
-                |_| {}
-            )
-            .err(),
+            prod.send_spin_sleep::<Msg>(spin_100us, sleep_20ms, |_| {})
+                .err(),
             Some(Full)
         );
         let waited = start.elapsed();
@@ -1903,12 +1894,9 @@ mod tests {
         assert_eq!(cons.recv_spin::<Msg, _>(Ticks::ZERO, |m| m.seq), Ok(0));
         let empty = |_: &Msg| panic!("read of an empty ring");
         assert_eq!(cons.recv_spin(Ticks::ZERO, empty).err(), Some(Empty));
+        let spin_20ms = millis_to_ticks(20);
         let start = std::time::Instant::now();
-        assert_eq!(
-            cons.recv_spin(crate::microsecs_to_ticks(20_000), empty)
-                .err(),
-            Some(Empty)
-        );
+        assert_eq!(cons.recv_spin(spin_20ms, empty).err(), Some(Empty));
         let waited = start.elapsed();
         assert!(waited >= std::time::Duration::from_millis(20), "{waited:?}");
         assert!(waited < LONG, "{waited:?}");
@@ -1938,7 +1926,7 @@ mod tests {
         // An empty ring of each mode: the consumer spins not at all or for a short time, sleeps to
         // a deadline or without one, and is woken by the producer's send long before its deadline
         // or the futex's own timeout.
-        fn run<M: Mode>(count: u32, spin_us: u64, sleep_time: Ticks) {
+        fn run<M: Mode>(count: u32, spin_time: Ticks, sleep_time: Ticks) {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
             let ring = MpscRing::<M, Sleep<Futex<500>>>::init(&mut pool, 64, 4, count).unwrap();
@@ -1947,11 +1935,7 @@ mod tests {
             std::thread::scope(|s| {
                 let reader = s.spawn(move || {
                     let start = std::time::Instant::now();
-                    let read = cons.recv_spin_sleep::<Msg, _>(
-                        crate::microsecs_to_ticks(spin_us),
-                        sleep_time,
-                        |m| m.seq,
-                    );
+                    let read = cons.recv_spin_sleep::<Msg, _>(spin_time, sleep_time, |m| m.seq);
                     (read, start.elapsed())
                 });
                 // Asleep before the message comes, so the send wakes it.
@@ -1967,11 +1951,14 @@ mod tests {
             });
             assert_eq!(claim.load(Ordering::Relaxed) & WAITING, 0);
         }
-        for sleep_time in [crate::microsecs_to_ticks(TIMEOUT_US), Ticks::FOREVER] {
-            run::<Single>(1, 0, sleep_time);
-            run::<Multi>(2, 0, sleep_time);
-            run::<Single>(1, 100, sleep_time);
-            run::<Multi>(2, 100, sleep_time);
+        // The futex's own timeout, well over WOKEN, so a receive that returns sooner was woken.
+        let sleep_500ms = millis_to_ticks(500);
+        let spin_100us = microsecs_to_ticks(100);
+        for sleep_time in [sleep_500ms, Ticks::FOREVER] {
+            run::<Single>(1, Ticks::ZERO, sleep_time);
+            run::<Multi>(2, Ticks::ZERO, sleep_time);
+            run::<Single>(1, spin_100us, sleep_time);
+            run::<Multi>(2, spin_100us, sleep_time);
         }
     }
 
@@ -1991,23 +1978,20 @@ mod tests {
             Some(Empty)
         );
         // No sleep gives up when the spin ends.
+        let spin_5ms = millis_to_ticks(5);
         let start = std::time::Instant::now();
         assert_eq!(
-            cons.recv_spin_sleep(crate::microsecs_to_ticks(5_000), Ticks::ZERO, empty)
-                .err(),
+            cons.recv_spin_sleep(spin_5ms, Ticks::ZERO, empty).err(),
             Some(Empty)
         );
         let waited = start.elapsed();
         assert!(waited >= std::time::Duration::from_millis(5), "{waited:?}");
         assert!(waited < LONG, "{waited:?}");
+        let spin_100us = microsecs_to_ticks(100);
+        let sleep_20ms = millis_to_ticks(20);
         let start = std::time::Instant::now();
         assert_eq!(
-            cons.recv_spin_sleep(
-                crate::microsecs_to_ticks(100),
-                crate::microsecs_to_ticks(20_000),
-                empty
-            )
-            .err(),
+            cons.recv_spin_sleep(spin_100us, sleep_20ms, empty).err(),
             Some(Empty)
         );
         let waited = start.elapsed();
@@ -2067,8 +2051,9 @@ mod tests {
             // A full ring: the spin form gives up at once, and the spin and sleep form at its time.
             send(&prod, 3, 5);
             assert_eq!(prod.send_spin::<Msg>(Ticks::ZERO, |_| {}).err(), Some(Full));
+            let sleep_1ms = millis_to_ticks(1);
             assert_eq!(
-                prod.send_spin_sleep::<Msg>(Ticks::ZERO, crate::microsecs_to_ticks(1_000), |_| {})
+                prod.send_spin_sleep::<Msg>(Ticks::ZERO, sleep_1ms, |_| {})
                     .err(),
                 Some(Full)
             );
