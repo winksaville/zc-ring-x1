@@ -83,7 +83,7 @@ reference to measure against.
 - [feat: mpsc v4 plain names][8] (done)
 - [feat: mpsc v4 waiters say their cost][9] (done)
 - [feat: ticks from millis and secs][12] (done)
-- [feat: mpsc v4 refuses a wake mismatch][10]
+- [feat: mpsc v4 refuses a wake mismatch][10] (done)
 - [feat: mpsc v4 in the tools][4]
 - [docs: mpsc v4 consumer waits measured][5]
 - [docs: mpsc v4 guide and example][6]
@@ -132,6 +132,16 @@ reference to measure against.
     costing a spinner about 3 ns. They call the size provisional.
   - The waiter type and the gated methods are one rung, since the gate is what makes the type
     worth writing down. The control block's wake protocol is the other, a layout change.
+- A waiver, the user's of 2026-10-06 on leaving: "complete this cycle if possible up to closing,
+  but don't close, I'll review when I get back".
+  - What we take it to cover: for each rung from `feat: mpsc v4 refuses a wake mismatch` to `docs:
+    mpsc v4 guide and example`, the work review, the description review, the push's approval, and
+    the hard stop after the push.
+  - What it does not cover: the closing rung, the close-out shape, Land, any push of `main`, any
+    rewrite of a pushed commit, and any push of the messages repo.
+  - Every rung under it is still validated in full before its push, and is a draft on the bookmark
+    for the user's review on return.
+  - A design choice made under it without the user is marked in its rung's details as the agent's.
 - A policy still cannot sleep to a deadline of its own, on either side: `Waiter::sleep` takes none,
   and only the built-in timed methods do. Exposing the clock is the Todo `Clock choices for the
   deadline sends`.
@@ -342,6 +352,28 @@ Two processes can attach to one ring with different wakes, and nothing detects i
 producer never wakes a `Futex` consumer, whose every wake is then its timeout. Record the wake
 protocol, none or futex, in the control block at `init`, and refuse the endpoint whose wake
 disagrees.
+
+- The ring's control block gains one word, its wake protocol, written at `init` and compared at
+  `attach`, where a disagreement is a new error, `Error::BadWake`.
+  - The check is at `attach`, beside the mode's: the wake is the ring handle's type, and every
+    endpoint comes from a handle, so no endpoint is reached without it. iiac-perf's sketch had the
+    check at the claim of a role. The agent's choice under the waiver.
+- The protocol is a number on `Wake`, `PROTOCOL`: none, futex, or other.
+  - It is a constant with a default, none for a wake that does not wake and other for one that
+    does, so the one line added to existing code is `Futex`'s, which names itself. `NoWake` is as
+    it was, and so is a wake written outside the crate. The agent's choice under the waiver,
+    against a constant every wake must write, which would change `NoWake` too.
+  - A futex's timeout is not part of the protocol: two processes with different timeouts wake each
+    other correctly.
+  - `Sleep<S>` and `SpinOrSleep<S>` take `S`'s protocol, so the two are one, and `SpinOnly` is
+    none.
+- The control block's word fits in the info line's spare room, so no size or offset changes, and
+  v4's layout version stays 1: nothing has been made with the layout before this rung outside
+  this bookmark.
+- What it does not catch: a v3 ring, which has no such word, and two wakes written outside the
+  crate that both leave the default, which read as one protocol.
+- A test holds each direction of the refusal, and that a process over `Sleep<Futex<5>>` and one
+  over `SpinOrSleep<Futex<500>>` share a ring.
 
 ##### feat: mpsc v4 in the tools
 

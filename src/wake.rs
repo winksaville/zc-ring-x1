@@ -11,8 +11,11 @@
 //!   shared between processes, with a timeout, since a peer can die
 //!   while another sleeps.
 //! - Every process attached to one ring uses the same
-//!   implementation. A mismatch is not detected and costs latency
-//!   only: a futex sleeper no one wakes returns at its timeout.
+//!   implementation. On an `mpsc::v3` ring a mismatch is not
+//!   detected and costs latency only: a futex sleeper no one wakes
+//!   returns at its timeout. An `mpsc::v4` ring records its wake's
+//!   [`PROTOCOL`](Wake::PROTOCOL) and refuses an attach that
+//!   disagrees.
 //! - `MpscRing` in `mpsc::v3` and in `mpsc::v4` are the rings that take one.
 //! - [`Waits`] is a ring's choice of how its endpoints wait, which an `mpsc::v4` ring takes in
 //!   place of a bare [`Wake`]: [`SpinOnly`], [`Sleep`] over a wake such as [`Futex`], or
@@ -70,6 +73,21 @@ pub trait Wake {
     /// compiles every wake check out of the message paths.
     const WAKES: bool;
 
+    /// `PROTOCOL` names how this wake's sleepers are woken, as a number a ring records so that
+    /// every process attached to the ring wakes the same way.
+    ///
+    /// - [`PROTOCOL_NONE`]: nothing sleeps and nothing is woken. The default for a wake whose
+    ///   [`WAKES`](Wake::WAKES) is `false`.
+    /// - [`PROTOCOL_FUTEX`]: a Linux futex on the word, [`Futex`]'s, whatever its timeout.
+    /// - [`PROTOCOL_OTHER`]: the default for a wake that sleeps and names no protocol of its own. A
+    ///   wake written outside the crate overrides it with its own number, [`PROTOCOL_OTHER`] or
+    ///   above, so two different wakes are not taken for one.
+    const PROTOCOL: u32 = if Self::WAKES {
+        PROTOCOL_OTHER
+    } else {
+        PROTOCOL_NONE
+    };
+
     /// `wait` sleeps while the word in `seen` still holds the value `seen` recorded.
     ///
     /// - `wait` returns on a wake, when the word no longer holds that value, spuriously, or at the
@@ -86,6 +104,16 @@ pub trait Wake {
     /// Wake every sleeper on `word`.
     fn wake(word: &AtomicU32);
 }
+
+/// `PROTOCOL_NONE` is the [`Wake::PROTOCOL`] of a wake where nothing sleeps.
+pub const PROTOCOL_NONE: u32 = 0;
+
+/// `PROTOCOL_FUTEX` is the [`Wake::PROTOCOL`] of [`Futex`].
+pub const PROTOCOL_FUTEX: u32 = 1;
+
+/// `PROTOCOL_OTHER` is the [`Wake::PROTOCOL`] of a wake that sleeps and names no protocol, and the
+/// least number a wake written outside the crate takes for its own.
+pub const PROTOCOL_OTHER: u32 = 16;
 
 /// No sleeping: a wait is one spin-loop hint and a wake does
 /// nothing, so a waiting call polls.
@@ -118,6 +146,7 @@ pub struct Futex<const TIMEOUT_MS: u32 = 10>;
 #[cfg(target_os = "linux")]
 impl<const TIMEOUT_MS: u32> Wake for Futex<TIMEOUT_MS> {
     const WAKES: bool = true;
+    const PROTOCOL: u32 = PROTOCOL_FUTEX;
 
     fn wait(seen: Seen<'_>) {
         // FUTEX_WAIT's timeout is relative.
@@ -243,6 +272,7 @@ impl<S: Wake> Wake for Sleep<S> {
         assert!(S::WAKES, "Sleep needs a wake that sleeps, such as Futex");
         true
     };
+    const PROTOCOL: u32 = S::PROTOCOL;
 
     fn wait(seen: Seen<'_>) {
         S::wait(seen);
@@ -287,6 +317,7 @@ impl<S: Wake> Wake for SpinOrSleep<S> {
         );
         true
     };
+    const PROTOCOL: u32 = S::PROTOCOL;
 
     fn wait(seen: Seen<'_>) {
         S::wait(seen);

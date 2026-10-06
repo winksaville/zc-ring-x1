@@ -227,6 +227,9 @@ pub enum Error {
     /// MPSC v3, attach: the ring was built for the other segment
     /// mode, `Single` or `Multi`.
     BadMode,
+    /// MPSC v4, attach: the ring was built over another wake protocol, so its sleepers are woken
+    /// another way, or not at all.
+    BadWake,
 }
 
 /// Check `T` fits a slot, called once per `reserve_slot_with`

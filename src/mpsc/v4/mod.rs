@@ -179,6 +179,8 @@
 //! - One [`WaitPolicy`] serves both sides, in place of v3's `SendPolicy` and its `Room`.
 //! - A role is taken with `ring.producer()` or `ring.consumer()`, v3's `claim_producer` and
 //!   `claim_consumer`.
+//! - A ring records its wake protocol, and an `attach` over another is [`Error::BadWake`], where
+//!   two processes on a v3 ring can wake two ways and nothing says so.
 //! - A ring takes a choice of how its endpoints wait, `SpinOnly`, `Sleep<Futex>`, or
 //!   `SpinOrSleep<Futex>`, where v3's takes a wake, `NoWake` or `Futex`. The timed sends and
 //!   receives are offered by that choice, where v3's timed sends spin on any ring and sleep on any
@@ -358,6 +360,9 @@ struct Info {
     max_producers: AtomicU32,
     /// The consumer's resume position in this segment, written by its `release`.
     cons_resume: AtomicU32,
+    /// The ring's wake protocol, [`Wake::PROTOCOL`](crate::wake::Wake::PROTOCOL) of its `W`,
+    /// segment 0's.
+    wake: AtomicU32,
 }
 
 /// The claims line of segment 0: who holds the roles, and the consumer's checkpoint.
@@ -718,6 +723,7 @@ impl<'a, M: Mode, W: Waits> MpscRing<'a, M, W> {
                 if seg == 0 {
                     info.max_producers
                         .store(max_producers as u32, Ordering::Relaxed);
+                    info.wake.store(W::PROTOCOL, Ordering::Relaxed);
                     for (entry, &idx) in header.table.iter().zip(indices.iter()) {
                         entry.store(idx, Ordering::Relaxed);
                     }
@@ -750,6 +756,10 @@ impl<'a, M: Mode, W: Waits> MpscRing<'a, M, W> {
     ///   geometry, and every segment's own header against the block, so a hostile region is an
     ///   `Err`, never an out-of-bounds access.
     /// - A ring built for the other mode is [`Error::BadMode`].
+    /// - A ring built over another wake protocol is [`Error::BadWake`]: a ring over [`SpinOnly`]
+    ///   and a ring that sleeps on a futex do not mix, since an endpoint that never checks for a
+    ///   sleeper leaves one asleep until its timeout. `Sleep<Futex>` and `SpinOrSleep<Futex>` are
+    ///   one protocol, whatever the futex's timeout, and attach to each other's rings.
     ///
     /// # Safety
     ///
@@ -777,6 +787,9 @@ impl<'a, M: Mode, W: Waits> MpscRing<'a, M, W> {
         }
         if block.info.mode.load(Ordering::Relaxed) != M::CODE {
             return Err(Error::BadMode);
+        }
+        if block.info.wake.load(Ordering::Relaxed) != W::PROTOCOL {
+            return Err(Error::BadWake);
         }
         let slot_size = block.info.slot_size.load(Ordering::Relaxed);
         let seg_capacity = block.info.seg_capacity.load(Ordering::Relaxed);
@@ -1558,6 +1571,52 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn attach_checks_the_wake() {
+        // A ring records its wake protocol, and an attach over another is refused: a ring where
+        // nothing sleeps and a ring that sleeps on a futex do not mix. The two choices that sleep
+        // on a futex are one protocol, whatever the futex's timeout.
+        let mut r = Region::new();
+        let (base, len) = region(&mut r);
+        let (spins, sleeps) = with_init_pool(base, len, |pool| {
+            (
+                MpscRing::<Single, SpinOnly>::init(pool, 64, 4, 1)
+                    .unwrap()
+                    .first_segment(),
+                MpscRing::<Single, Sleep<Futex<5>>>::init(pool, 64, 4, 1)
+                    .unwrap()
+                    .first_segment(),
+            )
+        });
+        let b = attach_pool(base, len);
+        // SAFETY: both indices came from first_segment of rings over this pool, whose segments are
+        // still the rings'.
+        unsafe {
+            assert_eq!(
+                MpscRing::<Single, Sleep<Futex<5>>>::attach(&b, spins).err(),
+                Some(Error::BadWake)
+            );
+            assert_eq!(
+                MpscRing::<Single, SpinOrSleep<Futex<5>>>::attach(&b, spins).err(),
+                Some(Error::BadWake)
+            );
+            assert_eq!(
+                MpscRing::<Single, SpinOnly>::attach(&b, sleeps).err(),
+                Some(Error::BadWake)
+            );
+            assert!(MpscRing::<Single, SpinOnly>::attach(&b, spins).is_ok());
+            // One process over Sleep and another over SpinOrSleep, with another timeout, share the
+            // ring: the producer from one handle, the consumer from the other.
+            let ring_1 = MpscRing::<Single, Sleep<Futex<5>>>::attach(&b, sleeps).unwrap();
+            let ring_2 = MpscRing::<Single, SpinOrSleep<Futex<500>>>::attach(&b, sleeps).unwrap();
+            let prod = ring_1.producer().unwrap();
+            let mut cons = ring_2.consumer().unwrap();
+            send(&prod, 0, 4);
+            recv(&mut cons, 0, 4);
+        }
+    }
+
     #[test]
     fn single_streams_across_threads() {
         // One, two, and four producers on their own threads into a one-segment ring, all spinning:
@@ -1826,8 +1885,8 @@ mod tests {
             let waiters = &ring.segs.claims().prod_waiters;
             std::thread::scope(|s| {
                 let writer = s.spawn(move || {
-                    // The futex's own timeout, well over WOKEN, so a send that returns sooner
-                    // was woken.
+                    // The futex's own timeout, well over WOKEN, so a send that returns sooner was
+                    // woken.
                     let sleep_500ms = millis_to_ticks(500);
                     let start = std::time::Instant::now();
                     let sent = prod.send_spin_sleep::<Msg>(Ticks::ZERO, sleep_500ms, |m| {
