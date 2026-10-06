@@ -19,12 +19,12 @@ use crate::wake::{NoWake, Seen, Wake};
 use crate::{Deadline, Full};
 
 /// `struct MpscProducer` is a producing handle, one counted producer role: a producing thread or
-/// process claims one with [`MpscRing::claim_producer`](super::MpscRing::claim_producer), then
-/// sends with [`send`](MpscProducer::send), [`send_spin`](MpscProducer::send_spin), or
+/// process takes one with [`MpscRing::producer`](super::MpscRing::producer), then sends with
+/// [`send`](MpscProducer::send), [`send_spin`](MpscProducer::send_spin), or
 /// [`send_spin_sleep`](MpscProducer::send_spin_sleep).
 ///
-/// - The sends take `&self`: exclusivity comes from the claim CAS, not the borrow, so one handle
-///   may also be shared by reference.
+/// - The sends take `&self`: exclusivity comes from the CAS that takes a slot, not the borrow, so
+///   one handle may also be shared by reference.
 /// - `MpscProducer` is not `Clone`: each handle is one count in the roles word, and
 ///   [`release`](MpscProducer::release) gives it back. Dropping the handle writes nothing, so the
 ///   count stays held.
@@ -80,8 +80,8 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
 
     /// Give the producer role back, counting it out of the roles word.
     ///
-    /// - The producer keeps no state of its own, so nothing is checkpointed: a later claim, in any
-    ///   process, sends on where the ring is.
+    /// - The producer keeps no state of its own, so nothing is checkpointed: a later producer, in
+    ///   any process, sends on where the ring is.
     pub fn release(self) {
         // Release: the ring's release, which needs no role held, sees everything this producer
         // committed.
@@ -124,7 +124,7 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     /// # Returns
     ///
     /// - `Ok(())`: the message is committed, and the consumer can read it.
-    /// - `Err(Full)`: the ring stayed full until `give_up` passed. No slot was claimed, and
+    /// - `Err(Full)`: the ring stayed full until `give_up` passed. No slot was taken, and
     ///   `write_msg` was not called.
     #[cfg(any(target_os = "linux", feature = "std"))]
     pub fn send_spin<T>(&self, give_up: Ticks, write_msg: impl FnOnce(&mut T)) -> Result<(), Full>
@@ -183,7 +183,7 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     ///
     /// - `Ok(())`: the message is committed, and the consumer can read it.
     /// - `Err(Full)`: the ring stayed full until `spin_time` and `sleep_time` passed. No slot was
-    ///   claimed, and `write_msg` was not called.
+    ///   taken, and `write_msg` was not called.
     #[cfg(any(target_os = "linux", feature = "std"))]
     pub fn send_spin_sleep<T>(
         &self,
@@ -230,22 +230,23 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
         )
     }
 
-    /// `send` claims the next free slot in the ring, asking `policy` what to do each time it finds
+    /// `send` takes the next free slot in the ring, asking `policy` what to do each time it finds
     /// the ring full: look again, sleep first, or give up with `Err(Full)`. When a slot is free, or
     /// becomes free, `send` calls `write_msg` with a mutable reference to the message in the slot,
     /// `write_msg` writes the message there, and `send` commits the slot so the consumer can read
     /// it. `send` is the general send: [`send_spin`](MpscProducer::send_spin) and
     /// [`send_spin_sleep`](MpscProducer::send_spin_sleep) are `send` with a policy already written.
     ///
-    /// Another producer may claim a free slot first. `send` then calls the policy's
+    /// Another producer may take a free slot first. `send` then calls the policy's
     /// [`on_lost`](WaitPolicy::on_lost) and goes for the next slot at once, so a lost slot is never
     /// an error, and `Err(Full)` means the ring was full when `send` last looked and the policy
     /// gave up.
     ///
-    /// While `write_msg` runs, the slot is claimed but not committed, and the consumer, which reads
-    /// slots in order, cannot read past it. A slow `write_msg` delays every message behind it, and
-    /// a `write_msg` that panics leaves the slot claimed for good, so the consumer waits at it
-    /// until the ring is restarted. A consumer asleep on an empty ring is woken after the commit.
+    /// While `write_msg` runs, the slot is being written and not yet committed, and the consumer,
+    /// which reads slots in order, cannot read past it. A slow `write_msg` delays every message
+    /// behind it, and a `write_msg` that panics leaves the slot unfinished for good, so the
+    /// consumer waits at it until the ring is restarted. A consumer asleep on an empty ring is
+    /// woken after the commit.
     ///
     /// # Parameters
     ///
@@ -255,10 +256,10 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     ///   slot. A closure `|attempt| ...` returning whether to look again is a policy, so `|_|
     ///   false` makes one attempt and [`policy::spin`](crate::policy::spin) never gives up.
     /// - `write_msg`: the closure that writes the message. `send` calls `write_msg` once, after the
-    ///   slot is claimed, with a mutable reference to the slot's body, which still holds the bytes
-    ///   of the message the slot carried last. `write_msg` must write every field, since the
-    ///   consumer reads any field `write_msg` leaves as those stale bytes. `send` does not call
-    ///   `write_msg` when it returns `Err(Full)`.
+    ///   slot is taken, with a mutable reference to the slot's body, which still holds the bytes of
+    ///   the message the slot carried last. `write_msg` must write every field, since the consumer
+    ///   reads any field `write_msg` leaves as those stale bytes. `send` does not call `write_msg`
+    ///   when it returns `Err(Full)`.
     ///
     /// # Type parameters
     ///
@@ -271,8 +272,8 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     /// # Returns
     ///
     /// - `Ok(())`: the message is committed, and the consumer can read it.
-    /// - `Err(Full)`: the policy gave up on a full ring. No slot was claimed, and `write_msg` was
-    ///   not called.
+    /// - `Err(Full)`: the policy gave up on a full ring. No slot was taken, and `write_msg` was not
+    ///   called.
     #[inline(always)]
     pub fn send<T>(
         &self,

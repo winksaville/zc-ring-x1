@@ -10,8 +10,8 @@
 ///   result is [`on_wait`](WaitPolicy::on_wait)'s, so `|attempt| attempt < 100` gives up after a
 ///   hundred looks, `|_| false` makes one attempt, and [`policy::spin`](crate::policy::spin) never
 ///   gives up.
-/// - A type implementing `WaitPolicy` can also sleep through [`Waiter`], and on a producer sees each
-///   slot another producer took first.
+/// - A type implementing `WaitPolicy` can also sleep through [`Waiter`], and on a producer sees
+///   each slot another producer took first.
 /// - A `send` or a `recv` takes its policy by value. A policy whose state the caller reads
 ///   afterward, such as a count, implements `WaitPolicy` for `&mut` itself.
 pub trait WaitPolicy {

@@ -1,64 +1,109 @@
-//! MPSC v4 ring: a copy of v3, the ring of segments that describes itself in the region so a second
-//! process can attach to it, per the design doc's "MPSC v3: attachable segments with counted roles"
-//! section. v3 stays as built to measure against.
+//! MPSC v4 ring: many producers send messages to one consumer through a ring of slots in shared
+//! memory, so the producers and the consumer may be threads of one process or separate processes.
+//! v4 is v3 with a consumer that receives as a producer sends, and with plainer names. v3 stays as
+//! built to measure against.
 //!
-//! - What v4 adds to v3 so far:
-//!   - Its own magic, so a v3 ring and a v4 ring never attach to each other.
-//!   - The consumer receives as the producer sends: `recv` reads the message in place by a closure
-//!     and frees the slot when the closure returns, where v3's `reserve_slot_with` returned a
-//!     handle the caller released. `recv_spin` and `recv_spin_sleep` wait for a time, as
-//!     `send_spin` and `send_spin_sleep` do.
-//!   - One [`WaitPolicy`] serves both sides, in place of v3's `SendPolicy` and its `Room`.
-//! - What v3 added to v2: a control block at the front of segment 0 (magic, layout version,
+//! # Words
+//!
+//! Each word has one meaning in these docs.
+//!
+//! - Ring: the queue. It lives in buffers taken from the application's [`Pool`], and an
+//!   [`MpscRing`] is a handle to it.
+//! - Message: the data a producer has for the consumer, of any size.
+//! - Id: a small value that says where a message is. The crate's id is a [`Desc`](crate::Desc),
+//!   which names a pool and a buffer in it.
+//! - Slot: one entry of the ring, small and of a fixed size set at [`MpscRing::init`], holding a
+//!   value of the type `T` the two sides agree on. In the typical use the message is written into a
+//!   pool buffer and the slot holds its id, so the ring carries the id and the message is never
+//!   copied, which is what zero-copy means here. That works wherever both sides can reach the
+//!   message's pool. A message small enough to fit a slot may be the slot's value itself, with no
+//!   pool.
+//! - Segment: a run of slots in one pool buffer. A [`Multi`] ring has several and moves on to a
+//!   free one when the current one fills, and a [`Single`] ring has one.
+//! - Producer: an [`MpscProducer`], from [`MpscRing::producer`]. It sends.
+//! - Consumer: the ring's one [`MpscConsumer`], from [`MpscRing::consumer`]. It receives.
+//! - Role: being a producer, or the consumer, of a ring. A role is held from `producer()` or
+//!   `consumer()` until that endpoint's `release`, and [`MpscRing::release_ring`] gives the ring
+//!   back to the pool once no role is held.
+//! - Send: `send` takes the next free slot, a closure writes the slot's value there, the id or the
+//!   message, and `send` commits the slot, which is when the consumer can read it.
+//! - Receive: `recv` takes the oldest committed slot, a closure reads its value in place, and
+//!   `recv` frees the slot for the producers.
+//! - Policy: a [`WaitPolicy`], what a send asks at a full ring and a receive asks at an empty one:
+//!   look again, sleep first, or give up. `send_spin`, `recv_spin`, `send_spin_sleep`, and
+//!   `recv_spin_sleep` come with a policy already written.
+//! - Wake: `W`, how a sleeping endpoint is woken: [`NoWake`], where nothing sleeps and every wait
+//!   spins, or `Futex`.
+//!
+//! # Use
+//!
+//! 1. Make a ring over a pool with [`MpscRing::init`], or join one another process made with
+//!    [`MpscRing::attach`].
+//! 2. Take a role: `ring.producer()` in each sender, `ring.consumer()` in the receiver.
+//! 3. Send with `producer.send(policy, |msg| ...)` and receive with `consumer.recv(policy, |msg|
+//!    ...)`, or their `_spin` and `_spin_sleep` forms.
+//! 4. Give each role back with `release`, then the ring with `release_ring`.
+//!
+//! A complete program in two threads, pool to release, is `examples/`'s [guide_mpsc_v3.rs], v3's,
+//! which differs from a v4 program in its `mpsc::v3` paths, its role methods, and its receive.
+//!
+//! [guide_mpsc_v3.rs]: https://github.com/winksaville/zc-ring-x1/blob/main/examples/guide_mpsc_v3.rs
+//!
+//! # What v4 changes from v3
+//!
+//! - Its own magic, so a v3 ring and a v4 ring never attach to each other.
+//! - The consumer receives as the producer sends: `recv` reads the message in place by a closure
+//!   and frees the slot when the closure returns, where v3's `reserve_slot_with` returned a handle
+//!   the caller released. `recv_spin` and `recv_spin_sleep` wait for a time, as `send_spin` and
+//!   `send_spin_sleep` do.
+//! - One [`WaitPolicy`] serves both sides, in place of v3's `SendPolicy` and its `Room`.
+//! - A role is taken with `ring.producer()` or `ring.consumer()`, v3's `claim_producer` and
+//!   `claim_consumer`.
+//!
+//! # Inside the ring
+//!
+//! The design doc's "MPSC v3: attachable segments with counted roles" section describes the ring,
+//! and the names below are the source's own.
+//!
+//! - The control block: at the front of segment 0, holding the magic, the layout version, the
 //!   geometry, the roles word, the consumer's checkpoint, and the table of every segment's pool
-//!   buffer index), [`MpscRing::attach`] from a pool, [`MpscRing::first_segment`], and the roles
-//!   claimed by count, [`MpscRing::claim_producer`] and [`MpscRing::claim_consumer`].
-//!   [`MpscRing::release_ring`] gives a ring no role holds back to the pool, and the segment
-//!   handling is a mode type chosen at compile time, [`Single`] or [`Multi`]. A full producer or an
-//!   empty consumer can sleep until the other side acts, through a [`Wake`] type, [`NoWake`] by
-//!   default.
-//! - Modes: [`Multi`] is v2's switching over up to [`MAX_SEGMENTS`] segments. [`Single`] is one
-//!   segment, where a full ring goes straight to the policy and the consumer never loads a seal, so
-//!   its paths compile without the switch. The mode is in the control block, and an `attach` of the
+//!   buffer index. [`MpscRing::attach`] reads it, and [`MpscRing::first_segment`] is what one
+//!   process hands another to find it.
+//! - Modes: [`Multi`] switches over up to [`MAX_SEGMENTS`] segments. [`Single`] is one segment,
+//!   where a full ring goes straight to the policy and the consumer never loads a seal, so its
+//!   paths compile without the switch. The mode is in the control block, and an `attach` of the
 //!   other mode is [`Error::BadMode`].
-//! - Roles: one consumer and up to the ring's most producers, each claimed and released by one CAS
-//!   on the roles word. A producer keeps no state of its own, and the consumer checkpoints its
-//!   state at `release`, so a later claim, in any process, continues where it stopped. Neither
+//! - Roles: one consumer and up to the ring's most producers, each taken and released by one CAS on
+//!   the roles word. A producer keeps no state of its own, and the consumer checkpoints its state
+//!   at `release`, so a later consumer, in any process, continues where it stopped. Neither
 //!   endpoint has a `Drop`.
 //! - Segments: up to [`MAX_SEGMENTS`] taken from the application's [`Pool`] at [`MpscRing::init`],
 //!   each a header of seven lines then `seg_capacity` slots opening with the seq word.
-//! - Words: 32 bits everywhere. A position is [`SEQ_BITS`] wide, and the slot word holds v1's
-//!   values in those bits, claimable at `pos`, committed at `pos + M + 1`, released at `pos + M`.
-//!   There is no tombstone: a producer that panics inside its fill leaves its slot claimed, as one
-//!   killed there does, and the ring is recovered by a restart. The claim word packs the current
-//!   segment over the next position, and a seal packs MOVED, the next segment, and the end position
-//!   the same way.
-//! - The claim word is the seal: every producer claims as v1 claims, and a stale view fails the
-//!   CAS, so no claim lands in a segment the ring has left.
+//! - Words: 32 bits everywhere. A position is [`SEQ_BITS`] wide, and the slot's seq word holds v1's
+//!   values in those bits, free at `pos`, committed at `pos + M + 1`, read at `pos + M`. There is
+//!   no tombstone: a producer that panics while writing leaves its slot unfinished, as one killed
+//!   there does, and the ring is recovered by a restart.
+//! - The claim word: the ring's one word naming the segment and the position the next send takes,
+//!   moved on by each send's CAS. A stale view fails the CAS, so no send lands in a segment the
+//!   ring has left. A seal packs MOVED, the next segment, and the end position the same way.
 //! - A producer at a full segment takes a free one by setting its bit in the in-use word, moves the
 //!   claim word to it, and seals the old segment's header. The consumer reads the seal only when a
 //!   slot is not committed, so its fast path is v1's one load.
-//! - Waiting: a producer's `send` asks its [`WaitPolicy`] what to do at a full ring, and the
-//!   consumer's `recv` asks its policy what to do at an empty one. The policy may sleep through
-//!   [`Waiter`], as `send_spin_sleep` and `recv_spin_sleep` do, where `send_spin` and `recv_spin`
-//!   only spin. The two sides' waits have the same names after `send` and `recv`, and the same
-//!   parameters with the same meanings.
+//! - Waiting: the two sides' waits have the same names after `send` and `recv`, and the same
+//!   parameters with the same meanings. A policy may sleep through [`Waiter`], as `send_spin_sleep`
+//!   and `recv_spin_sleep` do, where `send_spin` and `recv_spin` only spin.
 //!   - The consumer sleeps on the claim word, whose bit 31 is its waiting flag. It sets the flag
 //!     and sleeps only while the word, flag aside, names its own segment and position, so no slot
-//!     is claimed past what it read. A producer's claim CAS returns the flag at no cost, and the
-//!     producer wakes the consumer after its commit.
+//!     is taken past what it read. A send's CAS returns the flag at no cost, and the producer wakes
+//!     the consumer after its commit.
 //!   - A producer at a full ring counts itself into the producers' waiting word, looks again, and
 //!     sleeps on the wake sequence word. The consumer checks the count behind a SeqCst fence at
-//!     every half segment of releases, at each segment it gives back, and before it sleeps itself,
-//!     and bumps the sequence and wakes them all: a fence every half segment, not every message. A
-//!     producer sleeps only on a full ring, and draining a full segment crosses a half-segment
-//!     mark, so the checks miss no sleeper.
+//!     every half segment of messages read, at each segment it gives back, and before it sleeps
+//!     itself, and bumps the sequence and wakes them all: a fence every half segment, not every
+//!     message. A producer sleeps only on a full ring, and draining a full segment crosses a
+//!     half-segment mark, so the checks miss no sleeper.
 //!   - With [`NoWake`] every check folds away and a wait polls.
 //! - Gated with the rest of `mpsc` on `target_has_atomic = "32"`.
-//! - A complete program in two threads, pool to release, is `examples/`'s [guide_mpsc_v3.rs], v3's,
-//!   which differs from a v4 program in its `mpsc::v3` paths alone.
-//!
-//! [guide_mpsc_v3.rs]: https://github.com/winksaville/zc-ring-x1/blob/main/examples/guide_mpsc_v3.rs
 
 use core::marker::PhantomData;
 use core::mem::size_of;
@@ -107,7 +152,7 @@ const LAYOUT_VERSION: u32 = 1;
 /// A table entry naming no segment.
 const NO_SEGMENT: u32 = u32::MAX;
 
-/// Set in the roles word once the ring is released: no role can be claimed.
+/// Set in the roles word once the ring is released: no role can be taken.
 const CLOSED: u32 = 1 << 31;
 
 /// Set in the roles word while the consumer role is held.
@@ -194,9 +239,10 @@ struct Info {
 /// The claims line of segment 0: who holds the roles, and the consumer's checkpoint.
 ///
 /// - The roles word is [`CLOSED`], [`CONSUMER`], and the count of producers held under
-///   [`PRODUCERS`], so a claim, a release, and the ring's release are each one CAS on one word.
+///   [`PRODUCERS`], so taking a role, releasing one, and the ring's release are each one CAS on one
+///   word.
 /// - The consumer's segment and position, with each segment's resume position in its info line, are
-///   what the consumer's `release` leaves for the next claim.
+///   what the consumer's `release` leaves for the next consumer.
 /// - The producers' waiting count and wake sequence, read by the consumer every half segment of
 ///   releases when its [`Wake`] wakes, and written by a producer about to sleep.
 /// - Nothing else on the message path reads or writes the line.
@@ -405,7 +451,7 @@ impl Segments {
         })
     }
 
-    /// Write the consumer's state for the next claim, ahead of the release of its role.
+    /// Write the consumer's state for the next consumer, ahead of the release of its role.
     fn store_consumer(&self, cp: &Checkpoint) {
         for seg in 0..self.seg_count {
             self.header(seg)
@@ -445,7 +491,7 @@ impl Segments {
     }
 }
 
-/// The consumer's state, what its `release` leaves and a claim loads.
+/// The consumer's state, what its `release` leaves and the next consumer loads.
 pub(crate) struct Checkpoint {
     /// The segment being read.
     pub(crate) cur: u32,
@@ -455,9 +501,9 @@ pub(crate) struct Checkpoint {
     pub(crate) resume: [u32; MAX_SEGMENTS as usize],
 }
 
-/// A ring of segments over the application's pool, its roles claimed with
-/// [`MpscRing::claim_producer`] and [`MpscRing::claim_consumer`], its segments handled as mode `M`
-/// has them, [`Multi`] by default, and its waits slept by `W`, [`NoWake`] by default.
+/// A ring of segments over the application's pool, its roles taken with [`MpscRing::producer`] and
+/// [`MpscRing::consumer`], its segments handled as mode `M` has them, [`Multi`] by default, and its
+/// waits slept by `W`, [`NoWake`] by default.
 pub struct MpscRing<'a, M: Mode = Multi, W: Wake = NoWake> {
     /// Geometry and segment addresses.
     segs: Segments,
@@ -669,17 +715,17 @@ impl<'a, M: Mode, W: Wake> MpscRing<'a, M, W> {
     /// or attached over.
     ///
     /// - Only when no role is held: one CAS on the roles word from no role held to closed, so no
-    ///   claim can land in the ring while it is released. A role held is [`Error::RingInUse`], and
-    ///   a ring already released is [`Error::RingClosed`]. On either the ring is unchanged, and
+    ///   role can be taken while the ring is released. A role held is [`Error::RingInUse`], and a
+    ///   ring already released is [`Error::RingClosed`]. On either the ring is unchanged, and
     ///   [`attach`](MpscRing::attach) gives a handle back.
     /// - Every segment's magic is cleared before its buffer is freed, so a later `attach` is
     ///   [`Error::BadMagic`].
     /// - Anyone holding the ring may call it, in any process, since any process may free to a pool.
     ///   When is the creator's call.
     /// - A `pool` over another region is [`Error::BadSegment`], with the ring left as it was.
-    /// - Other handles to the ring, in this process or another, must not be used after: a claim
-    ///   through one reads a closed ring until the pool hands its segments out again, and then
-    ///   whatever they hold.
+    /// - Other handles to the ring, in this process or another, must not be used after: a role
+    ///   taken through one reads a closed ring until the pool hands its segments out again, and
+    ///   then whatever they hold.
     pub fn release_ring(self, pool: &Pool<'a>) -> Result<(), Error> {
         let segs = &self.segs;
         let buf_size = pool.buf_size() as usize;
@@ -721,15 +767,15 @@ impl<'a, M: Mode, W: Wake> MpscRing<'a, M, W> {
         Ok(())
     }
 
-    /// Claim a producer role.
+    /// `producer` takes a producer role and returns its endpoint, an [`MpscProducer`].
     ///
     /// - One CAS on the roles word counts the producer in, so any number up to the ring's most may
     ///   hold one at once, in this process and others. At the most it is [`Error::RoleTaken`], and
     ///   on a released ring [`Error::RingClosed`].
-    /// - A producer keeps no state of its own, each send claiming its slot on the shared claim
+    /// - A producer keeps no state of its own, each send taking its slot on the ring's shared claim
     ///   word, so producers come and go freely.
     /// - The role stays held until [`MpscProducer::release`]: dropping the endpoint writes nothing.
-    pub fn claim_producer(&self) -> Result<MpscProducer<'a, M, W>, Error> {
+    pub fn producer(&self) -> Result<MpscProducer<'a, M, W>, Error> {
         let roles = self.segs.roles();
         let max = self
             .segs
@@ -753,7 +799,7 @@ impl<'a, M: Mode, W: Wake> MpscRing<'a, M, W> {
         }
     }
 
-    /// Claim the consumer role.
+    /// `consumer` takes the consumer role and returns its endpoint, an [`MpscConsumer`].
     ///
     /// - One CAS on the roles word, so the role held anywhere is [`Error::RoleTaken`], and on a
     ///   released ring [`Error::RingClosed`].
@@ -763,7 +809,7 @@ impl<'a, M: Mode, W: Wake> MpscRing<'a, M, W> {
     /// - A checkpoint that names no segment of the ring is [`Error::BadCheckpoint`], with the role
     ///   left free.
     /// - The role stays held until [`MpscConsumer::release`]: dropping the endpoint writes nothing.
-    pub fn claim_consumer(&self) -> Result<MpscConsumer<'a, M, W>, Error> {
+    pub fn consumer(&self) -> Result<MpscConsumer<'a, M, W>, Error> {
         let roles = self.segs.roles();
         let mut r = roles.load(Ordering::Acquire);
         loop {
@@ -857,10 +903,7 @@ mod tests {
     fn endpoints<'a, M: Mode, W: Wake>(
         ring: &MpscRing<'a, M, W>,
     ) -> (MpscProducer<'a, M, W>, MpscConsumer<'a, M, W>) {
-        (
-            ring.claim_producer().unwrap(),
-            ring.claim_consumer().unwrap(),
-        )
+        (ring.producer().unwrap(), ring.consumer().unwrap())
     }
 
     /// `struct SleepThen` is a policy that sleeps through [`Waiter`] at each full or empty look,
@@ -1034,9 +1077,9 @@ mod tests {
         assert_eq!(ring_2.segs.headers, ring_1.segs.headers);
         // The producer from one handle, the consumer from the other, and the roles are one word for
         // both.
-        let prod = ring_1.claim_producer().unwrap();
-        let mut cons = ring_2.claim_consumer().unwrap();
-        assert_eq!(ring_1.claim_consumer().err(), Some(Error::RoleTaken));
+        let prod = ring_1.producer().unwrap();
+        let mut cons = ring_2.consumer().unwrap();
+        assert_eq!(ring_1.consumer().err(), Some(Error::RoleTaken));
         let mut next = 0u64;
         for burst in [3u64, 9, 12, 5, 12, 12, 7] {
             send(&prod, next, next + burst);
@@ -1168,26 +1211,26 @@ mod tests {
         assert_eq!(roles(&ring), 0);
 
         // Producers up to the most, then RoleTaken, and a release makes room.
-        let p1 = ring.claim_producer().unwrap();
-        let p2 = ring.claim_producer().unwrap();
+        let p1 = ring.producer().unwrap();
+        let p2 = ring.producer().unwrap();
         assert_eq!(roles(&ring), 2);
-        assert_eq!(ring.claim_producer().err(), Some(Error::RoleTaken));
+        assert_eq!(ring.producer().err(), Some(Error::RoleTaken));
         p1.release();
         assert_eq!(roles(&ring), 1);
-        let p3 = ring.claim_producer().unwrap();
+        let p3 = ring.producer().unwrap();
 
         // One consumer, and it may come and go.
-        let cons = ring.claim_consumer().unwrap();
+        let cons = ring.consumer().unwrap();
         assert_eq!(roles(&ring), CONSUMER | 2);
-        assert_eq!(ring.claim_consumer().err(), Some(Error::RoleTaken));
+        assert_eq!(ring.consumer().err(), Some(Error::RoleTaken));
         cons.release();
-        let cons = ring.claim_consumer().unwrap();
+        let cons = ring.consumer().unwrap();
 
         // Dropping an endpoint writes nothing: its role stays held.
         drop(p2);
         assert_eq!(roles(&ring), CONSUMER | 2);
         drop(cons);
-        assert_eq!(ring.claim_consumer().err(), Some(Error::RoleTaken));
+        assert_eq!(ring.consumer().err(), Some(Error::RoleTaken));
         p3.release();
         assert_eq!(roles(&ring), CONSUMER | 1);
     }
@@ -1216,20 +1259,20 @@ mod tests {
             .enumerate()
         {
             let ring = &rings[round % 2];
-            let prod = ring.claim_producer().unwrap();
+            let prod = ring.producer().unwrap();
             send(&prod, sent, sent + burst);
             sent += burst;
             prod.release();
-            let mut cons = rings[(round + 1) % 2].claim_consumer().unwrap();
+            let mut cons = rings[(round + 1) % 2].consumer().unwrap();
             recv(&mut cons, read, read + take);
             read += take;
             cons.release();
         }
         assert_eq!(read, sent);
-        let mut cons = rings[0].claim_consumer().unwrap();
+        let mut cons = rings[0].consumer().unwrap();
         assert_eq!(cons.recv::<Msg, ()>(|_| false, |_| ()).err(), Some(Empty));
         // Every segment but the current one is back.
-        let probe = rings[1].claim_producer().unwrap();
+        let probe = rings[1].producer().unwrap();
         assert_eq!(free_segments(&rings[1]).count_ones(), 2);
         assert!(probe.switches() > 3);
         assert_eq!(probe.segment(), cons.segment());
@@ -1241,11 +1284,11 @@ mod tests {
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
         let ring = MpscRing::<Multi>::init(&mut pool, 64, 4, 2).unwrap();
         ring.segs.claims().cons_cur.store(2, Ordering::Relaxed);
-        assert_eq!(ring.claim_consumer().err(), Some(Error::BadCheckpoint));
+        assert_eq!(ring.consumer().err(), Some(Error::BadCheckpoint));
         // The role is left free.
         assert_eq!(ring.segs.roles().load(Ordering::Relaxed), 0);
         ring.segs.claims().cons_cur.store(1, Ordering::Relaxed);
-        assert!(ring.claim_consumer().is_ok());
+        assert!(ring.consumer().is_ok());
     }
 
     #[test]
@@ -1264,14 +1307,14 @@ mod tests {
 
         // A producer or the consumer held: in use, and the ring is unchanged.
         let other = attach(&b2).unwrap();
-        let prod = other.claim_producer().unwrap();
+        let prod = other.producer().unwrap();
         assert_eq!(
             attach(&b1).unwrap().release_ring(&b1).err(),
             Some(Error::RingInUse)
         );
         send(&prod, 0, 5);
         prod.release();
-        let mut cons = other.claim_consumer().unwrap();
+        let mut cons = other.consumer().unwrap();
         assert_eq!(
             attach(&b1).unwrap().release_ring(&b1).err(),
             Some(Error::RingInUse)
@@ -1293,8 +1336,8 @@ mod tests {
         // are the pool's again.
         attach(&b1).unwrap().release_ring(&b1).unwrap();
         assert_eq!(attach(&b1).err(), Some(Error::BadMagic));
-        assert_eq!(other.claim_producer().err(), Some(Error::RingClosed));
-        assert_eq!(other.claim_consumer().err(), Some(Error::RingClosed));
+        assert_eq!(other.producer().err(), Some(Error::RingClosed));
+        assert_eq!(other.consumer().err(), Some(Error::RingClosed));
         // SAFETY: the region is live, and this is the only handle allocating from it.
         let mut owner = unsafe { Pool::attach(base, len) }.unwrap();
         let all: Vec<_> = (0..BUFS).map(|_| owner.alloc_bytes().unwrap()).collect();
@@ -1398,10 +1441,8 @@ mod tests {
                 let mut r = Region::new();
                 let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
                 let ring = MpscRing::<Single>::init(&mut pool, 64, depth, 1).unwrap();
-                let mut cons = ring.claim_consumer().unwrap();
-                let prods = (0..producers)
-                    .map(|_| ring.claim_producer().unwrap())
-                    .collect();
+                let mut cons = ring.consumer().unwrap();
+                let prods = (0..producers).map(|_| ring.producer().unwrap()).collect();
                 stream_threads(prods, &mut cons, total);
                 assert_eq!(cons.switches(), 0);
             }
@@ -1452,10 +1493,8 @@ mod tests {
                 let mut r = Region::new();
                 let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
                 let ring = MpscRing::<Single, NoWake>::init(&mut pool, 64, depth, 1).unwrap();
-                let mut cons = ring.claim_consumer().unwrap();
-                let prods = (0..producers)
-                    .map(|_| ring.claim_producer().unwrap())
-                    .collect();
+                let mut cons = ring.consumer().unwrap();
+                let prods = (0..producers).map(|_| ring.producer().unwrap()).collect();
                 stream_waiting(prods, &mut cons, total);
                 #[cfg(target_os = "linux")]
                 {
@@ -1463,16 +1502,12 @@ mod tests {
                     let mut r = Region::new();
                     let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
                     let ring = MpscRing::<Single, Futex<5>>::init(&mut pool, 64, depth, 1).unwrap();
-                    let mut cons = ring.claim_consumer().unwrap();
-                    let prods = (0..producers)
-                        .map(|_| ring.claim_producer().unwrap())
-                        .collect();
+                    let mut cons = ring.consumer().unwrap();
+                    let prods = (0..producers).map(|_| ring.producer().unwrap()).collect();
                     stream_waiting(prods, &mut cons, total);
                     let ring = MpscRing::<Multi, Futex<5>>::init(&mut pool, 64, depth, 3).unwrap();
-                    let mut cons = ring.claim_consumer().unwrap();
-                    let prods = (0..producers)
-                        .map(|_| ring.claim_producer().unwrap())
-                        .collect();
+                    let mut cons = ring.consumer().unwrap();
+                    let prods = (0..producers).map(|_| ring.producer().unwrap()).collect();
                     stream_waiting(prods, &mut cons, total);
                     // Every sleeper woke and cleared its trace.
                     assert_eq!(ring.segs.claim().load(Ordering::Relaxed) & WAITING, 0);
@@ -1912,8 +1947,8 @@ mod tests {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
         let ring = MpscRing::<Multi>::init(&mut pool, 64, 4, 2).unwrap();
-        let mut cons = ring.claim_consumer().unwrap();
-        let prods: Vec<_> = (0..4).map(|_| ring.claim_producer().unwrap()).collect();
+        let mut cons = ring.consumer().unwrap();
+        let prods: Vec<_> = (0..4).map(|_| ring.producer().unwrap()).collect();
         let first_losses = std::sync::atomic::AtomicU64::new(0);
         let first_losses = &first_losses;
         std::thread::scope(|s| {
@@ -2226,11 +2261,9 @@ mod tests {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
         let ring = MpscRing::<Multi>::init(&mut pool, 64, cap, seg_count).unwrap();
-        let mut cons = ring.claim_consumer().unwrap();
-        let prods: Vec<_> = (0..producers)
-            .map(|_| ring.claim_producer().unwrap())
-            .collect();
-        let probe = ring.claim_producer().unwrap();
+        let mut cons = ring.consumer().unwrap();
+        let prods: Vec<_> = (0..producers).map(|_| ring.producer().unwrap()).collect();
+        let probe = ring.producer().unwrap();
         stream_threads(prods, &mut cons, count);
         // Every seal was consumed once, and every segment but the current one is back.
         assert_eq!(cons.switches(), probe.switches());
@@ -2372,12 +2405,10 @@ mod tests {
             for &depth in &depths {
                 for &producers in &producers {
                     with_ring(count, depth, |ring| {
-                        let mut cons = ring.claim_consumer().unwrap();
-                        let prods = (0..producers)
-                            .map(|_| ring.claim_producer().unwrap())
-                            .collect();
+                        let mut cons = ring.consumer().unwrap();
+                        let prods = (0..producers).map(|_| ring.producer().unwrap()).collect();
                         stream_threads(prods, &mut cons, total);
-                        let probe = ring.claim_producer().unwrap();
+                        let probe = ring.producer().unwrap();
                         assert_eq!(
                             cons.switches(),
                             probe.switches(),

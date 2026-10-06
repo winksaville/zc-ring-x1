@@ -79,7 +79,7 @@ reference to measure against.
 - [feat: mpsc v4 opening][1] (done)
 - [feat: mpsc v4 as a copy of mpsc v3][2] (done)
 - [feat: mpsc v4 consumer policy][3] (done)
-- [feat: mpsc v4 plain names][8]
+- [feat: mpsc v4 plain names][8] (done)
 - [feat: mpsc v4 waiters say their cost][9]
 - [feat: mpsc v4 refuses a wake mismatch][10]
 - [feat: mpsc v4 in the tools][4]
@@ -205,6 +205,29 @@ spin and spin-then-sleep written for it, named by the symmetry rule.
 "Claim" names three things in v4's API and docs, and a newcomer cannot tell which. Rename the role
 methods to `ring.producer()` and `ring.consumer()`, and write the public docs in a small set of
 words, each with one meaning, listed at the top of the module.
+
+- A role is taken with `ring.producer()` or `ring.consumer()`, v3's `claim_producer` and
+  `claim_consumer`, and given back with `release`, which is now the one thing `release` means on an
+  endpoint.
+- The module docs open with what the ring is for, then a list of twelve words, ring, message, id,
+  slot, segment, producer, consumer, role, send, receive, policy, and wake, then four steps of use,
+  then what v4 changes from v3, and only then the ring's inside.
+- A slot is not where a message is, the user's correction of 2026-10-06 at this rung's review: in
+  the typical use the message is in a pool buffer and the slot holds its id, a `Desc`, so the
+  message is never copied. A message that fits a slot may be the slot's value itself, the lesser
+  case.
+  - The user's general form of an id is `<url>-<pool>-<offset>`, a machine, a pool on it, and a
+    place in the pool, zero-copy wherever the two sides' `<url>` is the same. `Desc` holds the pool
+    and the buffer, with no machine part.
+  - The closures keep their names, `write_msg` and `read_msg`, though what they write and read is
+    the slot's value, an id in the typical use.
+- In the public docs a role is taken, a send takes a slot, and a slot between its taking and its
+  commit is being written. "Claim" stays in one place, the claim word, the source's name for the
+  ring's word that says where the next send goes, defined where the inside of the ring is
+  described.
+- Not renamed: the source's own names, `claim()`, the claim CAS in comments, and the test names,
+  which a user of the API does not read.
+- `reflow.py` ran over v4's four files after the rewording.
 
 ##### feat: mpsc v4 waiters say their cost
 

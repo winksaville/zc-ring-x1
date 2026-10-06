@@ -1,7 +1,7 @@
-//! MPSC v4 consuming endpoint: [`MpscConsumer`] receives the oldest message of its current
-//! segment, read in place by a closure, v1's loop, and follows the seal to the next segment when
-//! the current one has ended, giving the old one back. The handle is the consumer role, given back
-//! with its state by `release`.
+//! MPSC v4 consuming endpoint: [`MpscConsumer`] receives the oldest message of its current segment,
+//! read in place by a closure, v1's loop, and follows the seal to the next segment when the current
+//! one has ended, giving the old one back. The handle is the consumer role, given back with its
+//! state by `release`.
 
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
@@ -35,14 +35,14 @@ struct ConsumerState {
 }
 
 /// `struct MpscConsumer` is the consuming handle, the ring's one consumer role: a consuming thread
-/// or process claims it with [`MpscRing::claim_consumer`](super::MpscRing::claim_consumer), then
-/// receives with [`recv`](MpscConsumer::recv), [`recv_spin`](MpscConsumer::recv_spin), or
+/// or process takes it with [`MpscRing::consumer`](super::MpscRing::consumer), then receives with
+/// [`recv`](MpscConsumer::recv), [`recv_spin`](MpscConsumer::recv_spin), or
 /// [`recv_spin_sleep`](MpscConsumer::recv_spin_sleep).
 ///
 /// - The receives take `&mut self`: a ring has one consumer, and one message is read at a time.
 /// - [`release`](MpscConsumer::release) gives the role back with the consumer's state, so the next
-///   claim continues where this one stopped. Dropping the handle writes nothing, so the role stays
-///   held.
+///   consumer continues where this one stopped. Dropping the handle writes nothing, so the role
+///   stays held.
 pub struct MpscConsumer<'a, M: Mode = Multi, W: Wake = NoWake> {
     /// Private state.
     st: ConsumerState,
@@ -71,7 +71,7 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
     /// Give the consumer role back, with its state.
     ///
     /// - Writes the segment, the position, and each segment's resume position into the control
-    ///   block, then clears the role, so the next claim, in any process, continues exactly here.
+    ///   block, then clears the role, so the next consumer, in any process, continues exactly here.
     pub fn release(self) {
         let st = &self.st;
         st.segs.store_consumer(&Checkpoint {
@@ -84,8 +84,8 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
         st.segs.roles().fetch_and(!CONSUMER, Ordering::Release);
     }
 
-    /// Segment switches this consumer has made: how many seals it has followed since its claim.
-    /// Once it has read everything sent, a consumer claimed on a new ring equals the producers'
+    /// Segment switches this consumer has made: how many seals it has followed since it took the
+    /// role. Once it has read everything sent, the first consumer of a ring equals the producers'
     /// count.
     pub fn switches(&self) -> u64 {
         self.st.switches
@@ -97,8 +97,8 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
     }
 
     /// `recv_spin` is [`recv`](MpscConsumer::recv) with a policy that spins while the ring is
-    /// empty, for up to `give_up`, then returns `Err(Empty)`. The time starts when `recv_spin` first
-    /// finds the ring empty, so a receive that finds a message never reads the clock.
+    /// empty, for up to `give_up`, then returns `Err(Empty)`. The time starts when `recv_spin`
+    /// first finds the ring empty, so a receive that finds a message never reads the clock.
     ///
     /// `recv_spin` is available on Linux, and on other targets with the `std` feature, which
     /// provides its clock.
@@ -106,8 +106,8 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
     /// # Parameters
     ///
     /// - `self`: this consumer, by mutable reference.
-    /// - `give_up`: how long to spin while the ring is empty. [`Ticks::ZERO`] makes one attempt, and
-    ///   [`Ticks::FOREVER`] never gives up. The caller makes `give_up` once, with
+    /// - `give_up`: how long to spin while the ring is empty. [`Ticks::ZERO`] makes one attempt,
+    ///   and [`Ticks::FOREVER`] never gives up. The caller makes `give_up` once, with
     ///   [`microsecs_to_ticks`](crate::microsecs_to_ticks) or
     ///   [`nanos_to_ticks`](crate::nanos_to_ticks), not once per receive.
     /// - `read_msg`: the closure that reads the message, as [`recv`](MpscConsumer::recv)'s.
