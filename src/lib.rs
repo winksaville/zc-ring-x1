@@ -215,16 +215,16 @@ pub enum Error {
     /// ring does not have, or a takeover's scan finds seq words
     /// the ring could not have written.
     BadCheckpoint,
-    /// MPSC v3: a claim on a ring its release has closed, or a
+    /// MPSC v3 and v4: a claim on a ring its release has closed, or a
     /// second release of it.
     RingClosed,
-    /// MPSC v3: a release of a ring whose roles are not all given
+    /// MPSC v3 and v4: a release of a ring whose roles are not all given
     /// back.
     RingInUse,
-    /// MPSC v3: a ring's most producers is `0`, which no producer
+    /// MPSC v3 and v4: a ring's most producers is `0`, which no producer
     /// could claim under.
     BadMaxProducers,
-    /// MPSC v3, attach: the ring was built for the other segment
+    /// MPSC v3 and v4, attach: the ring was built for the other segment
     /// mode, `Single` or `Multi`.
     BadMode,
     /// MPSC v4, attach: the ring was built over another wake protocol, so its sleepers are woken

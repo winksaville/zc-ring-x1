@@ -16,7 +16,9 @@
 //!   happens. v3 is v2 attachable from another process, with
 //!   counted roles (the design doc's "MPSC v3: attachable
 //!   segments with counted roles"), reached by path. v4
-//!   starts as a copy of v3, reached by path.
+//!   is v3 with a consumer that receives as a producer
+//!   sends, a choice of how its endpoints wait, and plain
+//!   names, reached by path.
 
 pub mod v0;
 pub mod v1;

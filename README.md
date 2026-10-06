@@ -132,6 +132,7 @@ claim word and filling it through a closure:
 | `mpsc::v1`, the crate's `MpscRing` | v0 with seq values that also work at depth 1 | one region | `attach` |
 | `mpsc::v2` | v1's claim over a ring of segments, the claim word doubling as the seal | segments | no |
 | `mpsc::v3` | v2 with a control block, counted roles, the ring's release, compile-time modes, and waiting | segments | `attach` and role claims |
+| `mpsc::v4` | v3 with a consumer that receives as a producer sends, a choice of how the endpoints wait, and plain names | segments | `attach` and roles |
 
 `mpsc::v3` in more detail, the one ring that takes type parameters, `MpscRing<'a, M, W>`:
 
@@ -423,6 +424,40 @@ guide's [MPSC v3](notes/user-guide.md#mpsc-v3-joining-counted-roles-and-waiting)
   3. `zcr-test-ipm mpsc-consumer join 20000`, once the first has exited, reads the rest, each
      producer's stream continuing where the first consumer stopped.
   4. `zcr-test-ipm mpsc-release` releases the ring once every role is given back.
+
+## MPSC v4: v3 with matching sends and receives
+
+`mpsc::v4` is `mpsc::v3` with an API made to be plain for someone new to it. v3 stays as built, to
+measure against. The module docs open with a list of words and the steps of use, and the how-to is
+the guide's [MPSC v4](notes/user-guide.md#mpsc-v4-matching-sends-and-receives-and-a-choice-of-waits).
+
+- The consumer receives as a producer sends: `recv(policy, |msg| ...)` reads the slot in place by a
+  closure and frees it when the closure returns, beside `send(policy, |msg| ...)`. There is no
+  handle to release.
+- The timed forms match by name and by parameter: `send_spin` and `recv_spin` spin for a time, and
+  `send_spin_sleep` and `recv_spin_sleep` spin for a time and then sleep for a time or forever. One
+  `WaitPolicy` serves both sides.
+- A ring is made with two choices, its mode and how its endpoints wait, and reads as one of six:
+
+  ```text
+  MpscRing<Multi, SpinOnly>               MpscRing<Single, SpinOnly>
+  MpscRing<Multi, Sleep<Futex>>           MpscRing<Single, Sleep<Futex>>
+  MpscRing<Multi, SpinOrSleep<Futex>>     MpscRing<Single, SpinOrSleep<Futex>>
+  ```
+
+  - `SpinOnly` offers the spin forms, `Sleep<Futex>` the spin and sleep forms, and
+    `SpinOrSleep<Futex>` both, for a ring where some endpoints only spin while others sleep.
+  - A ring that sleeps costs every endpoint a check for sleepers on each message path. The module
+    docs say what the checks are and what they have cost where measured.
+- A role is taken with `ring.producer()` or `ring.consumer()` and given back with `release`.
+- An `attach` over another wake protocol is `Error::BadWake`, so two processes cannot wake one ring
+  two ways.
+- A complete program: [examples/guide_mpsc_v4.rs](examples/guide_mpsc_v4.rs) is the typical
+  zero-copy use in two threads. Each message is written into a buffer of a message pool, the ring
+  carries the buffer's id, and the consumer reads the message where the producer wrote it. Run it
+  with `cargo run --release --example guide_mpsc_v4`.
+- Measured against v3 in the design note's [MPSC v4
+  measured](notes/ring-buffer-design.md#mpsc-v4-measured): v4 runs as v3 does.
 
 ## Workspace and tools
 

@@ -86,7 +86,7 @@ reference to measure against.
 - [feat: mpsc v4 refuses a wake mismatch][10] (done)
 - [feat: mpsc v4 in the tools][4] (done)
 - [docs: mpsc v4 consumer waits measured][5] (done)
-- [docs: mpsc v4 guide and example][6]
+- [docs: mpsc v4 guide and example][6] (done)
 - [feat: mpsc v4 closing][7]
 
 #### Deliberation
@@ -435,6 +435,32 @@ v3 flavor under one named build profile, and put the rows in the design note.
 
 The user guide, README.md, and `examples/` teach v3 only. Add v4's section and one complete program,
 `examples/guide_mpsc_v4.rs`.
+
+- The example is the typical zero-copy use the user described on 2026-10-06, not v3's example
+  ported: two pools, one for the ring's segments and one for the messages, a `PoolRegistry`, the
+  producer writing each message into a message buffer and sending the buffer's id, a `Desc`, and
+  the consumer receiving the id, reading the message where it was written, and freeing the buffer.
+  - It is a ring over `Multi` and `Sleep<Futex>`, each side spinning 20 microseconds and then
+    sleeping, with a comment at the ring saying what `Single` and `SpinOnly` would be in their
+    places. Linux only, as v3's example is.
+  - It prints `mpsc v4: 100000 messages by id, never copied, 2 segments of 8, 110 switches, roles
+    and ring released`, the switch count varying by run.
+  - v3's example sends the message itself in the slot, the lesser case, and is left as it is.
+- README.md gains a row for `mpsc::v4` in its table of MPSC versions and a section after v3's: the
+  matching sends and receives, the six ring types, the roles, `BadWake`, the example, and the
+  measurements.
+- The user guide gains a section after v3's, with a fragment that sends and receives an id, what a
+  slot holds, the two type parameters, what each wait offers and costs, the general and the timed
+  forms, ticks, roles, joining from another process, and what a panic leaves. Its intro names v4,
+  and its table of errors gains v4's rows.
+- The v4 module docs point at v4's example, where they pointed at v3's.
+- Paid from the copy rung: `Error`'s docs say "MPSC v3 and v4" where they said v3, and
+  `policy::backoff`'s name v4's `WaitPolicy` beside v3's `SendPolicy`.
+- Not done, for the close-out or the user: `notes/README.md`, which the close-out updates when
+  functionality changed. README.md's "which ring to use" lines still recommend `mpsc::v3` and do
+  not weigh v4, a recommendation the agent did not make under the waiver. `Ticks`'s docs in
+  `lib.rs` still name a send's `give_up`, `spin`, and `wait`, words from before the timed sends
+  were renamed.
 
 ##### feat: mpsc v4 closing
 

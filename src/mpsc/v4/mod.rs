@@ -44,10 +44,11 @@
 //!    ...)`, or their `_spin` and `_spin_sleep` forms.
 //! 4. Give each role back with `release`, then the ring with `release_ring`.
 //!
-//! A complete program in two threads, pool to release, is `examples/`'s [guide_mpsc_v3.rs], v3's,
-//! which differs from a v4 program in its `mpsc::v3` paths, its role methods, and its receive.
+//! A complete program in two threads, pool to release, is `examples/`'s [guide_mpsc_v4.rs]: the
+//! typical zero-copy use, where each message is written into a buffer of a message pool and the
+//! ring carries the buffer's id.
 //!
-//! [guide_mpsc_v3.rs]: https://github.com/winksaville/zc-ring-x1/blob/main/examples/guide_mpsc_v3.rs
+//! [guide_mpsc_v4.rs]: https://github.com/winksaville/zc-ring-x1/blob/main/examples/guide_mpsc_v4.rs
 //!
 //! # Waits
 //!

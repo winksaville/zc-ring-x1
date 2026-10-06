@@ -30,7 +30,9 @@ Both are `no_std`, allocate nothing after `init`, and are in-process only: neith
 is SPSC v3 with an `attach`, for a ring shared between processes, in [Joining from another
 process](#joining-from-another-process) below, and **MPSC v3**, `zc_ring_x1::mpsc::v3`, is MPSC v2
 with an `attach`, counted roles, and waiting, in [MPSC v3: joining, counted roles, and
-waiting](#mpsc-v3-joining-counted-roles-and-waiting). The single-region rings, `spsc::v0` to `v2` and
+waiting](#mpsc-v3-joining-counted-roles-and-waiting). **MPSC v4**, `zc_ring_x1::mpsc::v4`, is MPSC v3
+with a consumer that receives as a producer sends, in [MPSC v4: matching sends and receives, and a
+choice of waits](#mpsc-v4-matching-sends-and-receives-and-a-choice-of-waits). The single-region rings, `spsc::v0` to `v2` and
 `mpsc::v0` and `v1`, keep `attach` as well and are outside this guide.
 
 ## The message type
@@ -365,6 +367,81 @@ let msg = consumer.reserve_slot_wait::<Msg>(|attempt| attempt < 100)?;
   set the ring belongs to. `zcr-test-ipm`'s MPSC mode and `tests/ipm.rs` show roles coming and
   going between processes.
 
+## MPSC v4: matching sends and receives, and a choice of waits
+
+`mpsc::v4::MpscRing` is MPSC v3 with an API made to be plain: the consumer receives as a producer
+sends, the timed forms have the same names and parameters on both sides, and the ring is made with
+a choice of how its endpoints wait. v3 stays as built. The module docs list the words they use and
+the steps of use, and a complete program in two threads, the typical zero-copy use, is
+[examples/guide_mpsc_v4.rs](../examples/guide_mpsc_v4.rs). The fragment below is the heart of it.
+
+```rust
+use zc_ring_x1::mpsc::v4::{MpscRing, Multi};
+use zc_ring_x1::wake::{Futex, Sleep};
+use zc_ring_x1::{Desc, Ticks, microsecs_to_ticks, millis_to_ticks};
+
+// The mode and how the endpoints wait are named where the ring is made.
+let ring = MpscRing::<Multi, Sleep<Futex>>::init(&mut ring_pool, SLOT, DEPTH, SEGMENTS)?;
+let producer = ring.producer()?;
+let mut consumer = ring.consumer()?;
+
+// Times are made once, not once per call.
+let spin_20us = microsecs_to_ticks(20);
+let sleep_50ms = millis_to_ticks(50);
+
+// Send an id: spin up to 20 us on a full ring, then sleep until the consumer frees a slot.
+producer.send_spin_sleep::<Desc>(spin_20us, Ticks::FOREVER, |slot| *slot = id)?;
+
+// Receive it: spin up to 20 us on an empty ring, then sleep up to 50 ms, then give up.
+let id = consumer.recv_spin_sleep::<Desc, _>(spin_20us, sleep_50ms, |slot| *slot)?;
+
+producer.release();
+consumer.release();
+```
+
+- What a slot holds: in the typical use the message is written into a buffer of a message pool and
+  the slot holds its id, a `Desc`, so the ring carries the id and the message is never copied. A
+  `PoolRegistry` turns a buffer into its id and an id back into the buffer, as the example program
+  does. A message small enough to fit a slot may be the slot's value itself.
+- Two type parameters, named where the ring is made:
+  - The mode, `Multi` for up to 32 segments or `Single` for one, as v3's.
+  - The wait, how the ring's endpoints wait: `SpinOnly`, the default, `Sleep<Futex>`, or
+    `SpinOrSleep<Futex>`, each with either mode, six rings in all. A bare `Futex` is what a
+    sleeper sleeps on and is not a choice, so `MpscRing<Multi, Futex>` does not compile.
+- What each wait offers, the same on both sides:
+  - `SpinOnly`: `send_spin` and `recv_spin`. Nothing sleeps, so nothing checks for a sleeper.
+  - `Sleep<Futex>`: `send_spin_sleep` and `recv_spin_sleep`. An endpoint spins for some time,
+    which may be none, then sleeps for some further time or forever.
+  - `SpinOrSleep<Futex>`: all four, for a ring where some endpoints spin without end while others
+    sleep. The spinners pay for the checks that wake the sleepers.
+  - A method the ring's wait does not offer does not compile, so a sleep is never a spin under
+    another name.
+- The cost of a wait that sleeps: every endpoint checks for sleepers on each message path, whether
+  or not anyone sleeps. It has measured from nothing to about 28% of a message's time, by machine,
+  cores, depth, and build. The module docs say what the checks are, and it has to be measured
+  where it matters. Spinning over `SpinOnly` has been the quickest in most of what was measured, at
+  the price of a core kept busy by each endpoint that waits.
+- Sending and receiving:
+  - `send(policy, write_msg)` and `recv(policy, read_msg)` are the general forms, on any ring. The
+    policy is a `WaitPolicy`, asked at each full or empty look whether to look again, a closure
+    `|attempt| ...` being one, so `|_| false` makes one attempt.
+  - `recv` calls `read_msg` with a reference to the slot's value, frees the slot when it returns,
+    and returns what it returned. The reference is good only inside the closure, so the closure
+    copies out what the caller keeps, an id in the typical use.
+  - A `send` gives up with `Err(Full)` and a `recv` with `Err(Empty)`.
+- Times are `Ticks`, made once with `secs_to_ticks`, `millis_to_ticks`, `microsecs_to_ticks`, or
+  `nanos_to_ticks`, or `Ticks::ZERO` and `Ticks::FOREVER`. A tick is the clock's own unit and not
+  one to rely on, a nanosecond today.
+- Roles: `ring.producer()` and `ring.consumer()` take one, and `release()` gives it back, counted
+  as v3's. Dropping an endpoint writes nothing and keeps its role held.
+- Joining from another process is v3's: `first_segment()` and `attach`. An `attach` in the other
+  mode is `Error::BadMode`, and over another wake protocol `Error::BadWake`. `Sleep<Futex>` and
+  `SpinOrSleep<Futex>` are one protocol, and `SpinOnly` is another. A v3 ring and a v4 ring refuse
+  each other's `attach`.
+- As v3, there is no takeover and no unwind guard: a producer that dies, or whose closure panics,
+  while its slot is being written leaves that slot unfinished, and the consumer waits there. A
+  `recv` whose closure panics leaves its message in the slot, and the next `recv` reads it again.
+
 ## Errors and panics
 
 | Where | What | Meaning |
@@ -383,6 +460,8 @@ let msg = consumer.reserve_slot_wait::<Msg>(|attempt| attempt < 100)?;
 | `mpsc::v3::MpscRing::attach` | `Error::BadMode`, and v4's attach errors | the ring was built for the other mode, or as v4's |
 | `mpsc::v3::MpscRing::claim_*` | `Error::RoleTaken`, `RingClosed`, `BadCheckpoint` | the consumer is held or the producers are at the most, the ring is released, or the consumer's saved state names no segment |
 | `mpsc::v3::MpscRing::release_ring` | `Error::RingInUse`, `RingClosed`, `BadSegment` | a role is held, the ring is already released, or the pool is another region's |
+| `mpsc::v4::MpscRing` | v3's errors by the same calls, `producer` and `consumer` for `claim_*` | as v3's |
+| `mpsc::v4::MpscRing::attach` | `Error::BadWake` | the ring was built over another wake protocol |
 | producer reserve or send | `Full` | the policy gave up with every segment full |
 | consumer reserve | `Empty` | the policy gave up with nothing committed |
 | first reserve or send | panic | `T` larger than the slot body or aligned beyond 16 |
