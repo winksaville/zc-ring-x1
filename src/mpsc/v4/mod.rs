@@ -2,8 +2,13 @@
 //! process can attach to it, per the design doc's "MPSC v3: attachable segments with counted roles"
 //! section. v3 stays as built to measure against.
 //!
-//! - What v4 adds to v3 so far: nothing but its own magic, so a v3 ring and a v4 ring never attach
-//!   to each other.
+//! - What v4 adds to v3 so far:
+//!   - Its own magic, so a v3 ring and a v4 ring never attach to each other.
+//!   - The consumer receives as the producer sends: `recv` reads the message in place by a closure
+//!     and frees the slot when the closure returns, where v3's `reserve_slot_with` returned a
+//!     handle the caller released. `recv_spin` and `recv_spin_sleep` wait for a time, as
+//!     `send_spin` and `send_spin_sleep` do.
+//!   - One [`WaitPolicy`] serves both sides, in place of v3's `SendPolicy` and its `Room`.
 //! - What v3 added to v2: a control block at the front of segment 0 (magic, layout version,
 //!   geometry, the roles word, the consumer's checkpoint, and the table of every segment's pool
 //!   buffer index), [`MpscRing::attach`] from a pool, [`MpscRing::first_segment`], and the roles
@@ -33,10 +38,11 @@
 //! - A producer at a full segment takes a free one by setting its bit in the in-use word, moves the
 //!   claim word to it, and seals the old segment's header. The consumer reads the seal only when a
 //!   slot is not committed, so its fast path is v1's one load.
-//! - Waiting: a producer's `send` asks its `SendPolicy` what to do at a full ring, and the policy
-//!   may sleep through `Room`, as `send_spin_sleep` does, where `send_spin` only spins. The
-//!   consumer's `reserve_slot_wait` sleeps between attempts where `reserve_slot_with` spins or
-//!   gives up, and calls the same policy after each wake.
+//! - Waiting: a producer's `send` asks its [`WaitPolicy`] what to do at a full ring, and the
+//!   consumer's `recv` asks its policy what to do at an empty one. The policy may sleep through
+//!   [`Waiter`], as `send_spin_sleep` and `recv_spin_sleep` do, where `send_spin` and `recv_spin`
+//!   only spin. The two sides' waits have the same names after `send` and `recv`, and the same
+//!   parameters with the same meanings.
 //!   - The consumer sleeps on the claim word, whose bit 31 is its waiting flag. It sets the flag
 //!     and sleeps only while the word, flag aside, names its own segment and position, so no slot
 //!     is claimed past what it read. A producer's claim CAS returns the flag at no cost, and the
@@ -64,11 +70,13 @@ use crate::{CACHE_LINE_SIZE, CacheAligned, Error, Pool};
 
 mod consumer;
 mod producer;
+mod wait;
 
 pub use crate::spsc::v2::SLOT_HEADER_BYTES;
 pub use crate::spsc::v3::{MAX_SEG_CAPACITY, MAX_SEGMENTS, SEQ_BITS};
-pub use consumer::{MpscConsumer, MpscReadSlot};
-pub use producer::{MpscProducer, Room, SendPolicy};
+pub use consumer::MpscConsumer;
+pub use producer::MpscProducer;
+pub use wait::{WaitPolicy, Waiter};
 
 /// The position's bits within a word.
 const SEQ_MASK: u32 = (1 << SEQ_BITS) - 1;
@@ -829,15 +837,19 @@ mod tests {
     /// Receive `from..to` in order.
     fn recv<M: Mode, W: Wake>(cons: &mut MpscConsumer<'_, M, W>, from: u64, to: u64) {
         for i in from..to {
-            let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
-            assert_eq!(
-                *msg,
-                Msg {
-                    seq: i,
-                    val: i * 10
-                }
-            );
-            msg.release();
+            cons.recv::<Msg, ()>(
+                |_| false,
+                |msg| {
+                    assert_eq!(
+                        *msg,
+                        Msg {
+                            seq: i,
+                            val: i * 10
+                        }
+                    )
+                },
+            )
+            .unwrap();
         }
     }
 
@@ -851,13 +863,13 @@ mod tests {
         )
     }
 
-    /// `struct SleepThen` is a policy that sleeps through [`Room`] at each full look, then asks its
-    /// closure whether to look again.
+    /// `struct SleepThen` is a policy that sleeps through [`Waiter`] at each full or empty look,
+    /// then asks its closure whether to look again.
     struct SleepThen<F>(F);
 
-    impl<F: FnMut(u32) -> bool> SendPolicy for SleepThen<F> {
-        fn on_full(&mut self, attempt: u32, room: &Room<'_>) -> bool {
-            room.sleep();
+    impl<F: FnMut(u32) -> bool> WaitPolicy for SleepThen<F> {
+        fn on_wait(&mut self, attempt: u32, waiter: &Waiter<'_>) -> bool {
+            waiter.sleep();
             (self.0)(attempt)
         }
     }
@@ -866,8 +878,8 @@ mod tests {
     /// closure.
     struct LostThen<L>(L);
 
-    impl<L: FnMut(u32)> SendPolicy for LostThen<L> {
-        fn on_full(&mut self, attempt: u32, _room: &Room<'_>) -> bool {
+    impl<L: FnMut(u32)> WaitPolicy for LostThen<L> {
+        fn on_wait(&mut self, attempt: u32, _waiter: &Waiter<'_>) -> bool {
             crate::policy::spin(attempt)
         }
 
@@ -1215,7 +1227,7 @@ mod tests {
         }
         assert_eq!(read, sent);
         let mut cons = rings[0].claim_consumer().unwrap();
-        assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+        assert_eq!(cons.recv::<Msg, ()>(|_| false, |_| ()).err(), Some(Empty));
         // Every segment but the current one is back.
         let probe = rings[1].claim_producer().unwrap();
         assert_eq!(free_segments(&rings[1]).count_ones(), 2);
@@ -1334,7 +1346,7 @@ mod tests {
                 send(&prod, lap * cap, lap * cap + cap);
                 assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
                 recv(&mut cons, lap * cap, lap * cap + cap);
-                assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+                assert_eq!(cons.recv::<Msg, ()>(|_| false, |_| ()).err(), Some(Empty));
             }
             assert_eq!(prod.switches(), 0);
             assert_eq!(cons.switches(), 0);
@@ -1397,7 +1409,7 @@ mod tests {
     }
 
     /// Each producer on its own thread sending `count` messages with `send` and a [`SleepThen`]
-    /// policy, and the consumer reading with `reserve_slot_wait`, all waiting without end:
+    /// policy, and the consumer reading with `recv` and the same policy, all waiting without end:
     /// per-producer order holds and every message arrives.
     fn stream_waiting<M: Mode, W: Wake>(
         prods: Vec<MpscProducer<'_, M, W>>,
@@ -1420,11 +1432,11 @@ mod tests {
             s.spawn(move || {
                 let mut next = vec![0u64; producers];
                 for _ in 0..producers as u64 * count {
-                    let msg = cons.reserve_slot_wait::<Msg>(|_| true).unwrap(); // OK: a policy of |_| true never gives up
-                    let p = msg.val as usize;
-                    assert_eq!(msg.seq, next[p], "per-producer order broken");
+                    let (seq, p) = cons
+                        .recv::<Msg, _>(SleepThen(|_| true), |m| (m.seq, m.val as usize))
+                        .unwrap(); // OK: a policy of |_| true never gives up
+                    assert_eq!(seq, next[p], "per-producer order broken");
                     next[p] += 1;
-                    msg.release();
                 }
             });
         });
@@ -1491,14 +1503,16 @@ mod tests {
             let reader = s.spawn(move || {
                 let start = std::time::Instant::now();
                 let mut wakes = 0u32;
-                let msg = cons
-                    .reserve_slot_wait::<Msg>(|attempt| {
-                        wakes = attempt + 1;
-                        true
-                    })
+                let seq = cons
+                    .recv::<Msg, _>(
+                        SleepThen(|attempt| {
+                            wakes = attempt + 1;
+                            true
+                        }),
+                        |m| m.seq,
+                    )
                     .unwrap();
-                assert_eq!(msg.seq, 7);
-                msg.release();
+                assert_eq!(seq, 7);
                 (start.elapsed(), wakes)
             });
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1557,10 +1571,13 @@ mod tests {
         let (prod, mut cons) = endpoints(&ring);
         let mut seen = Vec::new();
         let err = cons
-            .reserve_slot_wait::<Msg>(|attempt| {
-                seen.push(attempt);
-                attempt < 2
-            })
+            .recv::<Msg, ()>(
+                SleepThen(|attempt| {
+                    seen.push(attempt);
+                    attempt < 2
+                }),
+                |_| (),
+            )
             .err();
         assert_eq!(err, Some(Empty));
         assert_eq!(seen, [0, 1, 2]);
@@ -1731,6 +1748,162 @@ mod tests {
         assert_eq!(ring.segs.claims().prod_waiters.load(Ordering::Relaxed), 0);
     }
 
+    #[cfg(any(target_os = "linux", feature = "std"))]
+    #[test]
+    fn a_deadline_recv_gives_up_at_its_time() {
+        // An empty ring and no producer sending: a zero deadline probes once, and a longer one
+        // spins until it passes, both then Empty. With a message, the receive reads no clock.
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::<Single>::init(&mut pool, 64, 4, 1).unwrap();
+        let (prod, mut cons) = endpoints(&ring);
+        send(&prod, 0, 1);
+        assert_eq!(cons.recv_spin::<Msg, _>(Ticks::ZERO, |m| m.seq), Ok(0));
+        let empty = |_: &Msg| panic!("read of an empty ring");
+        assert_eq!(cons.recv_spin(Ticks::ZERO, empty).err(), Some(Empty));
+        let start = std::time::Instant::now();
+        assert_eq!(
+            cons.recv_spin(crate::microsecs_to_ticks(20_000), empty)
+                .err(),
+            Some(Empty)
+        );
+        let waited = start.elapsed();
+        assert!(waited >= std::time::Duration::from_millis(20), "{waited:?}");
+        assert!(waited < LONG, "{waited:?}");
+        // No spin and no sleep is one look.
+        assert_eq!(
+            cons.recv_spin_sleep(Ticks::ZERO, Ticks::ZERO, empty).err(),
+            Some(Empty)
+        );
+        // With NoWake the spin and sleep receive spins through both times.
+        let start = std::time::Instant::now();
+        assert_eq!(
+            cons.recv_spin_sleep(
+                crate::microsecs_to_ticks(100),
+                crate::microsecs_to_ticks(10_000),
+                empty
+            )
+            .err(),
+            Some(Empty)
+        );
+        let waited = start.elapsed();
+        assert!(
+            waited >= std::time::Duration::from_micros(10_100),
+            "{waited:?}"
+        );
+        assert!(waited < LONG, "{waited:?}");
+        send(&prod, 1, 2);
+        recv(&mut cons, 1, 2);
+    }
+
+    #[cfg(any(target_os = "linux", feature = "std"))]
+    #[test]
+    fn a_deadline_recv_lands_when_a_message_comes() {
+        // An empty ring: a receive that never gives up spins until a producer sends, by each of the
+        // three ways to say so over NoWake.
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::<Single>::init(&mut pool, 64, 4, 1).unwrap();
+        let (prod, mut cons) = endpoints(&ring);
+        std::thread::scope(|s| {
+            let reader = s.spawn(move || {
+                let read = |m: &Msg| m.seq;
+                [
+                    cons.recv_spin(Ticks::FOREVER, read),
+                    cons.recv_spin_sleep(Ticks::FOREVER, Ticks::ZERO, read),
+                    cons.recv_spin_sleep(Ticks::ZERO, Ticks::FOREVER, read),
+                ]
+            });
+            for i in 0..3 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                send(&prod, i, i + 1);
+            }
+            assert_eq!(reader.join().unwrap(), [Ok(0), Ok(1), Ok(2)]);
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_deadline_recv_sleeper_is_woken_by_a_send() {
+        // An empty ring of each mode: the consumer spins not at all or for a short time, sleeps to
+        // a deadline or without one, and is woken by the producer's send long before its deadline
+        // or SlowFutex's timeout.
+        fn run<M: Mode>(count: u32, spin_us: u64, sleep_time: Ticks) {
+            let mut r = Region::new();
+            let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+            let ring = MpscRing::<M, SlowFutex>::init(&mut pool, 64, 4, count).unwrap();
+            let (prod, mut cons) = endpoints(&ring);
+            let claim = ring.segs.claim();
+            std::thread::scope(|s| {
+                let reader = s.spawn(move || {
+                    let start = std::time::Instant::now();
+                    let read = cons.recv_spin_sleep::<Msg, _>(
+                        crate::microsecs_to_ticks(spin_us),
+                        sleep_time,
+                        |m| m.seq,
+                    );
+                    (read, start.elapsed())
+                });
+                // Asleep before the message comes, so the send wakes it.
+                let start = std::time::Instant::now();
+                while claim.load(Ordering::SeqCst) & WAITING == 0 {
+                    assert!(start.elapsed() < LONG, "the consumer never slept");
+                    std::thread::yield_now();
+                }
+                send(&prod, 0, 1);
+                let (read, waited) = reader.join().unwrap();
+                assert_eq!(read, Ok(0));
+                assert!(waited < WOKEN, "woken by its timeout, not the send");
+            });
+            assert_eq!(claim.load(Ordering::Relaxed) & WAITING, 0);
+        }
+        for sleep_time in [crate::microsecs_to_ticks(SLOW_US), Ticks::FOREVER] {
+            run::<Single>(1, 0, sleep_time);
+            run::<Multi>(2, 0, sleep_time);
+            run::<Single>(1, 100, sleep_time);
+            run::<Multi>(2, 100, sleep_time);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_deadline_recv_sleep_gives_up_at_its_time() {
+        // An empty ring and no producer sending: the consumer spins, sleeps on what is left of its
+        // wait, and gives up when it passes, far sooner than SlowFutex's own timeout.
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::<Single, SlowFutex>::init(&mut pool, 64, 2, 1).unwrap();
+        let (_prod, mut cons) = endpoints(&ring);
+        let empty = |_: &Msg| panic!("read of an empty ring");
+        // No sleep gives up when the spin ends.
+        let start = std::time::Instant::now();
+        assert_eq!(
+            cons.recv_spin_sleep(crate::microsecs_to_ticks(5_000), Ticks::ZERO, empty)
+                .err(),
+            Some(Empty)
+        );
+        let waited = start.elapsed();
+        assert!(waited >= std::time::Duration::from_millis(5), "{waited:?}");
+        assert!(waited < LONG, "{waited:?}");
+        let start = std::time::Instant::now();
+        assert_eq!(
+            cons.recv_spin_sleep(
+                crate::microsecs_to_ticks(100),
+                crate::microsecs_to_ticks(20_000),
+                empty
+            )
+            .err(),
+            Some(Empty)
+        );
+        let waited = start.elapsed();
+        assert!(
+            waited >= std::time::Duration::from_micros(20_100),
+            "{waited:?}"
+        );
+        assert!(waited < LONG, "{waited:?}");
+        assert_eq!(ring.segs.claim().load(Ordering::Relaxed) & WAITING, 0);
+    }
+
     #[test]
     fn backoff_streams_across_threads() {
         // Four producers backing off after each lost claim, into one consumer: every message
@@ -1767,11 +1940,11 @@ mod tests {
             s.spawn(move || {
                 let mut next = [0u64; 4];
                 for _ in 0..4 * COUNT {
-                    let msg = cons.reserve_slot_with::<Msg>(crate::policy::spin).unwrap(); // OK: policy::spin never gives up
-                    let p = msg.val as usize;
-                    assert_eq!(msg.seq, next[p], "per-producer order broken");
+                    let (seq, p) = cons
+                        .recv::<Msg, _>(crate::policy::spin, |m| (m.seq, m.val as usize))
+                        .unwrap(); // OK: policy::spin never gives up
+                    assert_eq!(seq, next[p], "per-producer order broken");
                     next[p] += 1;
-                    msg.release();
                 }
             });
         });
@@ -1792,12 +1965,12 @@ mod tests {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
         let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 4, 1).unwrap());
-        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+        assert!(cons.recv::<Msg, ()>(|_| false, |_| ()).is_err());
         for lap in 0..3u64 {
             send(&prod, lap * 4, lap * 4 + 4);
             assert_eq!(prod.send::<Msg>(|_| false, |_| {}).err(), Some(Full));
             recv(&mut cons, lap * 4, lap * 4 + 4);
-            assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+            assert_eq!(cons.recv::<Msg, ()>(|_| false, |_| ()).err(), Some(Empty));
         }
         assert_eq!(prod.switches(), 0);
         assert_eq!(cons.switches(), 0);
@@ -1818,7 +1991,7 @@ mod tests {
             assert_eq!(free_segments(&ring), 0);
             assert_eq!(prod.switches(), (count - 1) as u64);
             recv(&mut cons, 0, total);
-            assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+            assert_eq!(cons.recv::<Msg, ()>(|_| false, |_| ()).err(), Some(Empty));
             // Every segment but the current one is back.
             assert_eq!(free_segments(&ring).count_ones(), count - 1);
             assert_eq!(free_segments(&ring) & (1 << prod.segment()), 0);
@@ -1843,7 +2016,7 @@ mod tests {
                 send(&prod, next, next + n);
                 recv(&mut cons, next, next + n);
                 next += n;
-                assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+                assert_eq!(cons.recv::<Msg, ()>(|_| false, |_| ()).err(), Some(Empty));
                 assert_eq!(free_segments(&ring).count_ones(), count - 1);
                 assert_eq!(cons.switches(), prod.switches());
             }
@@ -1875,7 +2048,7 @@ mod tests {
             recv(&mut cons, i - 1, i);
         }
         recv(&mut cons, 19, 20);
-        assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+        assert_eq!(cons.recv::<Msg, ()>(|_| false, |_| ()).err(), Some(Empty));
         assert_eq!(cons.switches(), prod.switches());
         assert_eq!(cons.segment(), prod.segment());
         assert_eq!(free_segments(&ring).count_ones(), 2);
@@ -1922,10 +2095,13 @@ mod tests {
         let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 2, 1).unwrap());
         let mut seen = Vec::new();
         let err = cons
-            .reserve_slot_with::<Msg>(|attempt| {
-                seen.push(attempt);
-                attempt < 2
-            })
+            .recv::<Msg, ()>(
+                |attempt| {
+                    seen.push(attempt);
+                    attempt < 2
+                },
+                |_| (),
+            )
             .err();
         assert_eq!(err, Some(Empty));
         assert_eq!(seen, [0, 1, 2]);
@@ -1942,29 +2118,29 @@ mod tests {
             .err();
         assert_eq!(err, Some(Full));
         assert_eq!(seen, [0, 1, 2]);
-        let msg = cons
-            .reserve_slot_with::<Msg>(|_| panic!("policy consulted with a message available"))
-            .unwrap();
-        msg.release();
+        cons.recv::<Msg, ()>(
+            |_| panic!("policy consulted with a message available"),
+            |_| (),
+        )
+        .unwrap();
         prod.send::<Msg>(|_| panic!("policy consulted with room available"), |_| {})
             .unwrap();
     }
 
     #[test]
-    // Dropping the guard is the behavior under test.
-    #[allow(clippy::drop_non_drop)]
-    fn abandoned_read_guard_redelivers() {
+    fn a_panicking_read_redelivers() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
         let (prod, mut cons) = endpoints(&MpscRing::<Multi>::init(&mut pool, 64, 1, 2).unwrap());
         send(&prod, 0, 2);
-        // The first read is the last message of segment 0, and an abandoned read re-delivers it,
-        // the switch after it.
-        let msg = cons.reserve_slot_with::<Msg>(|_| false).unwrap();
-        assert_eq!(msg.seq, 0);
-        drop(msg);
+        // The first read is the last message of segment 0, and a read that panics leaves it in its
+        // slot, so it is delivered again, the switch after it.
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cons.recv::<Msg, ()>(|_| false, |m| panic!("read of {} abandoned", m.seq))
+        }));
+        assert!(read.is_err());
         recv(&mut cons, 0, 2);
-        assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+        assert!(cons.recv::<Msg, ()>(|_| false, |_| ()).is_err());
         assert_eq!(cons.switches(), 1);
     }
 
@@ -1983,7 +2159,7 @@ mod tests {
         assert!(unwound.is_err());
         send(&prod, 1, 3);
         recv(&mut cons, 0, 1);
-        assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+        assert_eq!(cons.recv::<Msg, ()>(|_| false, |_| ()).err(), Some(Empty));
     }
 
     #[test]
@@ -2040,7 +2216,7 @@ mod tests {
         assert_eq!(prod.segment(), 0);
         recv(&mut cons, 3, 6);
         assert_eq!(cons.segment(), 0);
-        assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+        assert_eq!(cons.recv::<Msg, ()>(|_| false, |_| ()).err(), Some(Empty));
         assert_eq!(cons.switches(), prod.switches());
     }
 
@@ -2087,13 +2263,13 @@ mod tests {
                 // Global arrival order is claim order, and only per-producer FIFO is promised.
                 let mut next = vec![0u64; producers as usize];
                 for _ in 0..producers * count {
-                    let msg = cons.reserve_slot_with::<Msg>(crate::policy::spin).unwrap(); // OK: policy::spin never gives up
-                    let p = msg.val as usize;
-                    assert_eq!(msg.seq, next[p], "per-producer order broken");
+                    let (seq, p) = cons
+                        .recv::<Msg, _>(crate::policy::spin, |m| (m.seq, m.val as usize))
+                        .unwrap(); // OK: policy::spin never gives up
+                    assert_eq!(seq, next[p], "per-producer order broken");
                     next[p] += 1;
-                    msg.release();
                 }
-                assert!(cons.reserve_slot_with::<Msg>(|_| false).is_err());
+                assert!(cons.recv::<Msg, ()>(|_| false, |_| ()).is_err());
             });
         });
     }
@@ -2151,7 +2327,7 @@ mod tests {
                     );
                     assert_eq!(prod.switches(), (count - 1) as u64);
                     recv(&mut cons, 0, total);
-                    assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+                    assert_eq!(cons.recv::<Msg, ()>(|_| false, |_| ()).err(), Some(Empty));
                     assert_eq!(cons.switches(), prod.switches());
                     assert_eq!(cons.segment(), prod.segment());
                     assert_eq!(free_segments(ring).count_ones(), count - 1);
@@ -2177,7 +2353,7 @@ mod tests {
                         send(&prod, next, next + n);
                         recv(&mut cons, next, next + n);
                         next += n;
-                        assert_eq!(cons.reserve_slot_with::<Msg>(|_| false).err(), Some(Empty));
+                        assert_eq!(cons.recv::<Msg, ()>(|_| false, |_| ()).err(), Some(Empty));
                         assert_eq!(cons.switches(), prod.switches());
                         assert_eq!(free_segments(ring).count_ones(), count - 1);
                     }
@@ -2255,11 +2431,11 @@ mod tests {
             s.spawn(move || {
                 let mut next = [0u64; 2];
                 for _ in 0..2 * COUNT {
-                    let msg = cons.reserve_slot_with::<Msg>(crate::policy::spin).unwrap(); // OK: policy::spin never gives up
-                    let p = msg.val as usize;
-                    assert_eq!(msg.seq, next[p]);
+                    let (seq, p) = cons
+                        .recv::<Msg, _>(crate::policy::spin, |m| (m.seq, m.val as usize))
+                        .unwrap(); // OK: policy::spin never gives up
+                    assert_eq!(seq, next[p]);
                     next[p] += 1;
-                    msg.release();
                 }
             });
         });

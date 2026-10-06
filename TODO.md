@@ -47,8 +47,11 @@ Start `mpsc::v4` as a copy of v3, and give its consumer the producer's waits. v3
 reference to measure against.
 
 - The mode stays: v4 has `Single` and `Multi` as v3 does.
-- The consumer gets a general reserve over a policy, and the timed spin and spin-then-sleep written
-  as policies for it, as `send_spin` and `send_spin_sleep` are for `send`.
+- The consumer receives as the producer sends: `recv` over a policy, reading the message in place
+  by a closure, and `recv_spin` and `recv_spin_sleep` written as policies for it, as `send_spin` and
+  `send_spin_sleep` are for `send`. One policy trait serves both sides.
+- The names are plain, for someone new to the crate: no handle to release after a read, and a
+  producer or the consumer of a ring is asked for by that name.
 - The two sides are symmetric: where a producer wait and a consumer wait have the same semantics
   they have the same name, parameters, and meanings. Where the semantics differ, the cycle finds why
   and what would make them the same, and where they cannot be made the same the names differ.
@@ -63,6 +66,9 @@ reference to measure against.
   until a commit.
 - Every wait method of the v4 producer has a consumer counterpart of the same name form and
   parameter meanings, or the design note says why the two differ.
+- A spin without end on a ring over plain `Futex`, and a sleep on a ring over `NoWake`, each fail to
+  compile, held by a compile-fail test or a documented example.
+- A v4 test holds that an endpoint whose wake disagrees with the ring's recorded one is refused.
 - `tp-stream` runs each v4 flavor, and the design note holds its rows beside the matching v3 rows,
   each table naming its build profile.
 - `cargo run --release --example guide_mpsc_v4` runs to its last line.
@@ -72,7 +78,10 @@ reference to measure against.
 
 - [feat: mpsc v4 opening][1] (done)
 - [feat: mpsc v4 as a copy of mpsc v3][2] (done)
-- [feat: mpsc v4 consumer policy][3]
+- [feat: mpsc v4 consumer policy][3] (done)
+- [feat: mpsc v4 plain names][8]
+- [feat: mpsc v4 waiters say their cost][9]
+- [feat: mpsc v4 refuses a wake mismatch][10]
 - [feat: mpsc v4 in the tools][4]
 - [docs: mpsc v4 consumer waits measured][5]
 - [docs: mpsc v4 guide and example][6]
@@ -94,11 +103,36 @@ reference to measure against.
   `Wake` already has `wait_until`. What the consumer lacks is the deadline and a policy that can
   choose to sleep.
 - The copy is its own rung, so the consumer policy rung's diff shows that change alone.
-- The guard stays: the producer takes a closure and the consumer returns a guard, and a guard
-  dropped without `release` re-delivers its slot. We think this is a difference in semantics the
-  symmetry rule leaves alone, to be confirmed at the consumer policy rung.
-- One policy trait for both sides or two is open, decided at the consumer policy rung. The
-  producer's `on_lost` has no consumer counterpart.
+- The consumer reads by a closure, `recv(policy, read_msg)`, the user's call of 2026-10-06: the
+  handle `reserve_slot_with` returned, called a guard, guarded nothing a newcomer would recognize,
+  and one dropped without `release` re-delivered its message silently.
+  - With it the two sides' names are identical after the verb, `send` and `recv`, `_spin`, and
+    `_spin_sleep`, so the symmetry rule is met with no exception for the call's shape.
+  - Lost: holding a message across calls, and looking at one without consuming it. A zero-copy
+    message is a `Desc`, copied out of the closure, and a peek can be added when someone needs it.
+  - Proposed first and set aside: the guard kept, as `reserve_slot`, `reserve_slot_spin`, and
+    `reserve_slot_spin_sleep`, iiac-perf's proposed name among them.
+- One policy trait, `WaitPolicy`, for both sides, the user's call of 2026-10-06: the question a
+  policy answers is the same at a full ring and an empty one, and one policy type then waits on
+  either side. The producer's `on_lost` is its one method a consumer never calls.
+  - Weighed: v3's `SendPolicy` kept and a second trait for the consumer, which leaves v4's producer
+    as v3's.
+- v4 drops `reserve_slot_with` and `reserve_slot_wait`, the user's call of 2026-10-06, since v3
+  keeps them.
+- Plain names are their own rung, inserted on 2026-10-06 with the user's go: "claim" means three
+  things, becoming a producer or the consumer, taking a slot, and a slot being written, and the
+  rung gives the first its own words, `ring.producer()` and `ring.consumer()`. "release" stays for
+  giving a role back.
+- iiac-perf's three asks in `m-8-3` are two rungs of this cycle, the user's call of 2026-10-06,
+  inserted after the names and before the tools, so the tools and the tables see v4's final API.
+  - Their measurement, the 7600X, an SMT pair, ten runs each, against v3: a round trip on a ring
+    over `Futex` where nobody sleeps is 48.95 ns, and 45.87 ns over `NoWake`, the wake's checks
+    costing a spinner about 3 ns. They call the size provisional.
+  - The waiter type and the gated methods are one rung, since the gate is what makes the type
+    worth writing down. The control block's wake protocol is the other, a layout change.
+- A policy still cannot sleep to a deadline of its own, on either side: `Waiter::sleep` takes none,
+  and only the built-in timed methods do. Exposing the clock is the Todo `Clock choices for the
+  deadline sends`.
 - The build profile for the tables is one codegen unit and fat LTO, the profile the Todo
   `Measurement builds and the producer-consumer rhythm` found alike on three machines.
 - The version advances by a patch, the default.
@@ -134,8 +168,58 @@ its tests passing and nothing else changed.
 ##### feat: mpsc v4 consumer policy
 
 The v4 consumer has a poll and an unbounded sleep, where the producer has a policy and two timed
-sends. Give the consumer a general reserve over a policy that can sleep to a deadline, and the timed
+sends. Give the consumer a general receive over a policy that can sleep to a deadline, and the timed
 spin and spin-then-sleep written for it, named by the symmetry rule.
+
+- The consumer's three receives are `recv`, `recv_spin`, and `recv_spin_sleep`, each the mirror of
+  the send of the same suffix: the same parameters with the same meanings, the clock read only
+  after the first empty look, and over `NoWake` the spin and the sleep spun together.
+- `recv` reads by a closure and frees the slot when the closure returns, returning what the closure
+  returned. A closure that panics leaves the message in its slot, and the next `recv` reads it
+  again, the mirror of a `send` whose closure panics, which leaves its slot taken.
+  - `MpscReadSlot` is gone from v4, and with it the one public release of a slot.
+- `WaitPolicy` and `Waiter` are v3's `SendPolicy` and `Room` under names that fit both sides,
+  `on_full` now `on_wait`, in a file of their own. A closure is still a policy.
+- The consumer's sleep takes a deadline, which is what v3's lacked: one empty look is a small
+  value holding what a sleep waits on, and the timed receive sleeps on it to its deadline while a
+  policy sleeps on it through `Waiter` to the wake's own timeout.
+  - Over `NoWake` the consumer's sleep is one spin hint and touches no shared word, where v3's
+    `reserve_slot_wait` set and cleared the waiting flag around a spin.
+- Where the two sides still differ, and why:
+  - What a sleep waits for: a producer is woken at each half segment of releases with every other
+    sleeping producer, and may find the room taken, and the consumer is woken after each commit.
+    The contract is the same, a sleep until the other side acts or the time passes.
+  - A wake can reach the consumer between a producer's taking a slot and its commit. The consumer
+    then looks, finds nothing committed, and its next sleep returns at once, so it spins until the
+    commit lands.
+  - The sends take `&self` and the receives `&mut self`, since a ring has many producers and one
+    consumer.
+- The tests: every v3 consumer test runs over `recv`, the dropped-guard test is now a read that
+  panics, and four new tests hold the timed receives over `NoWake` and `Futex`, no spin, a timed
+  spin, and a spin forever, each with no sleep, a timed sleep, and a sleep until a commit.
+- Not in this rung: iiac-perf's three asks in `m-8-3`, which are the rungs `feat: mpsc v4 waiters
+  say their cost` and `feat: mpsc v4 refuses a wake mismatch`.
+
+##### feat: mpsc v4 plain names
+
+"Claim" names three things in v4's API and docs, and a newcomer cannot tell which. Rename the role
+methods to `ring.producer()` and `ring.consumer()`, and write the public docs in a small set of
+words, each with one meaning, listed at the top of the module.
+
+##### feat: mpsc v4 waiters say their cost
+
+A spin on a ring over `Futex` pays the wake's checks and says nothing, and a sleep on a ring over
+`NoWake` is one spin hint and says nothing. Add a waiter type that is `Futex`'s code under a name
+that says a mix of spinners and sleepers is on purpose, with the cost in its docs, and gate the
+timed methods of both endpoints by the waiter, so a spin without end on a plain `Futex` ring and a
+sleep on a `NoWake` ring do not compile. The general `send` and `recv` over a policy stay open.
+
+##### feat: mpsc v4 refuses a wake mismatch
+
+Two processes can attach to one ring with different wakes, and nothing detects it: a `NoWake`
+producer never wakes a `Futex` consumer, whose every wake is then its timeout. Record the wake
+protocol, none or futex, in the control block at `init`, and refuse the endpoint whose wake
+disagrees.
 
 ##### feat: mpsc v4 in the tools
 
@@ -829,4 +913,7 @@ _None._
 [5]: #docs-mpsc-v4-consumer-waits-measured
 [6]: #docs-mpsc-v4-guide-and-example
 [7]: #feat-mpsc-v4-closing
+[8]: #feat-mpsc-v4-plain-names
+[9]: #feat-mpsc-v4-waiters-say-their-cost
+[10]: #feat-mpsc-v4-refuses-a-wake-mismatch
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies

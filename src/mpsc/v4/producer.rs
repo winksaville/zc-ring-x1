@@ -7,6 +7,7 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 use zerocopy::{FromBytes, IntoBytes, KnownLayout};
 
+use super::wait::{Sleeper, WaitPolicy, Waiter};
 use super::{
     MOVED, Mode, Multi, Segments, WAITING, check_body_type, seq_of, word, word_pos, word_seg,
 };
@@ -56,80 +57,6 @@ enum NoSwitch {
     /// The claim word moved under the attempt: another producer switched, or the slot was released
     /// and claimed.
     Lost,
-}
-
-/// `trait SendPolicy` is what a [`send`](MpscProducer::send) does when the ring is full, and when
-/// another producer takes a slot first.
-///
-/// - A closure `FnMut(u32) -> bool` is a `SendPolicy`: its argument is the attempt count and its
-///   result is [`on_full`](SendPolicy::on_full)'s, so `|attempt| attempt < 100` gives up after a
-///   hundred full looks, and [`policy::spin`](crate::policy::spin) never gives up.
-/// - A type implementing `SendPolicy` also sees each lost slot, and can sleep through [`Room`].
-/// - A send takes its policy by value. A policy whose state the caller reads afterward, such as a
-///   count, implements `SendPolicy` for `&mut` itself.
-pub trait SendPolicy {
-    /// `on_full` is called each time a send finds the ring full.
-    ///
-    /// # Parameters
-    ///
-    /// - `self`: the policy, by mutable reference, so it can keep state across calls, such as a
-    ///   deadline or a count.
-    /// - `attempt`: how many times this send has found the ring full before, `0` the first time,
-    ///   saturating.
-    /// - `room`: sleeps until the consumer frees a slot, for a policy that would rather sleep than
-    ///   spin.
-    ///
-    /// # Returns
-    ///
-    /// - `true` to look at the ring again, or `false` to give up, and the send returns `Err(Full)`.
-    fn on_full(&mut self, attempt: u32, room: &Room<'_>) -> bool;
-
-    /// `on_lost` is called each time another producer takes a slot this send was about to claim.
-    /// The send then looks again at once, and does not call `on_full`: a lost slot is never a full
-    /// ring.
-    ///
-    /// # Parameters
-    ///
-    /// - `self`: the policy, by mutable reference.
-    /// - `lost`: how many slots this send has lost in a row, `1` the first time, saturating.
-    ///
-    /// # Notes
-    ///
-    /// - By default `on_lost` does nothing. A policy backs off here, with
-    ///   [`policy::backoff`](crate::policy::backoff), or counts contention.
-    fn on_lost(&mut self, _lost: u32) {}
-}
-
-impl<F: FnMut(u32) -> bool> SendPolicy for F {
-    #[inline]
-    fn on_full(&mut self, attempt: u32, _room: &Room<'_>) -> bool {
-        self(attempt)
-    }
-}
-
-/// `struct Room` lets a [`SendPolicy`] sleep while the ring is full, until the consumer frees a
-/// slot.
-pub struct Room<'a> {
-    sleeper: &'a dyn Sleeper,
-}
-
-impl Room<'_> {
-    /// `Room::sleep` sleeps until the consumer frees a slot, a wake comes early, or the ring's
-    /// [`Wake`] times out, whichever is first. With [`NoWake`] it is one spin hint.
-    ///
-    /// # Parameters
-    ///
-    /// - `self`: the room a policy was handed in [`on_full`](SendPolicy::on_full).
-    pub fn sleep(&self) {
-        self.sleeper.sleep();
-    }
-}
-
-/// `trait Sleeper` is the producer behind a [`Room`], with its ring's mode and wake erased, so
-/// `Room` needs no type parameters.
-trait Sleeper {
-    /// `sleep` is [`Room::sleep`].
-    fn sleep(&self);
 }
 
 impl<M: Mode, W: Wake> Sleeper for MpscProducer<'_, M, W> {
@@ -311,7 +238,7 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     /// [`send_spin_sleep`](MpscProducer::send_spin_sleep) are `send` with a policy already written.
     ///
     /// Another producer may claim a free slot first. `send` then calls the policy's
-    /// [`on_lost`](SendPolicy::on_lost) and goes for the next slot at once, so a lost slot is never
+    /// [`on_lost`](WaitPolicy::on_lost) and goes for the next slot at once, so a lost slot is never
     /// an error, and `Err(Full)` means the ring was full when `send` last looked and the policy
     /// gave up.
     ///
@@ -324,7 +251,7 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     ///
     /// - `self`: this producer, by shared reference, so one handle may be used from several threads
     ///   at once.
-    /// - `policy`: the [`SendPolicy`] `send` asks when the ring is full and tells when it loses a
+    /// - `policy`: the [`WaitPolicy`] `send` asks when the ring is full and tells when it loses a
     ///   slot. A closure `|attempt| ...` returning whether to look again is a policy, so `|_|
     ///   false` makes one attempt and [`policy::spin`](crate::policy::spin) never gives up.
     /// - `write_msg`: the closure that writes the message. `send` calls `write_msg` once, after the
@@ -349,7 +276,7 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     #[inline(always)]
     pub fn send<T>(
         &self,
-        mut policy: impl SendPolicy,
+        mut policy: impl WaitPolicy,
         write_msg: impl FnOnce(&mut T),
     ) -> Result<(), Full>
     where
@@ -410,7 +337,7 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
             match switched {
                 Ok(()) | Err(NoSwitch::Lost) => {}
                 Err(NoSwitch::NoFree) => {
-                    if !policy.on_full(attempt, &Room { sleeper: self }) {
+                    if !policy.on_wait(attempt, &Waiter::new(self)) {
                         return Err(Full);
                     }
                     attempt = attempt.saturating_add(1);
