@@ -15,8 +15,7 @@ lose context, read first at acquaint, acted on, and reset to `_None._` by the re
 - Open for the user: `take_over_*(dead, id)` and a holder query, left as `take_over_*(id)`, with no
   Todo entry.
 - Scratch left for the user to keep or delete: `~/tmp/zc-ab` on the 7600X and the Pi, source trees
-  and `tp-stream` builds, the Pi's demo build and test build. Local copies of the tables are in
-  `tmp/ab/`.
+  and `tp-stream` builds, the Pi's demo build and test build.
 - The consumer's v3 methods' docs are still in the old form, not the Parameters form the
   producer's sends now use.
 - Open for the user: an overview page for reviewers of the v3 sends, now that the API is final.
@@ -72,7 +71,7 @@ reference to measure against.
 #### Ladder
 
 - [feat: mpsc v4 opening][1] (done)
-- [feat: mpsc v4 as a copy of mpsc v3][2]
+- [feat: mpsc v4 as a copy of mpsc v3][2] (done)
 - [feat: mpsc v4 consumer policy][3]
 - [feat: mpsc v4 in the tools][4]
 - [docs: mpsc v4 consumer waits measured][5]
@@ -119,6 +118,18 @@ block, bump the version-of-record, and rename the package and bins to their `-de
 
 v4 needs a starting point that is v3 exactly. Copy `src/mpsc/v3/` to `src/mpsc/v4/`, renamed, with
 its tests passing and nothing else changed.
+
+- The copy is v3's three files with their tests, so every v3 test also runs as a v4 test.
+- One thing differs, the magic, `ZCM4` for v3's `ZCM3`, as each ring version before has its own.
+  The two layouts are the same today, so without it a v3 process could attach to a v4 ring. We
+  think a later v4 change to what the shared words mean would then part the two silently. One new
+  test holds that neither attaches to the other's ring. No sharing between the two is needed at
+  this point, the user's call of 2026-10-06.
+- The layout version stays 1, v4's own count from its own magic.
+- The module docs name v4 and say what it is, a copy, and still describe the ring in v3's words.
+  They point at v3's example program until the guide rung gives v4 its own.
+- Left for the guide rung: `Error`'s docs and `policy::backoff`'s name MPSC v3 alone, though v4
+  returns the same errors and takes the same policies.
 
 ##### feat: mpsc v4 consumer policy
 
