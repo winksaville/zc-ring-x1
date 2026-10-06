@@ -15,7 +15,7 @@ use super::{
 use crate::Ticks;
 #[cfg(any(target_os = "linux", feature = "std"))]
 use crate::clock::now_ticks;
-use crate::wake::{NoWake, Seen, Wake};
+use crate::wake::{Seen, Sleeps, SpinOnly, Spins, Waits};
 use crate::{Deadline, Full};
 
 /// `struct MpscProducer` is a producing handle, one counted producer role: a producing thread or
@@ -28,7 +28,7 @@ use crate::{Deadline, Full};
 /// - `MpscProducer` is not `Clone`: each handle is one count in the roles word, and
 ///   [`release`](MpscProducer::release) gives it back. Dropping the handle writes nothing, so the
 ///   count stays held.
-pub struct MpscProducer<'a, M: Mode = Multi, W: Wake = NoWake> {
+pub struct MpscProducer<'a, M: Mode = Multi, W: Waits = SpinOnly> {
     /// Geometry and segment addresses.
     segs: Segments,
     _region: PhantomData<(&'a [u8], M, W)>,
@@ -37,16 +37,16 @@ pub struct MpscProducer<'a, M: Mode = Multi, W: Wake = NoWake> {
 // SAFETY: any number of producers is the protocol contract: the shared state (the header words, the
 // slot seqs) is atomic, slot claims are exclusive by CAS, and slot writes are handed off with
 // Release/Acquire ordering.
-unsafe impl<M: Mode, W: Wake> Send for MpscProducer<'_, M, W> {}
+unsafe impl<M: Mode, W: Waits> Send for MpscProducer<'_, M, W> {}
 // SAFETY: the sends are &self and every access is protected as above, so shared references across
 // threads are equally fine.
-unsafe impl<M: Mode, W: Wake> Sync for MpscProducer<'_, M, W> {}
+unsafe impl<M: Mode, W: Waits> Sync for MpscProducer<'_, M, W> {}
 
 /// Wake the consumer asleep on the claim word, out of line and cold, so the send loop compiles as
 /// it does without a wake.
 #[cold]
 #[inline(never)]
-fn wake_consumer<W: Wake>(claim: &AtomicU32) {
+fn wake_consumer<W: Waits>(claim: &AtomicU32) {
     W::wake(claim);
 }
 
@@ -59,7 +59,7 @@ enum NoSwitch {
     Lost,
 }
 
-impl<M: Mode, W: Wake> Sleeper for MpscProducer<'_, M, W> {
+impl<M: Mode, W: Waits> Sleeper for MpscProducer<'_, M, W> {
     fn sleep(&self) {
         if W::WAKES {
             self.sleep_full(None);
@@ -69,7 +69,7 @@ impl<M: Mode, W: Wake> Sleeper for MpscProducer<'_, M, W> {
     }
 }
 
-impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
+impl<'a, M: Mode, W: Waits> MpscProducer<'a, M, W> {
     /// Build the handle for a claimed role from the ring's geometry snapshot.
     pub(super) fn new(segs: Segments) -> Self {
         MpscProducer {
@@ -104,6 +104,10 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     /// for up to `give_up`, then returns `Err(Full)`. The time starts when `send_spin` first finds
     /// the ring full, so a send that finds a free slot never reads the clock.
     ///
+    /// `send_spin` is offered on a ring over [`SpinOnly`], or over
+    /// [`SpinOrSleep`](crate::wake::SpinOrSleep) where other endpoints sleep. On a ring over
+    /// [`Sleep`](crate::wake::Sleep), send with [`send_spin_sleep`](MpscProducer::send_spin_sleep).
+    ///
     /// `send_spin` is available on Linux, and on other targets with the `std` feature, which
     /// provides its clock.
     ///
@@ -130,6 +134,7 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     pub fn send_spin<T>(&self, give_up: Ticks, write_msg: impl FnOnce(&mut T)) -> Result<(), Full>
     where
         T: FromBytes + IntoBytes + KnownLayout,
+        W: Spins,
     {
         // `end` is set at the first full ring, so a send that finds room reads no clock, and each
         // later check is one reading and a compare.
@@ -154,9 +159,11 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     /// frees a slot, then returns `Err(Full)`. The time starts when `send_spin_sleep` first finds
     /// the ring full, so a send that finds a free slot never reads the clock.
     ///
-    /// The sleep is the ring's [`Wake`]. With [`NoWake`] there is no sleep, and `send_spin_sleep`
-    /// spins for `spin_time` and `sleep_time` together. The consumer wakes all sleeping producers
-    /// at once, at each half segment of releases. A sleep that ends early, woken for a slot another
+    /// `send_spin_sleep` is offered on a ring over [`Sleep`](crate::wake::Sleep) or
+    /// [`SpinOrSleep`](crate::wake::SpinOrSleep), and the sleep is on the wake that choice names,
+    /// such as a futex. A ring over [`SpinOnly`] has no sleep, and offers
+    /// [`send_spin`](MpscProducer::send_spin). The consumer wakes all sleeping producers at once,
+    /// at each half segment of messages read. A sleep that ends early, woken for a slot another
     /// producer took, sleeps again to the same deadline, and `send_spin_sleep` looks at the ring
     /// once more after the last sleep.
     ///
@@ -168,7 +175,8 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     /// - `self`: this producer, by shared reference, so one handle may be used from several threads
     ///   at once.
     /// - `spin_time`: how long to spin while the ring is full, before sleeping. [`Ticks::ZERO`]
-    ///   sleeps at once, and [`Ticks::FOREVER`] never sleeps.
+    ///   sleeps at once, and [`Ticks::FOREVER`] never sleeps, a spin without end, which is what
+    ///   [`SpinOrSleep`](crate::wake::SpinOrSleep) and `send_spin` are for.
     /// - `sleep_time`: how long to sleep, in all, after the spin. [`Ticks::ZERO`] gives up when the
     ///   spin ends, and [`Ticks::FOREVER`] never gives up. The caller makes `spin_time` and
     ///   `sleep_time` once, with [`microsecs_to_ticks`](crate::microsecs_to_ticks) or
@@ -193,6 +201,7 @@ impl<'a, M: Mode, W: Wake> MpscProducer<'a, M, W> {
     ) -> Result<(), Full>
     where
         T: FromBytes + IntoBytes + KnownLayout,
+        W: Sleeps,
     {
         // `ends` holds the spin's end and the sleep's end, set at the first full ring, so a send
         // that finds room reads no clock, and each later check is one reading and a compare or two.

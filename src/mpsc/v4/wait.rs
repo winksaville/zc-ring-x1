@@ -70,7 +70,7 @@ impl<'a> Waiter<'a> {
 
     /// `Waiter::sleep` sleeps until the other side acts, a wake comes early, or the ring's
     /// [`Wake`](crate::wake::Wake) times out, whichever is first. With
-    /// [`NoWake`](crate::wake::NoWake) it is one spin hint.
+    /// [`SpinOnly`](crate::wake::SpinOnly) it is one spin hint.
     ///
     /// # Parameters
     ///

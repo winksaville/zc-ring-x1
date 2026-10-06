@@ -16,7 +16,7 @@ use super::{
 use crate::Ticks;
 #[cfg(any(target_os = "linux", feature = "std"))]
 use crate::clock::now_ticks;
-use crate::wake::{NoWake, Seen, Wake};
+use crate::wake::{Seen, Sleeps, SpinOnly, Spins, Waits};
 use crate::{Deadline, Empty};
 
 /// `struct ConsumerState` is the consumer's state.
@@ -43,7 +43,7 @@ struct ConsumerState {
 /// - [`release`](MpscConsumer::release) gives the role back with the consumer's state, so the next
 ///   consumer continues where this one stopped. Dropping the handle writes nothing, so the role
 ///   stays held.
-pub struct MpscConsumer<'a, M: Mode = Multi, W: Wake = NoWake> {
+pub struct MpscConsumer<'a, M: Mode = Multi, W: Waits = SpinOnly> {
     /// Private state.
     st: ConsumerState,
     _region: PhantomData<(&'a [u8], M, W)>,
@@ -51,9 +51,9 @@ pub struct MpscConsumer<'a, M: Mode = Multi, W: Wake = NoWake> {
 
 // SAFETY: the handle owns the single-consumer role, and shared state (the header words, the slot
 // seqs) is atomic with Release/Acquire handoff.
-unsafe impl<M: Mode, W: Wake> Send for MpscConsumer<'_, M, W> {}
+unsafe impl<M: Mode, W: Waits> Send for MpscConsumer<'_, M, W> {}
 
-impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
+impl<'a, M: Mode, W: Waits> MpscConsumer<'a, M, W> {
     /// Continue from `cp`, the checkpoint the last consumer left, or the ring's start.
     pub(super) fn resume(segs: Segments, cp: Checkpoint) -> Self {
         MpscConsumer {
@@ -100,6 +100,11 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
     /// empty, for up to `give_up`, then returns `Err(Empty)`. The time starts when `recv_spin`
     /// first finds the ring empty, so a receive that finds a message never reads the clock.
     ///
+    /// `recv_spin` is offered on a ring over [`SpinOnly`], or over
+    /// [`SpinOrSleep`](crate::wake::SpinOrSleep) where other endpoints sleep. On a ring over
+    /// [`Sleep`](crate::wake::Sleep), receive with
+    /// [`recv_spin_sleep`](MpscConsumer::recv_spin_sleep).
+    ///
     /// `recv_spin` is available on Linux, and on other targets with the `std` feature, which
     /// provides its clock.
     ///
@@ -129,6 +134,7 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
     ) -> Result<R, Empty>
     where
         T: FromBytes + KnownLayout + Immutable,
+        W: Spins,
     {
         // `end` is set at the first empty ring, so a receive that finds a message reads no clock,
         // and each later check is one reading and a compare.
@@ -153,9 +159,11 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
     /// a message, then returns `Err(Empty)`. The time starts when `recv_spin_sleep` first finds the
     /// ring empty, so a receive that finds a message never reads the clock.
     ///
-    /// The sleep is the ring's [`Wake`]. With [`NoWake`] there is no sleep, and `recv_spin_sleep`
-    /// spins for `spin_time` and `sleep_time` together. A producer wakes the sleeping consumer
-    /// after it commits a message. A sleep that ends early sleeps again to the same deadline, and
+    /// `recv_spin_sleep` is offered on a ring over [`Sleep`](crate::wake::Sleep) or
+    /// [`SpinOrSleep`](crate::wake::SpinOrSleep), and the sleep is on the wake that choice names,
+    /// such as a futex. A ring over [`SpinOnly`] has no sleep, and offers
+    /// [`recv_spin`](MpscConsumer::recv_spin). A producer wakes the sleeping consumer after it
+    /// commits a message. A sleep that ends early sleeps again to the same deadline, and
     /// `recv_spin_sleep` looks at the ring once more after the last sleep.
     ///
     /// `recv_spin_sleep` is available on Linux, and on other targets with the `std` feature, which
@@ -165,7 +173,8 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
     ///
     /// - `self`: this consumer, by mutable reference.
     /// - `spin_time`: how long to spin while the ring is empty, before sleeping. [`Ticks::ZERO`]
-    ///   sleeps at once, and [`Ticks::FOREVER`] never sleeps.
+    ///   sleeps at once, and [`Ticks::FOREVER`] never sleeps, a spin without end, which is what
+    ///   [`SpinOrSleep`](crate::wake::SpinOrSleep) and `recv_spin` are for.
     /// - `sleep_time`: how long to sleep, in all, after the spin. [`Ticks::ZERO`] gives up when the
     ///   spin ends, and [`Ticks::FOREVER`] never gives up. The caller makes `spin_time` and
     ///   `sleep_time` once, with [`microsecs_to_ticks`](crate::microsecs_to_ticks) or
@@ -191,6 +200,7 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
     ) -> Result<R, Empty>
     where
         T: FromBytes + KnownLayout + Immutable,
+        W: Sleeps,
     {
         // `ends` holds the spin's end and the sleep's end, set at the first empty ring, so a
         // receive that finds a message reads no clock, and each later check is one reading and a
@@ -372,7 +382,7 @@ impl<'a, M: Mode, W: Wake> MpscConsumer<'a, M, W> {
 
 /// `struct EmptyLook` is one look that found the ring empty: the segment and position the consumer
 /// read, which is what a sleep waits on.
-struct EmptyLook<'a, W: Wake> {
+struct EmptyLook<'a, W: Waits> {
     /// Geometry and segment addresses.
     segs: &'a Segments,
     /// The segment the consumer read.
@@ -384,10 +394,10 @@ struct EmptyLook<'a, W: Wake> {
     _wake: PhantomData<W>,
 }
 
-impl<W: Wake> EmptyLook<'_, W> {
+impl<W: Waits> EmptyLook<'_, W> {
     /// `sleep_empty` sleeps on the empty ring until a producer claims past the look's position, a
     /// wake comes early, or the timeout passes: `deadline`, or `W`'s own timeout when `deadline` is
-    /// `None`. With [`NoWake`] it is one spin hint.
+    /// `None`. With [`SpinOnly`] it is one spin hint.
     ///
     /// - Before the sleep, everything read is released: any producer asleep on a full ring is
     ///   woken, so the two sides never sleep on each other. Not on the polling path, where a fence
@@ -427,7 +437,7 @@ impl<W: Wake> EmptyLook<'_, W> {
     }
 }
 
-impl<W: Wake> Sleeper for EmptyLook<'_, W> {
+impl<W: Waits> Sleeper for EmptyLook<'_, W> {
     fn sleep(&self) {
         self.sleep_empty(None);
     }

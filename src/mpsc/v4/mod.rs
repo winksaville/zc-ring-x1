@@ -32,8 +32,8 @@
 //! - Policy: a [`WaitPolicy`], what a send asks at a full ring and a receive asks at an empty one:
 //!   look again, sleep first, or give up. `send_spin`, `recv_spin`, `send_spin_sleep`, and
 //!   `recv_spin_sleep` come with a policy already written.
-//! - Wake: `W`, how a sleeping endpoint is woken: [`NoWake`], where nothing sleeps and every wait
-//!   spins, or `Futex`.
+//! - Wait: `W`, the ring's choice of how its endpoints wait, a [`Waits`]: [`SpinOnly`], `Sleep`
+//!   over a wake such as `Futex`, or `SpinOrSleep` over one. See [Waits](#waits).
 //!
 //! # Use
 //!
@@ -49,6 +49,126 @@
 //!
 //! [guide_mpsc_v3.rs]: https://github.com/winksaville/zc-ring-x1/blob/main/examples/guide_mpsc_v3.rs
 //!
+//! # Waits
+//!
+//! How the endpoints of a ring may wait is the ring's choice, not each endpoint's, since an
+//! endpoint can sleep only if every other endpoint checks for sleepers, and those checks cost the
+//! endpoints that are awake. The choice is the ring's second type parameter, beside its mode, and a
+//! ring reads as one of these six:
+//!
+//! ```text
+//! MpscRing<Multi, SpinOnly>               MpscRing<Single, SpinOnly>
+//! MpscRing<Multi, Sleep<Futex>>           MpscRing<Single, Sleep<Futex>>
+//! MpscRing<Multi, SpinOrSleep<Futex>>     MpscRing<Single, SpinOrSleep<Futex>>
+//! ```
+//!
+//! The mode and the wait are chosen apart: [`Multi`], several segments, or [`Single`], one, goes
+//! with any of the three waits. `MpscRing` with neither written is `MpscRing<Multi, SpinOnly>`, and
+//! the endpoints take the ring's two choices, `MpscProducer<Single, Sleep<Futex>>`.
+//!
+//! - [`SpinOnly`]: an endpoint spins, for some time or forever, and if the time passes before it
+//!   succeeds it returns `Err(Full)` or `Err(Empty)`. The ring offers the `_spin` forms. Nothing
+//!   sleeps, so nothing checks for a sleeper, and the choice costs nothing.
+//! - [`Sleep<Futex>`](crate::wake::Sleep): an endpoint spins for some time, which may be none, then
+//!   optionally sleeps on a waiter object, here a futex, for some further time or forever, and if
+//!   both times pass before it succeeds it returns `Err(Full)` or `Err(Empty)`. The ring offers the
+//!   `_spin_sleep` forms, and every endpoint pays for the checks below.
+//! - [`SpinOrSleep<Futex>`](crate::wake::SpinOrSleep): each endpoint either waits as over `Sleep`,
+//!   or spins without end and never sleeps. The ring offers both forms, and the spinners pay for
+//!   the checks that wake the sleepers.
+//!
+//! `SpinOrSleep<Futex>` is `Sleep<Futex>`'s code exactly. Its name is how a caller says the mix is
+//! on purpose. `Futex` is what a sleeper sleeps on, a [`Wake`](crate::wake::Wake), and is not a
+//! choice by itself, so `MpscRing<Multi, Futex>` does not compile. The general `send` and `recv`
+//! take any policy on any ring, so the list is a signpost and not a wall, and a `spin_time` of
+//! `Ticks::FOREVER` is a value, so a spin without end through `_spin_sleep` still compiles on a
+//! ring over `Sleep`.
+//!
+//! ## The checks, and what they cost
+//!
+//! An endpoint asleep is woken by the other side, so on a ring whose wake sleeps the side that is
+//! awake has to look for a sleeper, on every message path, whether or not anyone ever sleeps:
+//!
+//! - A producer, after each commit, tests whether the consumer said it was going to sleep. The flag
+//!   comes back with the word the send already read, so the check is a test and a branch, and a
+//!   wake call when the flag is set.
+//! - The consumer, at every half segment of messages read, at each segment it gives back, and
+//!   before it sleeps itself, makes its reads visible with a full memory fence and then reads the
+//!   count of producers asleep on a full ring, waking them when there are any.
+//!
+//! So the cost is a branch on each send, a fence and a load every half segment of receives, and
+//! what those few instructions do to the loops around them. What we have measured, with every
+//! endpoint spinning and none asleep, a ring that checks against the same ring that does not:
+//!
+//! - Streaming, one producer, one machine: from no difference we could measure to about 28% more
+//!   time a message, the largest on two hyperthreads of one core. In a few rows, at segments of one
+//!   slot, the ring that checks was the faster by up to 14%.
+//! - Round trips with one message in flight, another machine, two hyperthreads of one core: about
+//!   7% more.
+//!
+//! The cost can be large or absent, and it moves with many things: which cores the endpoints run on
+//! and whether they share a core or a cache, the ring's depth, how many producers there are, the
+//! machine, the build profile, and how the producer's loop and the consumer's fall into step. Every
+//! situation is different and has to be measured. In most of what we have measured, spinning over
+//! `SpinOnly` has been the quickest, at the price of a core kept busy by each endpoint that waits.
+//!
+//! The measurements are in the design note, [MPSC v3 measured] and [MPSC v3 across machines and
+//! build profiles], taken on v3, whose message paths v4 copies.
+//!
+//! [MPSC v3 measured]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/ring-buffer-design.md#mpsc-v3-measured
+//! [MPSC v3 across machines and build profiles]: https://github.com/winksaville/zc-ring-x1/blob/main/notes/ring-buffer-design.md#mpsc-v3-across-machines-and-build-profiles
+//!
+//! ## What compiles
+//!
+//! A sleep on a ring over [`SpinOnly`] does not compile:
+//!
+//! ```compile_fail
+//! use zc_ring_x1::mpsc::v4::{MpscConsumer, Single};
+//! use zc_ring_x1::{Ticks, wake::SpinOnly};
+//! fn sleeps(consumer: &mut MpscConsumer<'_, Single, SpinOnly>) {
+//!     let _ = consumer.recv_spin_sleep(Ticks::ZERO, Ticks::FOREVER, |id: &u64| *id);
+//! }
+//! ```
+//!
+//! Nor does a spin alone on a ring over `Sleep`:
+//!
+//! ```compile_fail
+//! use zc_ring_x1::mpsc::v4::{MpscProducer, Multi};
+//! use zc_ring_x1::{Ticks, wake::{Futex, Sleep}};
+//! fn spins(producer: &MpscProducer<'_, Multi, Sleep<Futex>>) {
+//!     let _ = producer.send_spin(Ticks::FOREVER, |id: &mut u64| *id = 1);
+//! }
+//! ```
+//!
+//! Nor a ring over a wake with no choice made:
+//!
+//! ```compile_fail
+//! use zc_ring_x1::mpsc::v4::{MpscProducer, Multi};
+//! use zc_ring_x1::wake::Futex;
+//! fn no_choice(_producer: &MpscProducer<'_, Multi, Futex>) {}
+//! ```
+//!
+//! Each compiles on a ring whose choice offers it, in either mode:
+//!
+//! ```
+//! # #[cfg(target_os = "linux")]
+//! # {
+//! use zc_ring_x1::mpsc::v4::{MpscConsumer, MpscProducer, Multi, Single};
+//! use zc_ring_x1::wake::{Futex, Sleep, SpinOnly, SpinOrSleep};
+//! use zc_ring_x1::Ticks;
+//! fn spins(producer: &MpscProducer<'_, Single, SpinOnly>) {
+//!     let _ = producer.send_spin(Ticks::FOREVER, |id: &mut u64| *id = 1);
+//! }
+//! fn sleeps(consumer: &mut MpscConsumer<'_, Multi, Sleep<Futex>>) {
+//!     let _ = consumer.recv_spin_sleep(Ticks::ZERO, Ticks::FOREVER, |id: &u64| *id);
+//! }
+//! fn either(producer: &MpscProducer<'_, Single, SpinOrSleep<Futex>>) {
+//!     let _ = producer.send_spin(Ticks::FOREVER, |id: &mut u64| *id = 1);
+//!     let _ = producer.send_spin_sleep(Ticks::ZERO, Ticks::FOREVER, |id: &mut u64| *id = 1);
+//! }
+//! # }
+//! ```
+//!
 //! # What v4 changes from v3
 //!
 //! - Its own magic, so a v3 ring and a v4 ring never attach to each other.
@@ -59,6 +179,10 @@
 //! - One [`WaitPolicy`] serves both sides, in place of v3's `SendPolicy` and its `Room`.
 //! - A role is taken with `ring.producer()` or `ring.consumer()`, v3's `claim_producer` and
 //!   `claim_consumer`.
+//! - A ring takes a choice of how its endpoints wait, `SpinOnly`, `Sleep<Futex>`, or
+//!   `SpinOrSleep<Futex>`, where v3's takes a wake, `NoWake` or `Futex`. The timed sends and
+//!   receives are offered by that choice, where v3's timed sends spin on any ring and sleep on any
+//!   ring, a sleep over `NoWake` being a spin.
 //!
 //! # Inside the ring
 //!
@@ -102,7 +226,7 @@
 //!     itself, and bumps the sequence and wakes them all: a fence every half segment, not every
 //!     message. A producer sleeps only on a full ring, and draining a full segment crosses a
 //!     half-segment mark, so the checks miss no sleeper.
-//!   - With [`NoWake`] every check folds away and a wait polls.
+//!   - With [`SpinOnly`] every check folds away and a wait polls.
 //! - Gated with the rest of `mpsc` on `target_has_atomic = "32"`.
 
 use core::marker::PhantomData;
@@ -110,7 +234,7 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::spsc::v3::{check_body_type, seq_of, validate_geometry};
-use crate::wake::{NoWake, Wake};
+use crate::wake::{SpinOnly, Waits};
 use crate::{CACHE_LINE_SIZE, CacheAligned, Error, Pool};
 
 mod consumer;
@@ -471,7 +595,7 @@ impl Segments {
     ///   sees the producer.
     #[cold]
     #[inline(never)]
-    fn wake_producers<W: Wake>(&self) {
+    fn wake_producers<W: Waits>(&self) {
         core::sync::atomic::fence(Ordering::SeqCst);
         let c = self.claims();
         if c.prod_waiters.load(Ordering::Relaxed) != 0 {
@@ -503,8 +627,8 @@ pub(crate) struct Checkpoint {
 
 /// A ring of segments over the application's pool, its roles taken with [`MpscRing::producer`] and
 /// [`MpscRing::consumer`], its segments handled as mode `M` has them, [`Multi`] by default, and its
-/// waits slept by `W`, [`NoWake`] by default.
-pub struct MpscRing<'a, M: Mode = Multi, W: Wake = NoWake> {
+/// endpoints waiting as `W` says, [`SpinOnly`] by default.
+pub struct MpscRing<'a, M: Mode = Multi, W: Waits = SpinOnly> {
     /// Geometry and segment addresses.
     segs: Segments,
     /// The pool buffer index of segment 0, where the control block is.
@@ -512,7 +636,7 @@ pub struct MpscRing<'a, M: Mode = Multi, W: Wake = NoWake> {
     _region: PhantomData<(&'a [u8], M, W)>,
 }
 
-impl<'a, M: Mode, W: Wake> MpscRing<'a, M, W> {
+impl<'a, M: Mode, W: Waits> MpscRing<'a, M, W> {
     /// Take `seg_count` segments from `pool` and initialize each as an empty ring of `seg_capacity`
     /// slots of `slot_size` bytes.
     ///
@@ -839,6 +963,8 @@ impl<'a, M: Mode, W: Wake> MpscRing<'a, M, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use crate::wake::{Futex, Sleep, SpinOrSleep};
     use crate::{Empty, Exhausted, Full, PoolHeader, Ticks};
     use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -867,7 +993,7 @@ mod tests {
     }
 
     /// Send `from..to` as `seq = i`, `val = i * 10`.
-    fn send<M: Mode, W: Wake>(prod: &MpscProducer<'_, M, W>, from: u64, to: u64) {
+    fn send<M: Mode, W: Waits>(prod: &MpscProducer<'_, M, W>, from: u64, to: u64) {
         for i in from..to {
             prod.send::<Msg>(
                 |_| false,
@@ -881,7 +1007,7 @@ mod tests {
     }
 
     /// Receive `from..to` in order.
-    fn recv<M: Mode, W: Wake>(cons: &mut MpscConsumer<'_, M, W>, from: u64, to: u64) {
+    fn recv<M: Mode, W: Waits>(cons: &mut MpscConsumer<'_, M, W>, from: u64, to: u64) {
         for i in from..to {
             cons.recv::<Msg, ()>(
                 |_| false,
@@ -900,7 +1026,7 @@ mod tests {
     }
 
     /// Claim both roles of a fresh ring, as an in-process caller does.
-    fn endpoints<'a, M: Mode, W: Wake>(
+    fn endpoints<'a, M: Mode, W: Waits>(
         ring: &MpscRing<'a, M, W>,
     ) -> (MpscProducer<'a, M, W>, MpscConsumer<'a, M, W>) {
         (ring.producer().unwrap(), ring.consumer().unwrap())
@@ -932,7 +1058,7 @@ mod tests {
     }
 
     /// Segments free by the in-use word.
-    fn free_segments<M: Mode, W: Wake>(ring: &MpscRing<'_, M, W>) -> u32 {
+    fn free_segments<M: Mode, W: Waits>(ring: &MpscRing<'_, M, W>) -> u32 {
         let segs = &ring.segs;
         !segs.in_use().load(Ordering::Acquire) & segs.all()
     }
@@ -1452,7 +1578,7 @@ mod tests {
     /// Each producer on its own thread sending `count` messages with `send` and a [`SleepThen`]
     /// policy, and the consumer reading with `recv` and the same policy, all waiting without end:
     /// per-producer order holds and every message arrives.
-    fn stream_waiting<M: Mode, W: Wake>(
+    fn stream_waiting<M: Mode, W: Waits>(
         prods: Vec<MpscProducer<'_, M, W>>,
         cons: &mut MpscConsumer<'_, M, W>,
         count: u64,
@@ -1492,20 +1618,21 @@ mod tests {
             for producers in [1usize, 2, 4] {
                 let mut r = Region::new();
                 let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-                let ring = MpscRing::<Single, NoWake>::init(&mut pool, 64, depth, 1).unwrap();
+                let ring = MpscRing::<Single, SpinOnly>::init(&mut pool, 64, depth, 1).unwrap();
                 let mut cons = ring.consumer().unwrap();
                 let prods = (0..producers).map(|_| ring.producer().unwrap()).collect();
                 stream_waiting(prods, &mut cons, total);
                 #[cfg(target_os = "linux")]
                 {
-                    use crate::wake::Futex;
                     let mut r = Region::new();
                     let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-                    let ring = MpscRing::<Single, Futex<5>>::init(&mut pool, 64, depth, 1).unwrap();
+                    let ring =
+                        MpscRing::<Single, Sleep<Futex<5>>>::init(&mut pool, 64, depth, 1).unwrap();
                     let mut cons = ring.consumer().unwrap();
                     let prods = (0..producers).map(|_| ring.producer().unwrap()).collect();
                     stream_waiting(prods, &mut cons, total);
-                    let ring = MpscRing::<Multi, Futex<5>>::init(&mut pool, 64, depth, 3).unwrap();
+                    let ring =
+                        MpscRing::<Multi, Sleep<Futex<5>>>::init(&mut pool, 64, depth, 3).unwrap();
                     let mut cons = ring.consumer().unwrap();
                     let prods = (0..producers).map(|_| ring.producer().unwrap()).collect();
                     stream_waiting(prods, &mut cons, total);
@@ -1518,12 +1645,9 @@ mod tests {
         }
     }
 
-    /// A futex whose timeout is far longer than any test step, so a wait that ends quickly ended by
-    /// a wake.
-    #[cfg(target_os = "linux")]
-    type SlowFutex = crate::wake::Futex<500>;
-
-    /// Well under [`SlowFutex`]'s timeout, well over a step's time.
+    /// `WOKEN` is well under the 500 ms timeout of the tests' `Futex<500>`, and well over a step's
+    /// time. That timeout is far longer than any test step, so a wait that ends within `WOKEN`
+    /// ended by a wake.
     #[cfg(target_os = "linux")]
     const WOKEN: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -1532,7 +1656,7 @@ mod tests {
     fn a_waiting_consumer_is_woken_by_a_send() {
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let ring = MpscRing::<Multi, SlowFutex>::init(&mut pool, 64, 4, 2).unwrap();
+        let ring = MpscRing::<Multi, Sleep<Futex<500>>>::init(&mut pool, 64, 4, 2).unwrap();
         let (prod, mut cons) = endpoints(&ring);
         std::thread::scope(|s| {
             let reader = s.spawn(move || {
@@ -1569,7 +1693,7 @@ mod tests {
         fn run<M: Mode>(count: u32) {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-            let ring = MpscRing::<M, SlowFutex>::init(&mut pool, 64, 4, count).unwrap();
+            let ring = MpscRing::<M, Sleep<Futex<500>>>::init(&mut pool, 64, 4, count).unwrap();
             let (prod, mut cons) = endpoints(&ring);
             let full = 4 * count as u64;
             send(&prod, 0, full);
@@ -1602,7 +1726,7 @@ mod tests {
         // Nothing arrives: each timeout is a policy call, and the policy ends the wait.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let ring = MpscRing::<Single, crate::wake::Futex<1>>::init(&mut pool, 64, 2, 1).unwrap();
+        let ring = MpscRing::<Single, Sleep<Futex<1>>>::init(&mut pool, 64, 2, 1).unwrap();
         let (prod, mut cons) = endpoints(&ring);
         let mut seen = Vec::new();
         let err = cons
@@ -1636,10 +1760,10 @@ mod tests {
     #[cfg(any(target_os = "linux", feature = "std"))]
     const LONG: std::time::Duration = std::time::Duration::from_millis(250);
 
-    /// `SLOW_US` is [`SlowFutex`]'s timeout in microseconds: a deadline well over [`WOKEN`], so a
-    /// send that returns sooner was woken.
+    /// `TIMEOUT_US` is the timeout of the tests' `Futex<500>`, in microseconds: a deadline well
+    /// over [`WOKEN`], so a send or a receive that returns sooner was woken.
     #[cfg(target_os = "linux")]
-    const SLOW_US: u64 = 500_000;
+    const TIMEOUT_US: u64 = 500_000;
 
     #[cfg(any(target_os = "linux", feature = "std"))]
     #[test]
@@ -1665,23 +1789,6 @@ mod tests {
         );
         let waited = start.elapsed();
         assert!(waited >= std::time::Duration::from_millis(20), "{waited:?}");
-        assert!(waited < LONG, "{waited:?}");
-        // With NoWake the backoff send spins through both times.
-        let start = std::time::Instant::now();
-        assert_eq!(
-            prod.send_spin_sleep::<Msg>(
-                crate::microsecs_to_ticks(100),
-                crate::microsecs_to_ticks(10_000),
-                |_| {}
-            )
-            .err(),
-            Some(Full)
-        );
-        let waited = start.elapsed();
-        assert!(
-            waited >= std::time::Duration::from_micros(10_100),
-            "{waited:?}"
-        );
         assert!(waited < LONG, "{waited:?}");
         recv(&mut cons, 0, 4);
     }
@@ -1714,11 +1821,11 @@ mod tests {
     #[test]
     fn a_deadline_sleeper_is_woken_by_releases() {
         // A full ring of each mode: the producer spins not at all, sleeps, and is woken by the
-        // consumer's releases long before its deadline or SlowFutex's timeout.
+        // consumer's releases long before its deadline or the futex's own timeout.
         fn run<M: Mode>(count: u32) {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-            let ring = MpscRing::<M, SlowFutex>::init(&mut pool, 64, 4, count).unwrap();
+            let ring = MpscRing::<M, Sleep<Futex<500>>>::init(&mut pool, 64, 4, count).unwrap();
             let (prod, mut cons) = endpoints(&ring);
             let full = 4 * count as u64;
             send(&prod, 0, full);
@@ -1728,7 +1835,7 @@ mod tests {
                     let start = std::time::Instant::now();
                     let sent = prod.send_spin_sleep::<Msg>(
                         Ticks::ZERO,
-                        crate::microsecs_to_ticks(SLOW_US),
+                        crate::microsecs_to_ticks(TIMEOUT_US),
                         |m| {
                             m.seq = full;
                             m.val = full * 10;
@@ -1758,10 +1865,10 @@ mod tests {
     #[test]
     fn a_deadline_sleep_gives_up_at_its_time() {
         // A full ring and no consumer: the producer spins, sleeps on what is left of its wait, and
-        // gives up when it passes, far sooner than SlowFutex's own timeout.
+        // gives up when it passes, far sooner than the futex's own timeout.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let ring = MpscRing::<Single, SlowFutex>::init(&mut pool, 64, 2, 1).unwrap();
+        let ring = MpscRing::<Single, Sleep<Futex<500>>>::init(&mut pool, 64, 2, 1).unwrap();
         let (prod, _cons) = endpoints(&ring);
         send(&prod, 0, 2);
         let start = std::time::Instant::now();
@@ -1805,28 +1912,6 @@ mod tests {
         let waited = start.elapsed();
         assert!(waited >= std::time::Duration::from_millis(20), "{waited:?}");
         assert!(waited < LONG, "{waited:?}");
-        // No spin and no sleep is one look.
-        assert_eq!(
-            cons.recv_spin_sleep(Ticks::ZERO, Ticks::ZERO, empty).err(),
-            Some(Empty)
-        );
-        // With NoWake the spin and sleep receive spins through both times.
-        let start = std::time::Instant::now();
-        assert_eq!(
-            cons.recv_spin_sleep(
-                crate::microsecs_to_ticks(100),
-                crate::microsecs_to_ticks(10_000),
-                empty
-            )
-            .err(),
-            Some(Empty)
-        );
-        let waited = start.elapsed();
-        assert!(
-            waited >= std::time::Duration::from_micros(10_100),
-            "{waited:?}"
-        );
-        assert!(waited < LONG, "{waited:?}");
         send(&prod, 1, 2);
         recv(&mut cons, 1, 2);
     }
@@ -1834,26 +1919,16 @@ mod tests {
     #[cfg(any(target_os = "linux", feature = "std"))]
     #[test]
     fn a_deadline_recv_lands_when_a_message_comes() {
-        // An empty ring: a receive that never gives up spins until a producer sends, by each of the
-        // three ways to say so over NoWake.
+        // An empty ring: a receive that never gives up spins until a producer sends.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
         let ring = MpscRing::<Single>::init(&mut pool, 64, 4, 1).unwrap();
         let (prod, mut cons) = endpoints(&ring);
         std::thread::scope(|s| {
-            let reader = s.spawn(move || {
-                let read = |m: &Msg| m.seq;
-                [
-                    cons.recv_spin(Ticks::FOREVER, read),
-                    cons.recv_spin_sleep(Ticks::FOREVER, Ticks::ZERO, read),
-                    cons.recv_spin_sleep(Ticks::ZERO, Ticks::FOREVER, read),
-                ]
-            });
-            for i in 0..3 {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                send(&prod, i, i + 1);
-            }
-            assert_eq!(reader.join().unwrap(), [Ok(0), Ok(1), Ok(2)]);
+            let reader = s.spawn(move || cons.recv_spin(Ticks::FOREVER, |m: &Msg| m.seq));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            send(&prod, 0, 1);
+            assert_eq!(reader.join().unwrap(), Ok(0));
         });
     }
 
@@ -1862,11 +1937,11 @@ mod tests {
     fn a_deadline_recv_sleeper_is_woken_by_a_send() {
         // An empty ring of each mode: the consumer spins not at all or for a short time, sleeps to
         // a deadline or without one, and is woken by the producer's send long before its deadline
-        // or SlowFutex's timeout.
+        // or the futex's own timeout.
         fn run<M: Mode>(count: u32, spin_us: u64, sleep_time: Ticks) {
             let mut r = Region::new();
             let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-            let ring = MpscRing::<M, SlowFutex>::init(&mut pool, 64, 4, count).unwrap();
+            let ring = MpscRing::<M, Sleep<Futex<500>>>::init(&mut pool, 64, 4, count).unwrap();
             let (prod, mut cons) = endpoints(&ring);
             let claim = ring.segs.claim();
             std::thread::scope(|s| {
@@ -1892,7 +1967,7 @@ mod tests {
             });
             assert_eq!(claim.load(Ordering::Relaxed) & WAITING, 0);
         }
-        for sleep_time in [crate::microsecs_to_ticks(SLOW_US), Ticks::FOREVER] {
+        for sleep_time in [crate::microsecs_to_ticks(TIMEOUT_US), Ticks::FOREVER] {
             run::<Single>(1, 0, sleep_time);
             run::<Multi>(2, 0, sleep_time);
             run::<Single>(1, 100, sleep_time);
@@ -1904,12 +1979,17 @@ mod tests {
     #[test]
     fn a_deadline_recv_sleep_gives_up_at_its_time() {
         // An empty ring and no producer sending: the consumer spins, sleeps on what is left of its
-        // wait, and gives up when it passes, far sooner than SlowFutex's own timeout.
+        // wait, and gives up when it passes, far sooner than the futex's own timeout.
         let mut r = Region::new();
         let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
-        let ring = MpscRing::<Single, SlowFutex>::init(&mut pool, 64, 2, 1).unwrap();
+        let ring = MpscRing::<Single, Sleep<Futex<500>>>::init(&mut pool, 64, 2, 1).unwrap();
         let (_prod, mut cons) = endpoints(&ring);
         let empty = |_: &Msg| panic!("read of an empty ring");
+        // No spin and no sleep is one look.
+        assert_eq!(
+            cons.recv_spin_sleep(Ticks::ZERO, Ticks::ZERO, empty).err(),
+            Some(Empty)
+        );
         // No sleep gives up when the spin ends.
         let start = std::time::Instant::now();
         assert_eq!(
@@ -1937,6 +2017,63 @@ mod tests {
         );
         assert!(waited < LONG, "{waited:?}");
         assert_eq!(ring.segs.claim().load(Ordering::Relaxed) & WAITING, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_mixed_ring_spins_and_sleeps() {
+        // A ring over SpinOrSleep offers the spin forms and the spin and sleep forms to both
+        // endpoints, and sleeps and wakes as the wake it wraps: the consumer asleep is woken by a
+        // producer that only spins, and a consumer that only spins reads what a sleeping producer
+        // sent.
+        let mut r = Region::new();
+        let mut pool = Pool::init(&mut r.0, BUF as u32, BUFS as u32).unwrap();
+        let ring = MpscRing::<Single, SpinOrSleep<Futex<500>>>::init(&mut pool, 64, 2, 1).unwrap();
+        let (prod, mut cons) = endpoints(&ring);
+        let empty = |_: &Msg| panic!("read of an empty ring");
+        assert_eq!(cons.recv_spin(Ticks::ZERO, empty).err(), Some(Empty));
+        assert_eq!(
+            cons.recv_spin_sleep(Ticks::ZERO, Ticks::ZERO, empty).err(),
+            Some(Empty)
+        );
+        let claim = ring.segs.claim();
+        std::thread::scope(|s| {
+            let reader = s.spawn(move || {
+                let start = std::time::Instant::now();
+                let read = [
+                    cons.recv_spin_sleep(Ticks::ZERO, Ticks::FOREVER, |m: &Msg| m.seq),
+                    cons.recv_spin(Ticks::FOREVER, |m: &Msg| m.seq),
+                    // A spin without end that never reaches its sleep.
+                    cons.recv_spin_sleep(Ticks::FOREVER, Ticks::ZERO, |m: &Msg| m.seq),
+                ];
+                (read, start.elapsed(), cons)
+            });
+            // Asleep before the first message comes, so the spinning send wakes it.
+            let start = std::time::Instant::now();
+            while claim.load(Ordering::SeqCst) & WAITING == 0 {
+                assert!(start.elapsed() < LONG, "the consumer never slept");
+                std::thread::yield_now();
+            }
+            for i in 0..3 {
+                prod.send_spin::<Msg>(Ticks::FOREVER, |m| {
+                    m.seq = i;
+                    m.val = i * 10;
+                })
+                .unwrap();
+            }
+            let (read, waited, mut cons) = reader.join().unwrap();
+            assert_eq!(read, [Ok(0), Ok(1), Ok(2)]);
+            assert!(waited < WOKEN, "woken by its timeout, not the send");
+            // A full ring: the spin form gives up at once, and the spin and sleep form at its time.
+            send(&prod, 3, 5);
+            assert_eq!(prod.send_spin::<Msg>(Ticks::ZERO, |_| {}).err(), Some(Full));
+            assert_eq!(
+                prod.send_spin_sleep::<Msg>(Ticks::ZERO, crate::microsecs_to_ticks(1_000), |_| {})
+                    .err(),
+                Some(Full)
+            );
+            recv(&mut cons, 3, 5);
+        });
     }
 
     #[test]

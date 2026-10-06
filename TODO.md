@@ -61,13 +61,14 @@ reference to measure against.
 #### Acceptance check
 
 - `jj diff --from main --to feat-mpsc-v4 src/mpsc/v3` prints nothing.
-- `cargo test --all-features` passes, with v4 tests of the consumer's waits over `NoWake` and
-  `Futex`: no spin, a timed spin, and a spin forever, each with no sleep, a timed sleep, and a sleep
-  until a commit.
+- `cargo test --all-features` passes, with v4 tests of the consumer's waits: over `SpinOnly`, no
+  spin, a timed spin, and a spin forever, and over `Sleep<Futex>` and `SpinOrSleep<Futex>`, no
+  spin, a timed spin, and a spin forever, each with no sleep, a timed sleep, and a sleep until a
+  commit, as far as the choice offers them.
 - Every wait method of the v4 producer has a consumer counterpart of the same name form and
   parameter meanings, or the design note says why the two differ.
-- A spin without end on a ring over plain `Futex`, and a sleep on a ring over `NoWake`, each fail to
-  compile, held by a compile-fail test or a documented example.
+- A spin alone on a ring over `Sleep<Futex>`, and a sleep on a ring over `SpinOnly`, each fail to
+  compile, held by a doc test marked to fail compiling.
 - A v4 test holds that an endpoint whose wake disagrees with the ring's recorded one is refused.
 - `tp-stream` runs each v4 flavor, and the design note holds its rows beside the matching v3 rows,
   each table naming its build profile.
@@ -80,7 +81,8 @@ reference to measure against.
 - [feat: mpsc v4 as a copy of mpsc v3][2] (done)
 - [feat: mpsc v4 consumer policy][3] (done)
 - [feat: mpsc v4 plain names][8] (done)
-- [feat: mpsc v4 waiters say their cost][9]
+- [feat: mpsc v4 waiters say their cost][9] (done)
+- [feat: ticks from millis and secs][12]
 - [feat: mpsc v4 refuses a wake mismatch][10]
 - [feat: mpsc v4 in the tools][4]
 - [docs: mpsc v4 consumer waits measured][5]
@@ -236,6 +238,80 @@ A spin on a ring over `Futex` pays the wake's checks and says nothing, and a sle
 that says a mix of spinners and sleepers is on purpose, with the cost in its docs, and gate the
 timed methods of both endpoints by the waiter, so a spin without end on a plain `Futex` ring and a
 sleep on a `NoWake` ring do not compile. The general `send` and `recv` over a policy stay open.
+
+- A v4 ring takes a choice of how its endpoints wait, one of three types in `wake.rs`, where a v3
+  ring takes a wake: `SpinOnly`, `Sleep<S>`, and `SpinOrSleep<S>`, `S` being what a sleeper sleeps
+  on, `Futex`. A ring reads `MpscRing<Multi, SpinOnly>`, `MpscRing<Multi, Sleep<Futex>>`, or
+  `MpscRing<Multi, SpinOrSleep<Futex>>`, each with `Single` for `Multi` as well.
+  - The names are the user's call of 2026-10-06 at this rung's review. Built first: `NoWake`,
+    `Futex`, and a `Mixed<Futex>`, iiac-perf's sketch, where "mixed" does not say with what and
+    `NoWake` says what the ring lacks.
+  - Weighed: `Futex` renamed `WaiterFutex`, the user's first thought. `Waiter` is already v4's
+    handle a policy sleeps through, the rename would touch v3, and inside `Sleep<...>` the position
+    says what the prefix would.
+  - The choice and the mechanism are apart: `Futex` is a `Wake`, how a sleeper sleeps and is woken,
+    and a choice is a `Waits`, which v4's ring and endpoints are bounded by. So a v4 ring over
+    plain `Futex` or `NoWake` does not compile, and no ring is made without the choice.
+  - `Sleep` and `SpinOrSleep` over a wake that does not sleep, `NoWake`, fail to compile where the
+    ring is used, by an assertion in a constant.
+- Two marker traits say what a choice offers: `Spins`, `SpinOnly` and `SpinOrSleep`, and `Sleeps`,
+  `Sleep` and `SpinOrSleep`.
+  - `send_spin` and `recv_spin` need `W: Spins`, and `send_spin_sleep` and `recv_spin_sleep` need
+    `W: Sleeps`, the same bound on both sides.
+  - The bounds are on the four methods alone. `send` and `recv` take any policy on any ring, so a
+    policy of the caller's own still spins or sleeps on any ring.
+- `SpinOrSleep<S>` forwards to `S` as `Sleep<S>` does, so the two are one wake protocol, and a
+  process attached over one and a process over the other share a ring. Its docs state the cost,
+  with the measurements.
+- v3's timed sends promised that over `NoWake` the spin and the sleep are spun together, and v4's
+  did until this rung. That promise is gone from v4: a sleep over `SpinOnly` does not compile, so
+  nothing spins under the name of a sleep. iiac-perf's first ask, `m-8-0`, wanted that promise for
+  the consumer, and their `m-8-3` replaces it.
+- The tests spell their rings with the plain names, `Sleep<Futex<500>>` and
+  `SpinOrSleep<Futex<500>>`, the user's call of 2026-10-06 at this rung's review. An alias,
+  `SlowFutex`, and one for the mixed ring are gone, "slow" reading as a fault.
+- The next rung, `feat: ticks from millis and secs`, is inserted from the same review: the tests'
+  times read `microsecs_to_ticks(20_000)`, and the user wants them named, by conversions for
+  milliseconds and seconds that do not exist yet.
+- Not built: a check that catches a `spin_time` of `Ticks::FOREVER` passed to a `_spin_sleep` form
+  on a ring over `Sleep`. The time is a value, so it compiles, and the methods' docs say what it is
+  and name `SpinOrSleep`. A debug assertion would need the wake to say at run time whether it
+  spins, a constant on `Wake` that v3's wakes would have to carry too.
+- The wake additions are in `wake.rs`, which v3 also uses: additive, and v3's code and behavior are
+  as they were.
+- The module docs gain a section, `Waits`, with the six ring types, three choices in each of two
+  modes, the user's call that the docs show `Single` beside `Multi`, then the three choices as a
+  list, and four examples the doc tests run: a sleep over `SpinOnly`, a spin alone over `Sleep`,
+  and a ring over a bare `Futex`, each marked to fail compiling, and the forms that compile. They
+  are the crate's only doc tests.
+  - The list was a table first, which `reflow.py` joins into one paragraph, so it is a list.
+- The section says what the checks are, why they cost, and how much, the user's call of 2026-10-06
+  at this rung's review, where the first draft said "the cost is the checks" and no more.
+  - What they are: a producer's test after each commit of the consumer's waiting flag, and the
+    consumer's fence and read of the producers' waiting count at every half segment of messages
+    read, at each segment it gives back, and before it sleeps.
+  - How much, every endpoint spinning and none asleep, a ring over `Futex` against one over
+    `NoWake`: in the design note's first v3 streams, the 3900X, one producer, from no difference to
+    28% more a message, 15.6 against 12.2 ns at depth 8 on the SMT pair, and at depth 1 the ring
+    over `Futex` the faster by up to 14%, 32.0 against 37.4 ns. In iiac-perf's round trips, 7%.
+  - The docs say the cost moves with the cores, the depth, the producers, the machine, the build
+    profile, and the two loops' rhythm, that every situation has to be measured, and that
+    spinning over `SpinOnly` has been the quickest in most of what we measured. They link the design
+    note's two v3 sections.
+  - We think the rows where the ring over `Futex` is faster are the rhythm between the two loops
+    and not the checks helping, as the Todo `Measurement builds and the producer-consumer rhythm`
+    describes.
+- The tests: the two `NoWake` checks of a spin and sleep form are removed with the promise, and a
+  new test runs a ring over `SpinOrSleep`, its consumer asleep and woken by a producer that only
+  spins,
+  then spinning alone, and its producer giving up by both forms at a full ring.
+
+##### feat: ticks from millis and secs
+
+A caller makes a `Ticks` from microseconds or nanoseconds only, so 20 ms is written
+`microsecs_to_ticks(20_000)`, and none of the conversions can make a constant. Add
+`millis_to_ticks` and `secs_to_ticks`, make all four `const fn`, a tick being one nanosecond, and
+give the times in v4's tests names that say spin or sleep and how long.
 
 ##### feat: mpsc v4 refuses a wake mismatch
 
@@ -940,3 +1016,4 @@ _None._
 [9]: #feat-mpsc-v4-waiters-say-their-cost
 [10]: #feat-mpsc-v4-refuses-a-wake-mismatch
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
+[12]: #feat-ticks-from-millis-and-secs
