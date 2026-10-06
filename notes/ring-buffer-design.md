@@ -2479,8 +2479,7 @@ says otherwise, ns per message.
 - Verdict (2026-09-30): a build profile is a variable to fix, not a speedup to adopt. A comparison
   between two builds uses one profile, alternates its runs, and measures more than one machine
   before calling a change a cost or a win, the Todo `Measurement builds and the producer-consumer
-  rhythm`. `Single` and `Multi` cannot be told apart, the Todo `MPSC v4: v3 without Single and
-  Multi`.
+  rhythm`. `Single` and `Multi` cannot be told apart, the Todo `MPSC without Single and Multi`.
 
 ### MPSC v3 long-term possibilities
 

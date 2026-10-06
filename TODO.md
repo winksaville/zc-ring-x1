@@ -30,7 +30,119 @@ A cycle's record has one home at a time, and while the cycle runs this is it. Th
 shape is the specimen in [cycle-model.md](agent-data/cycle-model.md), and the rules are in
 [The In Progress block](agent-data/notes.md#the-in-progress-block).
 
-_No cycle currently in progress._
+### feat: mpsc v4
+
+#### Problem
+
+MPSC v3's consumer cannot wait at an empty ring the way its producer waits at a full one. The
+producer has `send` over a policy, `send_spin`, and `send_spin_sleep`, each time a `Ticks`. The
+consumer has `reserve_slot_with`, a poll whose policy counts attempts, and `reserve_slot_wait`,
+which sleeps at every empty look with no spin before it and no deadline, bounded by the wake's own
+timeout alone. A caller cannot compose the timed form, since `now_ticks` and `Deadline::at` are
+`pub(crate)`. iiac-perf asked for it in the message thread `m-8`: their round-trip benches never
+fill a ring, so the only waits they measure are the consumer's.
+
+#### Solution
+
+Start `mpsc::v4` as a copy of v3, and give its consumer the producer's waits. v3 stays as built, the
+reference to measure against.
+
+- The mode stays: v4 has `Single` and `Multi` as v3 does.
+- The consumer gets a general reserve over a policy, and the timed spin and spin-then-sleep written
+  as policies for it, as `send_spin` and `send_spin_sleep` are for `send`.
+- The two sides are symmetric: where a producer wait and a consumer wait have the same semantics
+  they have the same name, parameters, and meanings. Where the semantics differ, the cycle finds why
+  and what would make them the same, and where they cannot be made the same the names differ.
+- The tools gain v4 flavors, and v4 is measured against the matching v3 flavors under one named
+  build profile.
+
+#### Acceptance check
+
+- `jj diff --from main --to feat-mpsc-v4 src/mpsc/v3` prints nothing.
+- `cargo test --all-features` passes, with v4 tests of the consumer's waits over `NoWake` and
+  `Futex`: no spin, a timed spin, and a spin forever, each with no sleep, a timed sleep, and a sleep
+  until a commit.
+- Every wait method of the v4 producer has a consumer counterpart of the same name form and
+  parameter meanings, or the design note says why the two differ.
+- `tp-stream` runs each v4 flavor, and the design note holds its rows beside the matching v3 rows,
+  each table naming its build profile.
+- `cargo run --release --example guide_mpsc_v4` runs to its last line.
+- The thread `m-8` holds a reply that links the landed cycle.
+
+#### Ladder
+
+- [feat: mpsc v4 opening][1] (done)
+- [feat: mpsc v4 as a copy of mpsc v3][2]
+- [feat: mpsc v4 consumer policy][3]
+- [feat: mpsc v4 in the tools][4]
+- [docs: mpsc v4 consumer waits measured][5]
+- [docs: mpsc v4 guide and example][6]
+- [feat: mpsc v4 closing][7]
+
+#### Deliberation
+
+- A new version, not a change to v3, the user's call of 2026-10-06: no existing code changes, so
+  v3's callers, iiac-perf's benches among them, keep building.
+  - Weighed: the timed methods added to v3 over a private mechanism, the smaller change, with the
+    symmetric form left for later. It would have changed v3's API twice.
+- The mode stays, the user's call of 2026-10-06: the first measurements of dropping it indicate a
+  performance hit.
+  - The mode drop was this version's first scope, the Todo then titled `MPSC v4: v3 without Single
+    and Multi`. That entry stays in `## Todo`, retitled `MPSC without Single and Multi`.
+- Symmetric, and identical where the semantics are the same, the user's rule of 2026-10-06, stated
+  in the solution.
+- No new waiter: the consumer already carries the ring's `W: Wake` and sleeps through `W::wait`, and
+  `Wake` already has `wait_until`. What the consumer lacks is the deadline and a policy that can
+  choose to sleep.
+- The copy is its own rung, so the consumer policy rung's diff shows that change alone.
+- The guard stays: the producer takes a closure and the consumer returns a guard, and a guard
+  dropped without `release` re-delivers its slot. We think this is a difference in semantics the
+  symmetry rule leaves alone, to be confirmed at the consumer policy rung.
+- One policy trait for both sides or two is open, decided at the consumer policy rung. The
+  producer's `on_lost` has no consumer counterpart.
+- The build profile for the tables is one codegen unit and fat LTO, the profile the Todo
+  `Measurement builds and the producer-consumer rhythm` found alike on three machines.
+- The version advances by a patch, the default.
+
+#### Ladder details
+
+##### feat: mpsc v4 opening
+
+The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write this
+block, bump the version-of-record, and rename the package and bins to their `-dev` names.
+
+- The block is written new, not moved from a `## Todo` entry: the entry that named v4 was the mode
+  drop, which v4 does not do, so that entry is retitled and stays.
+- The design note's one mention of that entry follows its new title.
+
+##### feat: mpsc v4 as a copy of mpsc v3
+
+v4 needs a starting point that is v3 exactly. Copy `src/mpsc/v3/` to `src/mpsc/v4/`, renamed, with
+its tests passing and nothing else changed.
+
+##### feat: mpsc v4 consumer policy
+
+The v4 consumer has a poll and an unbounded sleep, where the producer has a policy and two timed
+sends. Give the consumer a general reserve over a policy that can sleep to a deadline, and the timed
+spin and spin-then-sleep written for it, named by the symmetry rule.
+
+##### feat: mpsc v4 in the tools
+
+No tool can run v4. Add v4 flavors to `tp-stream` and the other tools, beside v3's.
+
+##### docs: mpsc v4 consumer waits measured
+
+Whether the copy and the new reserve cost anything is not known. Measure each v4 flavor against its
+v3 flavor under one named build profile, and put the rows in the design note.
+
+##### docs: mpsc v4 guide and example
+
+The user guide, README.md, and `examples/` teach v3 only. Add v4's section and one complete program,
+`examples/guide_mpsc_v4.rs`.
+
+##### feat: mpsc v4 closing
+
+Closing out the cycle.
 
 ## Waiting
 
@@ -77,15 +189,19 @@ machines. `tp-stream -d 1`, three alternating runs per build, 2026-09-29:
 - From `feat: mpsc v3 deadline sends`, the user's reasoning that identical loops fully inlined
   should run alike, and the user's call to measure on the 7600X and the Pi.
 
-### MPSC v4: v3 without Single and Multi
+### MPSC without Single and Multi
 
 MPSC v3 chooses its mode at compile time, `Single`, one segment and no switch path, or `Multi`,
 v2's switching, and the measurements cannot tell them apart: a one-segment `Multi` ring runs
 within 8% of `Single`, faster on some machines and placements and slower on others. The mode costs
 a type parameter on every v3 type, a field and a check in the control block, and a second flavor in
-every tool, for no measured gain. Start `mpsc::v4` as a copy of v3 with the mode dropped, and keep
-v3 as built, the reference to measure against and to bring a mode back from.
+every tool, for no measured gain. Start a new MPSC version as a copy of the latest with the mode
+dropped, and keep the one it copies as built, the reference to measure against and to bring a mode
+back from.
 
+- Not `mpsc::v4`, the user's call of 2026-10-06 at the opening of `feat: mpsc v4`: the first
+  measurements of dropping the mode indicate a performance hit, so v4 keeps `Single` and `Multi`,
+  and this waits on measurements that settle it.
 - One mode, v3's `Multi`, and the `M` type parameter gone, so a ring of one segment does what
   `Single` does now. `MpscRing<'a, W>`, and likewise the endpoints.
 - `W` and its compile-time `W::WAKES` checks stay, the user's call of 2026-09-30.
@@ -691,141 +807,15 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### docs: mpsc v3 doc pass
-
-#### Problem
-
-The MPSC v3 source, `src/mpsc/v3/mod.rs`, `producer.rs`, and `consumer.rs`, wraps its doc comments
-and comments near 70 columns, where the source width is 100, per prose.md's [Line
-widths](agent-data/prose.md#line-widths). And the examples on `send`, `send_spin`, and
-`send_spin_sleep` run 55 to 60 lines each, mostly the same setup, the message type, the region, the
-pool, the ring, and the claims, around a send of about five lines.
-
-#### Solution
-
-Every comment in the three files is rewrapped to the full width, the sends' examples are removed,
-and one complete program takes their place.
-
-- The rewrap: `python3 notes/reflow.py <file>` ran on each file, keeping paragraphs, bullets at any
-  depth, headings, and fenced code, and moving no word. The three files are 185 lines shorter for
-  it.
-- The examples: the examples on `send`, `send_spin`, and `send_spin_sleep` are gone, and the two
-  deadline sends' docs say only what each adds to `send`, which alone describes what every send
-  shares.
-- One complete program, pool to release, has one home, `examples/guide_mpsc_v3.rs`, a producer
-  thread and a consumer thread, and README.md, the `mpsc::v3` module docs, and `user-guide.md` link
-  to it.
-
-#### Acceptance check
-
-- `python3 notes/reflow.py` on each of the three files leaves it unchanged.
-- The rewrap rung's diff changes no word: reflow.py's same-words check passed on every block, and
-  the rung holds no edit but reflow.py's and `cargo fmt`'s.
-- `grep -n "# Example" src/mpsc/v3/producer.rs` finds nothing.
-- `cargo run --release --example guide_mpsc_v3` runs to its last line.
-
-Passed: reflow.py leaves each of the three files byte for byte as it is, the rewrap rung's source
-changes are reflow.py's alone with each file's words in the same order and its code lines
-identical, `producer.rs` has no `# Example`, and the example prints `mpsc v3: 100000 messages, 2
-segments of 8, 68 switches, roles and ring released`, the switch count varying by run.
-
-#### Ladder
-
-- [docs: mpsc v3 doc pass opening][1] (done)
-- [docs: mpsc v3 doc pass rewrap][2] (done)
-- [docs: mpsc v3 doc pass examples][3] (done)
-- [docs: mpsc v3 doc pass closing][4] (done)
-
-#### Deliberation
-
-- One cycle, two work rungs, the user's call of 2026-10-02: the rewrap first, reviewed as a rewrap,
-  then the examples, reviewed line by line, since the rewrap's review rests on no word changing.
-- The rewrap is a deliberate sweep, the user's call of 2026-09-29, where Line widths otherwise
-  rewraps text only when it is touched.
-  - Text only: the words stay, the lines move, with any wording fix left to its own commit.
-  - Lines that read better long stay long, as Line widths allows: the `// OK:` comments on `unwrap`
-    calls, a URL.
-  - A trial on copies of the three files kept every word and shortened them by about 200 lines.
-- The examples went overboard, the user's call of 2026-10-02, which put the full example in
-  README.md.
-  - `user-guide.md` teaches the sends too, so one home keeps one copy.
-- The full example is a program in `examples/`, in two threads, not a README.md block, the user's
-  call of 2026-10-03 at this rung's review.
-  - The README.md block was built first, run through a doctest-only item in `lib.rs`,
-    `#[cfg(doctest)] #[doc = include_str!("../README.md")]`. `cargo test --doc` listed its blocks
-    under that item's name with line numbers counted as if README.md were pasted into `lib.rs`,
-    README.md's line plus 75, so a failure would not say where in README.md it was.
-  - An example is a file cargo names in its output, built by every `cargo test` and linted by
-    `cargo clippy --all-targets`, as `guide_spsc_v3.rs` and `guide_mpsc_v2.rs` are.
-- The sends' doc examples are removed, not lightened, and the sends' docs made more concise, the
-  user's call of 2026-10-03 at this rung's second review.
-  - Hiding each example's setup behind rustdoc's `# ` lines was built first: `send_spin` showed 14
-    lines, `send_spin_sleep` 10, and `send` 32 with its policy.
-  - The acceptance check follows: the checks on the rendered examples' length and on the doctests
-    are gone, since no doctest is left, and a check that no example remains takes their place.
-- The consumer's v3 methods' docs stay in their old form: moving them to the Parameters form the
-  producer's sends use is a wording change, outside a rewrap and outside the examples.
-
-#### Ladder details
-
-##### docs: mpsc v3 doc pass opening
-
-The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, move the
-Todo entry into this block, bump the version-of-record, and rename the package and bins to their
-`-dev` names.
-
-##### docs: mpsc v3 doc pass rewrap
-
-The three files' comments wrap near 70 columns where the source width is 100. Run reflow.py over
-each, so the lines move and no word changes.
-
-- The three files went from 3471 lines to 3286, `mod.rs` 121 shorter, `producer.rs` 28, and
-  `consumer.rs` 36.
-- Every word and every code line is where it was: each file's words, comment markers aside, are the
-  same sequence before and after, and its lines that are not comments are identical.
-- Four lines stay past 100 columns, all in `mod.rs`'s tests, each a line of code that `cargo fmt`
-  leaves long, not a comment.
-- A second run of reflow.py changes nothing, so the rewrap is stable.
-
-##### docs: mpsc v3 doc pass examples
-
-The examples on `send`, `send_spin`, and `send_spin_sleep` are mostly the same setup around a send
-of about five lines, and the three sends' docs repeat each other. Remove the examples, give one
-complete program a home in `examples/`, and cut the deadline sends' docs to what they add.
-
-- The whole program is `examples/guide_mpsc_v3.rs`: a pool, a `Multi` ring of 2 segments of 8
-  slots with the `Futex` wake, the two claims, a producer thread sending 100000 messages with
-  `send_spin_sleep`, a consumer thread reading them in order with `reserve_slot_wait`, each
-  releasing its role, and `release_ring`, which no example showed before.
-  - The ring is small on purpose, so it fills, the producer sleeps, and the segments switch.
-  - Linux only, since the sides sleep on a futex.
-  - README.md's MPSC v3 section, the `mpsc::v3` module docs, and the user guide's MPSC v3 section
-    link to it.
-- `send` is the one home of what every send shares: the claim and the commit, a slot lost to
-  another producer, what `write_msg` must do and what a slow or panicking one costs, and the limits
-  on `T`.
-  - `send_spin` and `send_spin_sleep` say they are `send` with a policy, and document only that
-    policy, their times, and their `Err(Full)`, pointing at `send` for `write_msg` and `T`.
-  - The three sends' docs are 237 lines shorter, `producer.rs` going from 776 lines to 538.
-- The crate has no doctest left, and no example of a `SendPolicy` written as a type, which
-  `send`'s example was: the `SendPolicy` docs still say how, without showing it.
-
-##### docs: mpsc v3 doc pass closing
-
-Closing out the cycle.
-
-- The examples rung was built three ways: its setup hidden with a walkthrough in README.md, then
-  the walkthrough moved to a program in `examples/`, then the examples removed and the sends' docs
-  shortened. Each change came at a review of finished work.
-  - We think a rung whose design is a matter of taste is cheaper shown as one sample, one method's
-    docs, before the rest is built.
-- Close-out shape: trapezoid, the default, the user's choice.
-- No agent-file changed, so `notes/agent-files-size.md` gets no row.
+_None._
 
 # References
 
-[1]: #docs-mpsc-v3-doc-pass-opening
-[2]: #docs-mpsc-v3-doc-pass-rewrap
-[3]: #docs-mpsc-v3-doc-pass-examples
-[4]: #docs-mpsc-v3-doc-pass-closing
+[1]: #feat-mpsc-v4-opening
+[2]: #feat-mpsc-v4-as-a-copy-of-mpsc-v3
+[3]: #feat-mpsc-v4-consumer-policy
+[4]: #feat-mpsc-v4-in-the-tools
+[5]: #docs-mpsc-v4-consumer-waits-measured
+[6]: #docs-mpsc-v4-guide-and-example
+[7]: #feat-mpsc-v4-closing
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
