@@ -144,3 +144,73 @@ fn mpsc_producers_and_consumers_come_and_go_between_processes() {
     assert!(!late.status.success());
     assert!(String::from_utf8_lossy(&late.stderr).contains("BadMagic"));
 }
+
+/// Spawn an MPSC v4 consumer and wait for its `ready` line, as [`mpsc_consumer`] does for v3.
+fn mpsc4_consumer(how: &str, messages: u64) -> std::process::Child {
+    let mut child = spawn(&["mpsc4-consumer", how, &messages.to_string()]);
+    let mut ready = String::new();
+    BufReader::new(child.stdout.as_mut().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready.trim_end(), "ready", "{how} consumer");
+    child
+}
+
+#[test]
+fn mpsc4_producers_and_consumers_come_and_go_between_processes() {
+    const EACH: u64 = 20_000;
+    // A consumer makes the ring, and a release while it holds the
+    // consumer role is refused.
+    let first = mpsc4_consumer("new", EACH);
+    let refused = Command::new(app()).arg("mpsc4-release").output().unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("RingInUse"));
+
+    // The ring sleeps on a futex, and an attach as a ring that only
+    // spins, the other wake protocol, is refused with BadWake while
+    // the ring is live.
+    let wrong = finish(spawn(&["mpsc4-attach-wrong-wait"]), "wrong wait");
+    assert_eq!(wrong.trim_end(), "refused BadWake");
+
+    // Two producer processes at once, and the first consumer reads
+    // half of what they send, releases, and exits, while they wait
+    // on the full ring for the next.
+    let p0 = spawn(&["mpsc4-producer", "0", &EACH.to_string()]);
+    let p1 = spawn(&["mpsc4-producer", "1", &EACH.to_string()]);
+    let first = finish(first, "first consumer");
+    let second = mpsc4_consumer("join", EACH);
+    finish(p0, "producer 0");
+    finish(p1, "producer 1");
+    let second = finish(second, "second consumer");
+
+    // The second consumer continued each producer's stream exactly
+    // where the first stopped, and together they read everything.
+    let (a, b) = (ranges(&first), ranges(&second));
+    for p in 0..2u64 {
+        let (a_first, a_last) = a.get(&p).copied().unwrap_or((0, u64::MAX));
+        let (b_first, b_last) = b[&p];
+        assert_eq!(a_first, 0, "producer {p}");
+        assert_eq!(b_first, a_last.wrapping_add(1), "producer {p}");
+        assert_eq!(b_last, EACH - 1, "producer {p}");
+    }
+
+    // The wrong wait is refused the same with producers gone and a
+    // consumer attached again.
+    let third = mpsc4_consumer("join", 100);
+    let wrong = finish(spawn(&["mpsc4-attach-wrong-wait"]), "wrong wait");
+    assert_eq!(wrong.trim_end(), "refused BadWake");
+
+    // A producer that comes after the others have gone, to the third
+    // consumer, and then the ring, no role held, is released, and
+    // a producer can no longer join it.
+    finish(spawn(&["mpsc4-producer", "2", "100"]), "producer 2");
+    let third = finish(third, "third consumer");
+    assert_eq!(ranges(&third)[&2], (0, 99));
+    finish(spawn(&["mpsc4-release"]), "release");
+    let late = Command::new(app())
+        .args(["mpsc4-producer", "3", "1"])
+        .output()
+        .unwrap();
+    assert!(!late.status.success());
+    assert!(String::from_utf8_lossy(&late.stderr).contains("BadMagic"));
+}

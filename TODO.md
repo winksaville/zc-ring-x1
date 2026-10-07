@@ -87,6 +87,7 @@ reference to measure against.
 - [feat: mpsc v4 in the tools][4] (done)
 - [docs: mpsc v4 consumer waits measured][5] (done)
 - [docs: mpsc v4 guide and example][6] (done)
+- [feat: mpsc v4 in the demo and the ipm test][13] (done)
 - [feat: mpsc v4 closing][7]
 
 #### Deliberation
@@ -142,6 +143,9 @@ reference to measure against.
   - Every rung under it is still validated in full before its push, and is a draft on the bookmark
     for the user's review on return.
   - A design choice made under it without the user is marked in its rung's details as the agent's.
+- The demo and the ipm test are a rung of their own, inserted on 2026-10-07 with the user's go: the
+  tools rung left them out, the agent's choice under the waiver, and the user, back, ran the demo
+  and found no MPSC v4 in it.
 - A policy still cannot sleep to a deadline of its own, on either side: `Waiter::sleep` takes none,
   and only the built-in timed methods do. Exposing the clock is the Todo `Clock choices for the
   deadline sends`.
@@ -461,6 +465,40 @@ The user guide, README.md, and `examples/` teach v3 only. Add v4's section and o
   not weigh v4, a recommendation the agent did not make under the waiver. `Ticks`'s docs in
   `lib.rs` still name a send's `give_up`, `spin`, and `wait`, words from before the timed sends
   were renamed.
+
+##### feat: mpsc v4 in the demo and the ipm test
+
+The demo shows every ring but MPSC v4, and nothing runs a v4 ring between processes: its `attach`,
+its magic, and its refusal of another wake protocol are tested within one process alone. Add v4 to
+`zc-ring-x1-demo` beside v3, and to `zcr-test-ipm` and `tests/ipm.rs`, with a process that attaches
+over another wait and is refused.
+
+- The demo prints an MPSC v4 line wherever it prints an MPSC v3 one: the one-message loops at one,
+  two, and three threads, as `mpsc4_...` and `mpsc4s_...` for `Single`, `mpsc-v4` and
+  `mpsc-v4-single` rows in the depth sweep, and the burst, lagging, and stream lines of the segment
+  stress with their switch costs. Every v3 line in the demo is over `NoWake`, so every v4 line is
+  over `SpinOnly`.
+  - The demo's shared loops reserve, read, and release, so v4 runs them through adapters, as the
+    tools do. The demo's message is not `Copy`, and no derive was added to a type that exists, so
+    the adapter copies the message out by its bytes.
+- `zcr-test-ipm` runs its MPSC mode over a v4 ring as well, by `mpsc4-consumer`, `mpsc4-producer`,
+  and `mpsc4-release`, in a region file of its own. The ring is `Multi` over `Sleep<Futex<10>>`,
+  the twin of v3's `Multi` over `Futex<10>`, whose two sides both sleep.
+  - `mpsc4-attach-wrong-wait` attaches to the live ring as `MpscRing<Multi, SpinOnly>` and exits 0
+    only when the attach is `Error::BadWake`.
+- `tests/ipm.rs` has the v4 twin of the MPSC test: the release refused while a role is held, two
+  producer processes, a consumer handing off to a second mid-stream, a third consumer and a late
+  producer, the release, and a producer after it refused. It runs the wrong-wait attach twice
+  while the ring is live, once at the start and once after the handoff.
+  - So v4's `attach`, its own magic, its roles, and its refusal of another wake protocol are now
+    held between processes, where the library's tests hold them within one.
+- Found and left: v3's ipm consumer bounds its whole run by one deadline and reports it as a wait
+  for one message, and v4's mirrors the behavior. The demo's comment on its sweep's segments names
+  two rings of the five that have segments.
+- README.md's steps for running the ipm test by hand name the v3 subcommands alone, left for the
+  close-out.
+- The work was done by a second agent limited to the three files, and checked here by its diff and
+  a full validation.
 
 ##### feat: mpsc v4 closing
 
@@ -1145,3 +1183,4 @@ _None._
 [10]: #feat-mpsc-v4-refuses-a-wake-mismatch
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
 [12]: #feat-ticks-from-millis-and-secs
+[13]: #feat-mpsc-v4-in-the-demo-and-the-ipm-test

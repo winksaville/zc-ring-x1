@@ -27,6 +27,12 @@
 //!     a full ring, and releases.
 //!   - `zcr-test-ipm mpsc-release` attaches and releases the ring,
 //!     which fails while any role is held.
+//! - The MPSC v4 mode is the MPSC mode over an `mpsc::v4` ring in a region file of its own, its
+//!   endpoints sleeping on the same futex:
+//!   - `zcr-test-ipm mpsc4-consumer new|join <messages>`, `zcr-test-ipm mpsc4-producer <id>
+//!     <count>`, and `zcr-test-ipm mpsc4-release` do as their `mpsc-` namesakes do.
+//!   - `zcr-test-ipm mpsc4-attach-wrong-wait` attaches to the ring as one that only spins, the
+//!     other wake protocol, and exits 0 only when the attach is refused with `BadWake`.
 
 #[cfg(target_os = "linux")]
 use std::process::ExitCode;
@@ -403,6 +409,176 @@ fn mpsc_release() -> Result<(), String> {
     Ok(())
 }
 
+/// The MPSC v4 region file, apart from the v3 mode's so the two modes never meet.
+#[cfg(target_os = "linux")]
+const MPSC4_PATH: &str = "/dev/shm/zcr-test-ipm-mpsc4";
+
+/// The MPSC v4 ring: segments switched, and endpoints that sleep on the v3 mode's futex, whose
+/// timeout turns a dead peer into a poll.
+#[cfg(target_os = "linux")]
+type Mpsc4Ring = zc_ring_x1::mpsc::v4::MpscRing<
+    'static,
+    zc_ring_x1::mpsc::v4::Multi,
+    zc_ring_x1::wake::Sleep<zc_ring_x1::wake::Futex<10>>,
+>;
+
+/// The MPSC v4 ring as an endpoint that only spins sees it, the other wake protocol, which the
+/// ring refuses at `attach`.
+#[cfg(target_os = "linux")]
+type Mpsc4WrongWaitRing = zc_ring_x1::mpsc::v4::MpscRing<
+    'static,
+    zc_ring_x1::mpsc::v4::Multi,
+    zc_ring_x1::wake::SpinOnly,
+>;
+
+/// Bytes the MPSC v4 region holds: the pool's header and its segments.
+#[cfg(target_os = "linux")]
+fn mpsc4_region_len() -> usize {
+    size_of::<zc_ring_x1::PoolHeader>()
+        + MPSC_SEGMENTS as usize * zc_ring_x1::mpsc::v4::segment_size(SLOT, DEPTH) as usize
+}
+
+/// Attach the MPSC v4 region's pool.
+#[cfg(target_os = "linux")]
+fn mpsc4_pool() -> Result<&'static zc_ring_x1::Pool<'static>, String> {
+    let base = map_at(MPSC4_PATH, mpsc4_region_len(), false)?;
+    // SAFETY: the mapping is the region's length, shared and writable, never unmapped, and this
+    // handle never allocates. A release frees buffers, which any process may do.
+    let pool = unsafe { zc_ring_x1::Pool::attach(base, mpsc4_region_len()) }
+        .map_err(|e| format!("pool: {e:?}"))?;
+    // The pool handle lives as long as the process, as the mapping does.
+    Ok(Box::leak(Box::new(pool)))
+}
+
+/// Attach the MPSC v4 region's pool and ring.
+#[cfg(target_os = "linux")]
+fn mpsc4_attach() -> Result<Mpsc4Ring, String> {
+    let pool = mpsc4_pool()?;
+    // SAFETY: FIRST_SEGMENT is the ring's segment 0 in this pool, asserted by the consumer that
+    // made it, and its segments are the ring's until a release, after which the magic is gone.
+    unsafe { Mpsc4Ring::attach(pool, FIRST_SEGMENT) }.map_err(|e| format!("ring: {e:?}"))
+}
+
+/// Create (`new`) or attach (`join`) the MPSC v4 ring, take the consumer, read `messages`
+/// messages, and release.
+#[cfg(target_os = "linux")]
+fn mpsc4_consumer(how: &str, messages: u64) -> Result<(), String> {
+    let ring = match how {
+        "new" => {
+            let base = map_at(MPSC4_PATH, mpsc4_region_len(), true)?;
+            // SAFETY: the mapping is the region's length, page-aligned, never unmapped, and this
+            // process's only view of it until another attaches.
+            let region = unsafe { core::slice::from_raw_parts_mut(base, mpsc4_region_len()) };
+            let seg = zc_ring_x1::mpsc::v4::segment_size(SLOT, DEPTH) as u32;
+            let pool = zc_ring_x1::Pool::init(region, seg, MPSC_SEGMENTS)
+                .map_err(|e| format!("pool: {e:?}"))?;
+            let pool = Box::leak(Box::new(pool));
+            let ring = Mpsc4Ring::init(pool, SLOT, DEPTH, MPSC_SEGMENTS)
+                .map_err(|e| format!("ring: {e:?}"))?;
+            if ring.first_segment() != FIRST_SEGMENT {
+                return Err(format!(
+                    "ring's first segment is {}, not {FIRST_SEGMENT}",
+                    ring.first_segment()
+                ));
+            }
+            ring
+        }
+        "join" => mpsc4_attach()?,
+        _ => return Err("mpsc4-consumer takes new or join".to_string()),
+    };
+    let mut cons = ring
+        .consumer()
+        .map_err(|e| format!("take consumer: {e:?}"))?;
+    println!("ready");
+    use std::io::Write;
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    // Each producer's first and last number seen, in order.
+    let mut seen: std::collections::BTreeMap<u64, (u64, u64)> = Default::default();
+    let deadline = std::time::Instant::now() + WAIT;
+    for n in 0..messages {
+        // What is left of WAIT, asleep on the futex from the first empty look.
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let sleep_time = zc_ring_x1::microsecs_to_ticks(left.as_micros() as u64);
+        let (p, seq, value, sum) = cons
+            .recv_spin_sleep(zc_ring_x1::Ticks::ZERO, sleep_time, |m: &MpscMsg| {
+                (m.producer, m.seq, m.value, m.checksum)
+            })
+            .map_err(|_| format!("message {n} not within {WAIT:?}"))?;
+        if sum != mpsc_checksum(p, seq, value) {
+            return Err(format!("message {n}: bad checksum from producer {p}"));
+        }
+        match seen.get_mut(&p) {
+            Some((_, last)) if seq == *last + 1 => *last = seq,
+            Some((_, last)) => {
+                return Err(format!("producer {p}: {seq} after {last}"));
+            }
+            None => {
+                seen.insert(p, (seq, seq));
+            }
+        }
+    }
+    cons.release();
+    for (p, (first, last)) in &seen {
+        println!("received producer={p} first={first} last={last}");
+    }
+    println!("received {messages} ok");
+    Ok(())
+}
+
+/// Attach the MPSC v4 ring, take a producer, send `count` messages numbered from 0, and release.
+#[cfg(target_os = "linux")]
+fn mpsc4_producer(id: u64, count: u64) -> Result<(), String> {
+    let ring = mpsc4_attach()?;
+    let prod = ring
+        .producer()
+        .map_err(|e| format!("take producer: {e:?}"))?;
+    // Each message may wait up to WAIT for room, asleep on the futex from the first full look.
+    let sleep_time = zc_ring_x1::microsecs_to_ticks(WAIT.as_micros() as u64);
+    for seq in 0..count {
+        let value = random() ^ seq;
+        prod.send_spin_sleep::<MpscMsg>(zc_ring_x1::Ticks::ZERO, sleep_time, |m| {
+            m.producer = id;
+            m.seq = seq;
+            m.value = value;
+            m.checksum = mpsc_checksum(id, seq, value);
+        })
+        .map_err(|_| format!("message {seq} not sent within {WAIT:?}"))?;
+    }
+    prod.release();
+    println!("sent producer={id} count={count}");
+    Ok(())
+}
+
+/// Attach the MPSC v4 ring and release it.
+#[cfg(target_os = "linux")]
+fn mpsc4_release() -> Result<(), String> {
+    let pool = mpsc4_pool()?;
+    // SAFETY: as in mpsc4_attach.
+    let ring =
+        unsafe { Mpsc4Ring::attach(pool, FIRST_SEGMENT) }.map_err(|e| format!("ring: {e:?}"))?;
+    ring.release_ring(pool)
+        .map_err(|e| format!("release: {e:?}"))?;
+    println!("released");
+    Ok(())
+}
+
+/// Attach the MPSC v4 ring, which sleeps on a futex, as a ring that only spins, and succeed only
+/// when the ring refuses the other wake protocol with `BadWake`.
+#[cfg(target_os = "linux")]
+fn mpsc4_attach_wrong_wait() -> Result<(), String> {
+    let pool = mpsc4_pool()?;
+    // SAFETY: as in mpsc4_attach. The wait is the wrong one on purpose, which `attach` checks
+    // before it hands out a ring.
+    match unsafe { Mpsc4WrongWaitRing::attach(pool, FIRST_SEGMENT) } {
+        Err(zc_ring_x1::Error::BadWake) => {
+            println!("refused BadWake");
+            Ok(())
+        }
+        Err(e) => Err(format!("wrong wait: got {e:?}, not BadWake")),
+        Ok(_) => Err("wrong wait: attached, not BadWake".to_string()),
+    }
+}
+
 /// The `n`th argument as a number.
 #[cfg(target_os = "linux")]
 fn arg_num(n: usize) -> Result<u64, String> {
@@ -425,9 +601,17 @@ fn main() -> ExitCode {
             .and_then(|how| mpsc_consumer(&how, arg_num(3)?)),
         Some("mpsc-producer") => arg_num(2).and_then(|id| mpsc_producer(id, arg_num(3)?)),
         Some("mpsc-release") => mpsc_release(),
+        Some("mpsc4-consumer") => std::env::args()
+            .nth(2)
+            .ok_or_else(|| "mpsc4-consumer takes new or join".to_string())
+            .and_then(|how| mpsc4_consumer(&how, arg_num(3)?)),
+        Some("mpsc4-producer") => arg_num(2).and_then(|id| mpsc4_producer(id, arg_num(3)?)),
+        Some("mpsc4-release") => mpsc4_release(),
+        Some("mpsc4-attach-wrong-wait") => mpsc4_attach_wrong_wait(),
         _ => Err(
             "usage: zcr-test-ipm consumer | producer | mpsc-consumer new|join <messages> \
-             | mpsc-producer <id> <count> | mpsc-release"
+             | mpsc-producer <id> <count> | mpsc-release | mpsc4-consumer new|join <messages> \
+             | mpsc4-producer <id> <count> | mpsc4-release | mpsc4-attach-wrong-wait"
                 .to_string(),
         ),
     };
