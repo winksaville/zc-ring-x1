@@ -17,16 +17,25 @@ SMT siblings share one core's caches, so there xfills reads
 near 0, which is expected.
 Runs vary by **flavor**, which ring (`spsc-v0`, `spsc-v1`,
 `spsc-v2`, `spsc-v3`, `spsc-v4`, `mpsc-v0`, `mpsc-v1`,
-`mpsc-v2`, `mpsc-v3`, named after their module paths, with
-`mpsc-v3-single` for v3's one-segment mode and `mpsc-v3-futex`
-for v3 waking with a futex), and by
+`mpsc-v2`, `mpsc-v3`, `mpsc-v4`, named after their module
+paths, with `mpsc-v3-single` for v3's one-segment mode,
+`mpsc-v3-futex` for v3 waking with a futex, `mpsc-v3-backoff`
+for v3 backing off after a lost claim race, and
+`mpsc-v4-single`, `mpsc-v4-futex`, and `mpsc-v4-backoff` their
+v4 twins, the futex one a ring over `SpinOrSleep` of a futex
+whose endpoints all spin), and by
 **placement**, which CPUs the two threads sit on: same L3,
 different L3, SMT siblings, or unpinned. `spsc-v3`, `spsc-v4`,
-`mpsc-v2`, and `mpsc-v3` are rings of segments:
+`mpsc-v2`, `mpsc-v3`, and `mpsc-v4` are rings of segments:
 `--segments N`, 1 to 32 and default 2, sets how many per ring,
 the depth is each segment's, and their rows add how often they
 switched segments, `switches/RT` in `tp-matrix` and
 `switches/msg` in `tp-stream`, `-` for every other flavor.
+v4's consumer receives by `recv`, which reads the message in a
+closure and frees the slot, where the earlier rings hand out a
+read guard. The cells call it through an adapter that copies
+the counter out, so a v4 row runs the same body and the same
+spin policies as its v3 twin and the two compare directly.
 
 - `tp-cell`: one round trip, main sends a counter to a worker
   and the worker sends it back, for one ring and one
@@ -55,7 +64,7 @@ not comparable one to one.
 | Depth | seq sharing, slack at 1 | seq sharing, slack at 1 | how far the producer can run ahead | throttles when below the pool size |
 | Runs | `-d` per cell | `-d` per cell | `-d` per cell | `-d` per run, median of `--repeat` |
 | Reports | full percentile bands per phase | mean/stdev per phase, RTs, xfills/RT | ns/msg, msgs, xfills/msg | ns/msg and xfills/msg per pool size |
-| Flavors | the seven rings | the seven rings | the seven rings | spsc-v2, mpsc-v1, cordyceps |
+| Flavors | every flavor, 16 | every flavor, 16 | every flavor, 16 | spsc-v2, mpsc-v1, cordyceps |
 
 ## tp-cell: one cell, under the microscope
 
@@ -113,16 +122,17 @@ samples enough for the mean and stdev at millions of trips a
 second, and a calmer number wants `-d 5`.
 
 ```sh
-$ tp-matrix -d 10                  # 32 cells x 10 s on a typical SMT machine, depth 8
+$ tp-matrix -d 10                  # 64 cells x 10 s on a typical SMT machine, depth 8
 $ tp-matrix -d 5 --depth 1,2,8,64  # every cell again at each depth
 $ tp-matrix -d 1 -v                # with the column legend
-tp-matrix 0.1.0 - run the full measurement matrix, markdown tables out
-32 cells, 1.0s each, spsc-v3, spsc-v4, and mpsc-v2 with 2 segments
+tp-matrix 0.1.0 (zc-ring-x1 0.19.3) - run the full measurement matrix, markdown tables out
+64 cells, 1.0s each, spsc-v3, spsc-v4, mpsc-v2, mpsc-v3, and mpsc-v4 with 2 segments
 ...
-| placement  | flavor  | depth |   m.send |     w.recv |     w.spin | ... |  RTs | xfills/RT |
-|------------|---------|------:|---------:|-----------:|-----------:|-----|-----:|----------:|
-| 11,10 CCX  | spsc-v0 |     8 | 23.3/4.7 |  133.1/9.6 |  112.4/9.8 | ... | 4.0M |     9.903 |
-| 11,10 CCX  | mpsc-v0 |     8 |  8.9/3.2 |   90.9/9.5 |   72.8/8.9 | ... | 5.7M |     6.586 |
+| placement  | flavor  | depth |  m.send |     w.recv |     w.spin | ... |  RTs | xfills/RT | switches/RT |
+|------------|---------|------:|--------:|-----------:|-----------:|-----|-----:|----------:|------------:|
+| 11,10 CCX  | spsc-v4 |     8 | 8.7/3.3 | 108.7/13.9 |  90.8/13.9 | ... | 5.9M |     3.186 |       0.000 |
+| 11,10 CCX  | mpsc-v3 |     8 | 9.0/3.0 | 107.0/13.4 |  89.4/13.5 | ... | 5.7M |     3.071 |       0.000 |
+| 11,10 CCX  | mpsc-v4 |     8 | 9.3/2.5 | 103.4/14.3 |  85.5/14.1 | ... | 5.9M |     3.095 |       0.000 |
 
 - `placement`: the CPUs the two threads are pinned to and how they share caches:
   CCX two cores on one L3, x-CCX cores on different L3s, SMT one core's two
@@ -160,19 +170,22 @@ counters divided by the messages moved give the xfills per
 message while streaming, and `-v` adds the legend.
 
 ```sh
-$ tp-stream --depth 1,2,8,64
-tp-stream 0.1.0 - run the streaming matrix, one markdown table out
+$ tp-stream --depth 1,2,8,64       # every cell at each depth
+$ tp-stream                        # depth 8
+tp-stream 0.1.0 (zc-ring-x1 0.19.3) - run the streaming matrix, one markdown table out
+64 cells, 1.0s each, 1 producer, spsc-v3, spsc-v4, mpsc-v2, mpsc-v3, and mpsc-v4 with 2 segments
 ...
-| placement  | flavor  | depth | ns/msg |   msgs | xfills/msg |
-|------------|---------|------:|-------:|-------:|-----------:|
-| 11,8 x-CCX | spsc-v1 |    64 |   38.9 |  25.7M |      0.474 |
-| 11,8 x-CCX | spsc-v2 |    64 |   13.9 |  72.1M |      0.102 |
+| placement  | flavor  | depth | ns/msg |   msgs | xfills/msg | switches/msg | full % | empty % |
+|------------|---------|------:|-------:|-------:|-----------:|-------------:|-------:|--------:|
+| 11,10 CCX  | spsc-v4 |     8 |   13.5 |  74.1M |      1.133 |        0.033 |    2.8 |     2.1 |
+| 11,10 CCX  | mpsc-v3 |     8 |    9.4 | 106.2M |      0.764 |        0.000 |  0.003 |     0.3 |
+| 11,10 CCX  | mpsc-v4 |     8 |   10.6 |  94.3M |      0.695 |        0.000 |  0.002 |     0.5 |
 ```
 
 `--producers N`, 1 to 64 and default 1, streams from N
 producer threads into the one consumer, the MPSC flavors only,
-`mpsc-v3-backoff` among them, whose producers back off after a
-lost claim race. Every thread has a cpu of its own, printed
+`mpsc-v3-backoff` and `mpsc-v4-backoff` among them, whose
+producers back off after a lost claim race. Every thread has a cpu of its own, printed
 above the table: the consumer on the base cpu, and the
 producers each on a core of their own near the base (`own cores
 near`), outside the base's L3 (`own cores x-L3`), or two to a

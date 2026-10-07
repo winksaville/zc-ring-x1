@@ -150,10 +150,11 @@ pub struct CommonArgs {
     pub depth: Vec<u32>,
 
     /// Segments per ring for the segmented flavors, spsc-v3,
-    /// spsc-v4, mpsc-v2, and mpsc-v3, 1 to 32. The depth is then
-    /// each segment's
+    /// spsc-v4, mpsc-v2, mpsc-v3, and mpsc-v4, 1 to 32. The depth
+    /// is then each segment's
     ///
-    /// Other flavors ignore it, mpsc-v3-single among them.
+    /// Other flavors ignore it, mpsc-v3-single and mpsc-v4-single
+    /// among them.
     #[arg(
         long,
         value_name = "N",

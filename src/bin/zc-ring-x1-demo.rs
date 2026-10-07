@@ -17,17 +17,18 @@
 //!   L3, x-CCX, cores on different L3s, SMT, one core's two
 //!   cpus sharing its L1 and L2, and unpinned.
 //!   Every ring version runs beside it at each placement, the
-//!   `spsc1_` to `spsc4_`, `mpsc0_` to `mpsc3_`, and `mpsc3s_`
-//!   lines (the MPSC ones by send_with closure fill, `mpsc3s_`
-//!   v3's `Single` mode), the segmented rings at one segment,
-//!   plus 2-producer + 1-consumer lines for mpsc v1 to v3: the
+//!   `spsc1_` to `spsc4_`, `mpsc0_` to `mpsc4_`, `mpsc3s_`, and
+//!   `mpsc4s_` lines (the MPSC ones by send_with closure fill,
+//!   `mpsc3s_` v3's `Single` mode and `mpsc4s_` v4's), the
+//!   segmented rings at one segment,
+//!   plus 2-producer + 1-consumer lines for mpsc v1 to v4: the
 //!   shape only the MPSC rings can run.
 //! - The depth sweep: the ring flavors again at every
 //!   placement and at depths 1, 2, 8, and 64, one table per
 //!   placement, so depth and protocol can be told apart, the
 //!   segmented rings again at one segment.
 //! - The segment stress, last, one table with a legend: spsc-v3,
-//!   spsc-v4, mpsc-v2, and mpsc-v3 at four segments, a burst that fills every
+//!   spsc-v4, mpsc-v2, mpsc-v3, and mpsc-v4 at four segments, a burst that fills every
 //!   segment and drains on one thread, a lagging consumer at
 //!   each placement, and the cost of one switch measured at
 //!   depth 1 as a difference at equal capacity, 32 segments of
@@ -552,6 +553,9 @@ spsc_loops!(
 ///   segments.
 /// - `v3 $mode, $segments`: a v3 ring of that mode, its roles
 ///   claimed, over a pool holding exactly its segments.
+/// - `v4 $mode, $segments`: the same over a v4 ring, which spins
+///   only, its roles taken, the producer a [`V4Send`] and the
+///   consumer a [`V4Recv`].
 macro_rules! mpsc_pair {
     ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
      single $ring:path, $size:path) => {
@@ -588,6 +592,22 @@ macro_rules! mpsc_pair {
         let $producer = V3Send(ring.claim_producer().unwrap()); // OK: a fresh ring holds no role
         let mut $consumer = ring.claim_consumer().unwrap(); // OK: a fresh ring holds no role
     };
+    ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
+     v4 $mode:ty, $segments:expr) => {
+        let slot = CACHE_LINE_SIZE as u32;
+        let segments: u32 = $segments;
+        let buf = zc_ring_x1::mpsc::v4::segment_size(slot, $depth);
+        let mut $store =
+            region(size_of::<zc_ring_x1::PoolHeader>() as u64 + buf * segments as u64);
+        let mut $pool = Pool::init($store.as_mut_bytes(), buf as u32, segments)
+            .unwrap(); // OK: the region is sized for exactly the segments and line-aligned
+        let ring = zc_ring_x1::mpsc::v4::MpscRing::<$mode, zc_ring_x1::wake::SpinOnly>::init(
+            &mut $pool, slot, $depth, segments,
+        )
+        .unwrap(); // OK: the pool holds exactly the segments, sized by segment_size
+        let $producer = V4Send(ring.producer().unwrap()); // OK: a fresh ring holds no role
+        let mut $consumer = V4Recv(ring.consumer().unwrap()); // OK: a fresh ring holds no role
+    };
 }
 
 /// `struct V3Send` is an MPSC v3 producer with a `send_with`, which the macros shared with v0 to
@@ -617,6 +637,87 @@ impl<P> core::ops::Deref for V3Send<P> {
     }
 }
 
+/// `struct V4Send` is an MPSC v4 producer with a `send_with`, as [`V3Send`] is v3's, forwarding to
+/// v4's `send`, whose policy a closure is.
+struct V4Send<P>(P);
+
+impl<M: zc_ring_x1::mpsc::v4::Mode, W: zc_ring_x1::wake::Waits>
+    V4Send<zc_ring_x1::mpsc::v4::MpscProducer<'_, M, W>>
+{
+    /// `send_with` is v4's `send` with `on_full` as its policy.
+    #[inline]
+    fn send_with<T>(
+        &self,
+        on_full: impl FnMut(u32) -> bool,
+        write_msg: impl FnOnce(&mut T),
+    ) -> Result<(), zc_ring_x1::Full>
+    where
+        T: zerocopy::FromBytes + zerocopy::IntoBytes + zerocopy::KnownLayout,
+    {
+        self.0.send(on_full, write_msg)
+    }
+}
+
+impl<P> core::ops::Deref for V4Send<P> {
+    type Target = P;
+
+    fn deref(&self) -> &P {
+        &self.0
+    }
+}
+
+/// `struct V4Recv` is an MPSC v4 consumer with a `reserve_slot_with`, which the macros shared with
+/// v0 to v3 call. v4 has no read guard: its `recv` reads the message in a closure and frees the
+/// slot when the closure returns, so `reserve_slot_with` copies the value out and hands it back in
+/// a [`V4Slot`].
+struct V4Recv<C>(C);
+
+/// `struct V4Slot` is the value a [`V4Recv`] read, standing in for the read guard of v0 to v3. Its
+/// slot is already free, so `release` does nothing.
+struct V4Slot<T>(T);
+
+impl<T> core::ops::Deref for V4Slot<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> V4Slot<T> {
+    /// `release` is the guard's `release`, with nothing left to do.
+    #[inline]
+    fn release(self) {}
+}
+
+impl<M: zc_ring_x1::mpsc::v4::Mode, W: zc_ring_x1::wake::Waits>
+    V4Recv<zc_ring_x1::mpsc::v4::MpscConsumer<'_, M, W>>
+{
+    /// `reserve_slot_with` is v4's `recv` with `on_empty` as its policy and a copy for its read.
+    /// The copy is by the message's bytes, since the demo's `Msg` is not `Copy`.
+    #[inline]
+    fn reserve_slot_with<T>(
+        &mut self,
+        on_empty: impl FnMut(u32) -> bool,
+    ) -> Result<V4Slot<T>, zc_ring_x1::Empty>
+    where
+        T: zerocopy::FromBytes + zerocopy::IntoBytes + zerocopy::KnownLayout + zerocopy::Immutable,
+    {
+        self.0.recv(on_empty, |m: &T| {
+            V4Slot(T::read_from_bytes(m.as_bytes()).unwrap()) // OK: the bytes are a T's, so of T's size
+        })
+    }
+}
+
+impl<C> core::ops::Deref for V4Recv<C> {
+    type Target = C;
+
+    fn deref(&self) -> &C {
+        &self.0
+    }
+}
+
 /// The v3 `Multi` pair under the stress macros' `segmented`
 /// spelling: the same arguments, bound through `mpsc_pair!`'s
 /// `v3` arm.
@@ -624,6 +725,16 @@ macro_rules! mpsc3_pair {
     ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
      segmented $segments:expr) => {
         mpsc_pair!($producer, $consumer, $store, $pool, $depth, v3 zc_ring_x1::mpsc::v3::Multi, $segments);
+    };
+}
+
+/// The v4 `Multi` pair under the stress macros' `segmented`
+/// spelling: the same arguments, bound through `mpsc_pair!`'s
+/// `v4` arm.
+macro_rules! mpsc4_pair {
+    ($producer:ident, $consumer:ident, $store:ident, $pool:ident, $depth:expr,
+     segmented $segments:expr) => {
+        mpsc_pair!($producer, $consumer, $store, $pool, $depth, v4 zc_ring_x1::mpsc::v4::Multi, $segments);
     };
 }
 
@@ -725,6 +836,18 @@ mpsc_loops!(
     mpsc3s_ring_one_msg_1t,
     mpsc3s_ring_one_msg_2t,
     v3 zc_ring_x1::mpsc::v3::Single,
+    1
+);
+mpsc_loops!(
+    mpsc4_ring_one_msg_1t,
+    mpsc4_ring_one_msg_2t,
+    v4 zc_ring_x1::mpsc::v4::Multi,
+    SWEEP_SEGMENTS
+);
+mpsc_loops!(
+    mpsc4s_ring_one_msg_1t,
+    mpsc4s_ring_one_msg_2t,
+    v4 zc_ring_x1::mpsc::v4::Single,
     1
 );
 
@@ -853,6 +976,41 @@ fn mpsc3_ring_one_msg_3t<M: zc_ring_x1::mpsc::v3::Mode>() -> f64 {
             let got = (msg.seq, msg.val);
             msg.release();
             got
+        },
+    )
+}
+
+/// [`mpsc1_ring_one_msg_3t`]'s shape over MPSC v4 in mode `M`,
+/// spinning only, one segment, two producer roles taken, the
+/// consumer reading by v4's `recv`.
+fn mpsc4_ring_one_msg_3t<M: zc_ring_x1::mpsc::v4::Mode>() -> f64 {
+    let slot = CACHE_LINE_SIZE as u32;
+    let buf = zc_ring_x1::mpsc::v4::segment_size(slot, DEPTH);
+    let mut store = region(size_of::<zc_ring_x1::PoolHeader>() as u64 + buf);
+    let mut pool = Pool::init(store.as_mut_bytes(), buf as u32, 1).unwrap(); // OK: the region is sized for exactly the segment and line-aligned
+    let ring = zc_ring_x1::mpsc::v4::MpscRing::<M, zc_ring_x1::wake::SpinOnly>::init(
+        &mut pool, slot, DEPTH, 1,
+    )
+    .unwrap(); // OK: the pool holds exactly the segment, sized by segment_size
+    let producers = [
+        ring.producer().unwrap(), // OK: a fresh ring holds no role
+        ring.producer().unwrap(), // OK: the most producers is u16::MAX
+    ];
+    let mut consumer = ring.consumer().unwrap(); // OK: a fresh ring holds no role
+    two_producers_3t(
+        producers,
+        |producer, i, p| {
+            producer
+                .send::<Msg>(policy::spin, |m| {
+                    m.seq = i;
+                    m.val = p;
+                })
+                .unwrap(); // OK: policy::spin never gives up
+        },
+        move || {
+            consumer
+                .recv(policy::spin, |m: &Msg| (m.seq, m.val))
+                .unwrap() // OK: policy::spin never gives up
         },
     )
 }
@@ -1211,7 +1369,7 @@ struct StreamFlavor {
 
 /// The flavors the sweep runs, in table order, named `xpsc-vN`
 /// after their module paths.
-const STREAM_FLAVORS: [StreamFlavor; 10] = [
+const STREAM_FLAVORS: [StreamFlavor; 12] = [
     StreamFlavor {
         name: "spsc-v0",
         min_depth: 1,
@@ -1271,6 +1429,18 @@ const STREAM_FLAVORS: [StreamFlavor; 10] = [
         min_depth: 1,
         one_t: mpsc3s_ring_one_msg_1t,
         two_t: mpsc3s_ring_one_msg_2t,
+    },
+    StreamFlavor {
+        name: "mpsc-v4",
+        min_depth: 1,
+        one_t: mpsc4_ring_one_msg_1t,
+        two_t: mpsc4_ring_one_msg_2t,
+    },
+    StreamFlavor {
+        name: "mpsc-v4-single",
+        min_depth: 1,
+        one_t: mpsc4s_ring_one_msg_1t,
+        two_t: mpsc4s_ring_one_msg_2t,
     },
 ];
 
@@ -1508,14 +1678,17 @@ burst_1t!(spsc3_burst_1t, spsc_send, ring_recv, spsc_pair);
 burst_1t!(spsc4_burst_1t, spsc_send, ring_recv, spsc4_pair);
 burst_1t!(mpsc2_burst_1t, mpsc_send, ring_recv, mpsc_pair);
 burst_1t!(mpsc3_burst_1t, mpsc_send, ring_recv, mpsc3_pair);
+burst_1t!(mpsc4_burst_1t, mpsc_send, ring_recv, mpsc4_pair);
 lagging_2t!(spsc3_lagging_2t, spsc_send, ring_recv, spsc_pair);
 lagging_2t!(spsc4_lagging_2t, spsc_send, ring_recv, spsc4_pair);
 lagging_2t!(mpsc2_lagging_2t, mpsc_send, ring_recv, mpsc_pair);
 lagging_2t!(mpsc3_lagging_2t, mpsc_send, ring_recv, mpsc3_pair);
+lagging_2t!(mpsc4_lagging_2t, mpsc_send, ring_recv, mpsc4_pair);
 stream_2t!(spsc3_stream_2t, spsc_send, ring_recv, spsc_pair);
 stream_2t!(spsc4_stream_2t, spsc_send, ring_recv, spsc4_pair);
 stream_2t!(mpsc2_stream_2t, mpsc_send, ring_recv, mpsc_pair);
 stream_2t!(mpsc3_stream_2t, mpsc_send, ring_recv, mpsc3_pair);
+stream_2t!(mpsc4_stream_2t, mpsc_send, ring_recv, mpsc4_pair);
 
 /// The two shapes the switch cost is a difference between: the
 /// same 32 slots as one segment, which never switches, and as 32
@@ -1574,7 +1747,7 @@ fn legend(text: &str) {
 /// at depth 1, single-threaded and streaming across cores.
 fn segment_stress(placements: &[Placement]) {
     println!(
-        "segment stress: {} messages per line, spsc-v3, spsc-v4, mpsc-v2, and mpsc-v3 at {STRESS_SEGMENTS} segments \
+        "segment stress: {} messages per line, spsc-v3, spsc-v4, mpsc-v2, mpsc-v3, and mpsc-v4 at {STRESS_SEGMENTS} segments \
          of {DEPTH} slots, then the switch cost at depth 1",
         commas(COUNT)
     );
@@ -1589,6 +1762,7 @@ fn segment_stress(placements: &[Placement]) {
         ("spsc4 burst 1t", spsc4_burst_1t),
         ("mpsc2 burst 1t", mpsc2_burst_1t),
         ("mpsc3 burst 1t", mpsc3_burst_1t),
+        ("mpsc4 burst 1t", mpsc4_burst_1t),
     ] {
         let (secs, used, (sent, seen)) = run(STRESS_SEGMENTS, DEPTH);
         assert_eq!(sent, seen, "{line}: switch counts differ");
@@ -1615,6 +1789,7 @@ fn segment_stress(placements: &[Placement]) {
             ("spsc4 lagging 2t", spsc4_lagging_2t),
             ("mpsc2 lagging 2t", mpsc2_lagging_2t),
             ("mpsc3 lagging 2t", mpsc3_lagging_2t),
+            ("mpsc4 lagging 2t", mpsc4_lagging_2t),
         ] {
             let (used, (sent, seen)) = run(*pin, STRESS_SEGMENTS, DEPTH);
             assert_eq!(sent, seen, "{line}: switch counts differ");
@@ -1634,6 +1809,7 @@ fn segment_stress(placements: &[Placement]) {
     switch_cost(&mut rows, "spsc4 burst 1t", &one_t, spsc4_burst_1t);
     switch_cost(&mut rows, "mpsc2 burst 1t", &one_t, mpsc2_burst_1t);
     switch_cost(&mut rows, "mpsc3 burst 1t", &one_t, mpsc3_burst_1t);
+    switch_cost(&mut rows, "mpsc4 burst 1t", &one_t, mpsc4_burst_1t);
     // The stream across cores at the farthest placement the
     // machine has, x-CCX, else CCX, else unpinned.
     let Placement {
@@ -1668,6 +1844,12 @@ fn segment_stress(placements: &[Placement]) {
         "mpsc3 stream 2t",
         &placement,
         |segments, depth| mpsc3_stream_2t(pin, segments, depth),
+    );
+    switch_cost(
+        &mut rows,
+        "mpsc4 stream 2t",
+        &placement,
+        |segments, depth| mpsc4_stream_2t(pin, segments, depth),
     );
     stress_table(&rows);
     println!();
@@ -1721,7 +1903,7 @@ fn depth_sweep(two_t: &[Placement]) {
     }
     let depth_list: Vec<String> = DEPTHS.iter().map(|d| d.to_string()).collect();
     println!(
-        "depth sweep: {} messages per cell, ns/msg at depths {}, spsc-v3, spsc-v4, mpsc-v2, and mpsc-v3 with {SWEEP_SEGMENTS} segment(s)",
+        "depth sweep: {} messages per cell, ns/msg at depths {}, spsc-v3, spsc-v4, mpsc-v2, mpsc-v3, and mpsc-v4 with {SWEEP_SEGMENTS} segment(s)",
         commas(COUNT),
         depth_list.join(", ")
     );
@@ -1796,6 +1978,14 @@ fn two_t_lines(label: &str, pin: PinPair) {
     report(
         &format!("mpsc3s_ring_one_msg_2t ({label}):"),
         mpsc3s_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("mpsc4_ring_one_msg_2t ({label}):"),
+        mpsc4_ring_one_msg_2t(pin, DEPTH),
+    );
+    report(
+        &format!("mpsc4s_ring_one_msg_2t ({label}):"),
+        mpsc4s_ring_one_msg_2t(pin, DEPTH),
     );
     report(
         &format!("spsc_ring_one_pool_msg_2t ({label}):"),
@@ -1891,6 +2081,14 @@ fn main() {
         mpsc3s_ring_one_msg_1t(DEPTH),
     );
     report(
+        &format!("mpsc4_ring_one_msg_1t (core {base}):"),
+        mpsc4_ring_one_msg_1t(DEPTH),
+    );
+    report(
+        &format!("mpsc4s_ring_one_msg_1t (core {base}):"),
+        mpsc4s_ring_one_msg_1t(DEPTH),
+    );
+    report(
         &format!("spsc_ring_one_pool_msg_1t (core {base}):"),
         spsc_ring_one_pool_msg_1t(),
     );
@@ -1922,6 +2120,14 @@ fn main() {
     report(
         "mpsc3s_ring_one_msg_3t (2p+1c unpinned):",
         mpsc3_ring_one_msg_3t::<zc_ring_x1::mpsc::v3::Single>(),
+    );
+    report(
+        "mpsc4_ring_one_msg_3t (2p+1c unpinned):",
+        mpsc4_ring_one_msg_3t::<zc_ring_x1::mpsc::v4::Multi>(),
+    );
+    report(
+        "mpsc4s_ring_one_msg_3t (2p+1c unpinned):",
+        mpsc4_ring_one_msg_3t::<zc_ring_x1::mpsc::v4::Single>(),
     );
 
     // The depth sweep, the ring flavors at every placement.

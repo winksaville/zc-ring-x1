@@ -191,7 +191,7 @@ fn main() {
         .filter(|f| cli.producers == 1 || f.is_mpsc())
         .collect();
     println!(
-        "{} cells, {:.1}s each, {}, spsc-v3, spsc-v4, mpsc-v2, and mpsc-v3 with {} segments{}",
+        "{} cells, {:.1}s each, {}, spsc-v3, spsc-v4, mpsc-v2, mpsc-v3, and mpsc-v4 with {} segments{}",
         placements.len() * flavors.len() * cfg.depths.len(),
         cfg.duration.as_secs_f64(),
         if cli.producers == 1 {
@@ -273,7 +273,7 @@ fn main() {
             ("flavor", "the ring the producer streams over"),
             (
                 "depth",
-                "slots in the ring, per segment for spsc-v3, spsc-v4, mpsc-v2, and mpsc-v3, the slack the producer can run ahead of the consumer by before a segmented ring switches segments",
+                "slots in the ring, per segment for spsc-v3, spsc-v4, mpsc-v2, mpsc-v3, and mpsc-v4, the slack the producer can run ahead of the consumer by before a segmented ring switches segments",
             ),
             (
                 "ns/msg",
@@ -283,7 +283,7 @@ fn main() {
             ("xfills/msg", &format!("{XFILLS_MEANING}, per message")),
             (
                 "switches/msg",
-                "segment switches per message, spsc-v3, spsc-v4, mpsc-v2, and mpsc-v3 only: how often the producer, running ahead, found its segment about to be full (spsc-v3 and v4) or full (mpsc-v2 and v3) and moved to another",
+                "segment switches per message, spsc-v3, spsc-v4, mpsc-v2, mpsc-v3, and mpsc-v4 only: how often the producer, running ahead, found its segment about to be full (spsc-v3 and v4) or full (mpsc-v2, v3, and v4) and moved to another",
             ),
             (
                 "full %",

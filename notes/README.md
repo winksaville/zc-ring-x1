@@ -19,7 +19,9 @@ Project design docs:
   counted roles, single and multi segment modes, waiting, and
   sends that take a policy or a deadline in ticks, with their
   measurements at four depths and on three machines under two
-  build profiles, the
+  build profiles, MPSC v4, v3 with matching sends and
+  receives, a choice of how a ring's endpoints wait, and plain
+  names, measured beside v3 on three machines, the
   holders-and-recovery design, restart domains,
   the pool-message sweep against cordyceps's intrusive MPSC, and
   the multi-stack pool with the type-tag a receiver dispatches
@@ -31,8 +33,9 @@ Project design docs:
   the counters, limits, and errors, with two complete
   programs in `examples/`, joining SPSC v4 from another
   process: claiming a role, handing it over, and replacing a
-  dead holder, and MPSC v3's counted roles, sending, waiting,
-  and release.
+  dead holder, MPSC v3's counted roles, sending, waiting,
+  and release, and MPSC v4's matching sends and receives and
+  its choice of waits, with a zero-copy program in `examples/`.
 - [../tp_matrix/README.md](../tp_matrix/README.md): the
   measurement tools, `tp-cell`, `tp-matrix`, the streaming
   `tp-stream`, and the pool-message sweep `tp-pool`, and what

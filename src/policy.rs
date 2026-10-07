@@ -17,7 +17,9 @@
 //!   header's user line and is a layer above this crate.
 
 /// Back off after a lost claim race: `2^lost` spin hints, capped at 64, for an MPSC v3
-/// [`SendPolicy`](crate::mpsc::v3::SendPolicy)'s [`on_lost`](crate::mpsc::v3::SendPolicy::on_lost).
+/// [`SendPolicy`](crate::mpsc::v3::SendPolicy)'s [`on_lost`](crate::mpsc::v3::SendPolicy::on_lost),
+/// or an MPSC v4 [`WaitPolicy`](crate::mpsc::v4::WaitPolicy)'s
+/// [`on_lost`](crate::mpsc::v4::WaitPolicy::on_lost).
 ///
 /// - Each producer that loses a claim CAS pauses before it reads the
 ///   claim word again, longer after each loss in a row, so fewer

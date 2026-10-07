@@ -56,6 +56,17 @@ enum FlavorArg {
     /// The MPSC v3 ring, `Multi` mode, backing off after a lost
     /// claim race
     MpscV3Backoff,
+    /// The MPSC v4 ring, v3 receiving by `recv`, `Multi` mode over
+    /// `SpinOnly`, at 1p/1c (same surface, `--segments` per ring)
+    MpscV4,
+    /// The MPSC v4 ring in its `Single` mode, one segment
+    MpscV4Single,
+    /// The MPSC v4 ring, `Multi` mode, over `SpinOrSleep` of a
+    /// futex, every endpoint spinning
+    MpscV4Futex,
+    /// The MPSC v4 ring, `Multi` mode, backing off after a lost
+    /// claim race
+    MpscV4Backoff,
     /// All of them, in that order
     All,
 }
@@ -121,6 +132,10 @@ fn main() {
         FlavorArg::MpscV3Single => &[Flavor::MpscV3Single],
         FlavorArg::MpscV3Futex => &[Flavor::MpscV3Futex],
         FlavorArg::MpscV3Backoff => &[Flavor::MpscV3Backoff],
+        FlavorArg::MpscV4 => &[Flavor::MpscV4],
+        FlavorArg::MpscV4Single => &[Flavor::MpscV4Single],
+        FlavorArg::MpscV4Futex => &[Flavor::MpscV4Futex],
+        FlavorArg::MpscV4Backoff => &[Flavor::MpscV4Backoff],
         FlavorArg::All => &FLAVORS,
     };
     for &flavor in flavors {
@@ -171,7 +186,7 @@ fn main() {
             ("RTs", "round trips completed in the duration"),
             (
                 "segment switches",
-                "spsc-v3, spsc-v4, mpsc-v2, and mpsc-v3 only: switches across both rings, and per round trip",
+                "spsc-v3, spsc-v4, mpsc-v2, mpsc-v3, and mpsc-v4 only: switches across both rings, and per round trip",
             ),
         ],
     );

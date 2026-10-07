@@ -11,10 +11,18 @@
 //!   shared between processes, with a timeout, since a peer can die
 //!   while another sleeps.
 //! - Every process attached to one ring uses the same
-//!   implementation. A mismatch is not detected and costs latency
-//!   only: a futex sleeper no one wakes returns at its timeout.
-//! - `MpscRing` in `mpsc::v3` is the ring that takes one.
+//!   implementation. On an `mpsc::v3` ring a mismatch is not
+//!   detected and costs latency only: a futex sleeper no one wakes
+//!   returns at its timeout. An `mpsc::v4` ring records its wake's
+//!   [`PROTOCOL`](Wake::PROTOCOL) and refuses an attach that
+//!   disagrees.
+//! - `MpscRing` in `mpsc::v3` and in `mpsc::v4` are the rings that take one.
+//! - [`Waits`] is a ring's choice of how its endpoints wait, which an `mpsc::v4` ring takes in
+//!   place of a bare [`Wake`]: [`SpinOnly`], [`Sleep`] over a wake such as [`Futex`], or
+//!   [`SpinOrSleep`] over one. [`Spins`] and [`Sleeps`] say which timed sends and receives a choice
+//!   offers.
 
+use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::Deadline;
@@ -65,6 +73,21 @@ pub trait Wake {
     /// compiles every wake check out of the message paths.
     const WAKES: bool;
 
+    /// `PROTOCOL` names how this wake's sleepers are woken, as a number a ring records so that
+    /// every process attached to the ring wakes the same way.
+    ///
+    /// - [`PROTOCOL_NONE`]: nothing sleeps and nothing is woken. The default for a wake whose
+    ///   [`WAKES`](Wake::WAKES) is `false`.
+    /// - [`PROTOCOL_FUTEX`]: a Linux futex on the word, [`Futex`]'s, whatever its timeout.
+    /// - [`PROTOCOL_OTHER`]: the default for a wake that sleeps and names no protocol of its own. A
+    ///   wake written outside the crate overrides it with its own number, [`PROTOCOL_OTHER`] or
+    ///   above, so two different wakes are not taken for one.
+    const PROTOCOL: u32 = if Self::WAKES {
+        PROTOCOL_OTHER
+    } else {
+        PROTOCOL_NONE
+    };
+
     /// `wait` sleeps while the word in `seen` still holds the value `seen` recorded.
     ///
     /// - `wait` returns on a wake, when the word no longer holds that value, spuriously, or at the
@@ -81,6 +104,16 @@ pub trait Wake {
     /// Wake every sleeper on `word`.
     fn wake(word: &AtomicU32);
 }
+
+/// `PROTOCOL_NONE` is the [`Wake::PROTOCOL`] of a wake where nothing sleeps.
+pub const PROTOCOL_NONE: u32 = 0;
+
+/// `PROTOCOL_FUTEX` is the [`Wake::PROTOCOL`] of [`Futex`].
+pub const PROTOCOL_FUTEX: u32 = 1;
+
+/// `PROTOCOL_OTHER` is the [`Wake::PROTOCOL`] of a wake that sleeps and names no protocol, and the
+/// least number a wake written outside the crate takes for its own.
+pub const PROTOCOL_OTHER: u32 = 16;
 
 /// No sleeping: a wait is one spin-loop hint and a wake does
 /// nothing, so a waiting call polls.
@@ -113,6 +146,7 @@ pub struct Futex<const TIMEOUT_MS: u32 = 10>;
 #[cfg(target_os = "linux")]
 impl<const TIMEOUT_MS: u32> Wake for Futex<TIMEOUT_MS> {
     const WAKES: bool = true;
+    const PROTOCOL: u32 = PROTOCOL_FUTEX;
 
     fn wait(seen: Seen<'_>) {
         // FUTEX_WAIT's timeout is relative.
@@ -176,3 +210,130 @@ fn futex_wait(seen: Seen<'_>, op: libc::c_int, timeout: &libc::timespec) {
         );
     }
 }
+
+/// `trait Waits` marks a ring's choice of how its endpoints wait: [`SpinOnly`], [`Sleep`], or
+/// [`SpinOrSleep`]. An `mpsc::v4` ring takes one as its `W`.
+///
+/// - The choice is the ring's, not each endpoint's: an endpoint can sleep only if every other
+///   endpoint checks for sleepers, and those checks cost the endpoints that are awake. The
+///   `mpsc::v4` module docs say what the checks are and what they have cost.
+/// - A [`Wake`] alone, such as [`Futex`], is how a sleeper sleeps and is woken, and is not a
+///   `Waits`: [`Sleep`] and [`SpinOrSleep`] take one as what their endpoints sleep on.
+pub trait Waits: Wake {}
+
+/// `trait Spins` marks a [`Waits`] whose ring's endpoints may wait by spinning alone, with no sleep
+/// to follow: [`SpinOnly`] and [`SpinOrSleep`]. `mpsc::v4` offers `send_spin` and `recv_spin` on
+/// such a ring.
+pub trait Spins: Waits {}
+
+/// `trait Sleeps` marks a [`Waits`] whose ring's endpoints may sleep: [`Sleep`] and
+/// [`SpinOrSleep`]. `mpsc::v4` offers `send_spin_sleep` and `recv_spin_sleep` on such a ring.
+pub trait Sleeps: Waits {}
+
+/// `struct SpinOnly` is the choice that every endpoint of the ring waits by spinning. Nothing
+/// sleeps, so nothing checks for a sleeper, and the choice costs nothing.
+///
+/// - A ring over `SpinOnly` offers `send_spin` and `recv_spin`, and a sleep on it does not compile.
+/// - `SpinOnly` waits and wakes as [`NoWake`] does: a wait is one spin hint and a wake does nothing.
+pub struct SpinOnly;
+
+impl Wake for SpinOnly {
+    const WAKES: bool = false;
+
+    fn wait(_seen: Seen<'_>) {
+        core::hint::spin_loop();
+    }
+
+    fn wait_until(_seen: Seen<'_>, _deadline: Deadline) {
+        core::hint::spin_loop();
+    }
+
+    fn wake(_word: &AtomicU32) {}
+}
+
+impl Waits for SpinOnly {}
+
+impl Spins for SpinOnly {}
+
+/// `struct Sleep` is the choice that an endpoint of the ring spins for some time, which may be
+/// none, then may sleep on `S`, such as [`Futex`], for some further time or forever.
+///
+/// - A ring over `Sleep<S>` offers `send_spin_sleep` and `recv_spin_sleep`. A spin alone on it
+///   does not compile: an endpoint that only spins would pay for the checks that wake sleepers and
+///   gain nothing, and [`SpinOrSleep`] is the choice that says so on purpose.
+/// - Every endpoint checks for sleepers, a producer after each commit and the consumer at each half
+///   segment of messages read, whether or not anyone sleeps.
+/// - `S` must be a wake that sleeps. A `Sleep` over one that does not, such as [`NoWake`], fails to
+///   compile where the ring is used.
+pub struct Sleep<S: Wake>(PhantomData<S>);
+
+impl<S: Wake> Wake for Sleep<S> {
+    const WAKES: bool = {
+        assert!(S::WAKES, "Sleep needs a wake that sleeps, such as Futex");
+        true
+    };
+    const PROTOCOL: u32 = S::PROTOCOL;
+
+    fn wait(seen: Seen<'_>) {
+        S::wait(seen);
+    }
+
+    fn wait_until(seen: Seen<'_>, deadline: Deadline) {
+        S::wait_until(seen, deadline);
+    }
+
+    fn wake(word: &AtomicU32) {
+        S::wake(word);
+    }
+}
+
+impl<S: Wake> Waits for Sleep<S> {}
+
+impl<S: Wake> Sleeps for Sleep<S> {}
+
+/// `struct SpinOrSleep` is the choice that each endpoint of the ring either spins without end or
+/// sleeps on `S`, a mix made on purpose. `SpinOrSleep<S>` sleeps and wakes exactly as [`Sleep<S>`]
+/// does.
+///
+/// - A ring over `SpinOrSleep<S>` offers every timed send and receive, the spin forms and the spin
+///   and sleep forms.
+/// - The cost: every endpoint checks for sleepers, as over [`Sleep`]. The endpoint that pays is the
+///   one awake, and the one that gains is the one asleep, so an endpoint that only spins pays for
+///   the others' sleep.
+/// - How much: from nothing we could measure to about 28% more time a message in our streams, and
+///   about 7% of a round trip between two threads on another machine. It moves with the cores, the
+///   ring's depth, the machine, and the build, so it has to be measured where it matters. The
+///   `mpsc::v4` module docs say what the checks are and where the measurements are.
+/// - `SpinOrSleep<S>` and `Sleep<S>` are one wake protocol: a process attached with one and a
+///   process attached with the other share a ring correctly. The name is a statement in one
+///   process's types.
+pub struct SpinOrSleep<S: Wake>(PhantomData<S>);
+
+impl<S: Wake> Wake for SpinOrSleep<S> {
+    const WAKES: bool = {
+        assert!(
+            S::WAKES,
+            "SpinOrSleep needs a wake that sleeps, such as Futex"
+        );
+        true
+    };
+    const PROTOCOL: u32 = S::PROTOCOL;
+
+    fn wait(seen: Seen<'_>) {
+        S::wait(seen);
+    }
+
+    fn wait_until(seen: Seen<'_>, deadline: Deadline) {
+        S::wait_until(seen, deadline);
+    }
+
+    fn wake(word: &AtomicU32) {
+        S::wake(word);
+    }
+}
+
+impl<S: Wake> Waits for SpinOrSleep<S> {}
+
+impl<S: Wake> Spins for SpinOrSleep<S> {}
+
+impl<S: Wake> Sleeps for SpinOrSleep<S> {}

@@ -2479,8 +2479,254 @@ says otherwise, ns per message.
 - Verdict (2026-09-30): a build profile is a variable to fix, not a speedup to adopt. A comparison
   between two builds uses one profile, alternates its runs, and measures more than one machine
   before calling a change a cost or a win, the Todo `Measurement builds and the producer-consumer
-  rhythm`. `Single` and `Multi` cannot be told apart, the Todo `MPSC v4: v3 without Single and
-  Multi`.
+  rhythm`. `Single` and `Multi` cannot be told apart, the Todo `MPSC without Single and Multi`.
+
+### MPSC v4: matching sends and receives
+
+`mpsc::v4` is MPSC v3's ring with an API made plain for someone new to it, built in the cycle `feat:
+mpsc v4`, 2026-10-06 and 2026-10-07. The ring's protocol, its segments, its control block, and its
+message paths are v3's, described above, and v3 stays as built to measure against. What follows is
+what v4 changes and why. It began as iiac-perf's request for a consumer that spins for a time and
+then sleeps, which v3's consumer cannot do and a caller cannot compose, the clock being the
+crate's own.
+
+- The consumer receives as the producer sends, by a closure: `recv(policy, read_msg)` takes the
+  oldest committed slot, calls `read_msg` with a reference to its value, frees the slot when the
+  closure returns, and returns what the closure returned.
+  - v3's consumer returns a handle the caller reads through and then releases, and one dropped
+    without a release re-delivers its message silently. v4 has no such handle.
+  - Lost with it: holding a message across calls, and looking at one without consuming it. A
+    zero-copy message is an id, copied out of the closure, and a peek can be added when one is
+    needed.
+  - A `read_msg` that panics leaves the message in its slot, and the next `recv` reads it again,
+    the mirror of a `write_msg` that panics, which leaves its slot unfinished.
+- The two sides are symmetric, the user's rule: where a producer's wait and a consumer's have the
+  same semantics they have the same name, parameters, and meanings, where they differ the reason is
+  found, and where they cannot be made the same the names differ.
+
+  | Aspect | Producer | Consumer | |
+  |---|---|---|---|
+  | The call | `send(policy, write_msg)` | `recv(policy, read_msg)` | same shape |
+  | A timed spin | `send_spin(give_up, ..)` | `recv_spin(give_up, ..)` | same |
+  | A spin, then a sleep | `send_spin_sleep(spin_time, sleep_time, ..)` | `recv_spin_sleep(spin_time, sleep_time, ..)` | same |
+  | When the clock starts | the first full look | the first empty look | same |
+  | What a policy is asked | whether to look again at a full ring | the same at an empty ring | same, so one trait |
+  | What a sleep waits for | room, woken at each half segment of messages read, with every other sleeping producer | a commit, woken after each one | one contract, two mechanisms |
+  | A lost race | `on_lost` | cannot happen, a ring has one consumer | differs |
+  | The receiver | `&self`, many producers | `&mut self`, one consumer | differs |
+  | Giving up | `Err(Full)` | `Err(Empty)` | differs by nature |
+
+  - A wake can reach the consumer between a producer's taking a slot and its commit. The consumer
+    then looks, finds nothing committed, and its next sleep returns at once, so it spins until the
+    commit lands.
+- One policy trait, `WaitPolicy`, serves both sides, with `on_wait` and a `Waiter` to sleep
+  through, in place of v3's `SendPolicy`, `on_full`, and `Room`. A closure `FnMut(u32) -> bool` is
+  a policy on either side.
+  - A policy cannot sleep to a deadline of its own, on either side: `Waiter::sleep` takes none, and
+    only the timed forms do. Exposing the clock is the Todo `Clock choices for the deadline sends`.
+- How a ring's endpoints wait is the ring's choice, its second type parameter beside the mode, and
+  not each endpoint's: an endpoint can sleep only if every other endpoint checks for sleepers.
+  - Three choices, each over either mode, six ring types: `SpinOnly`, where nothing sleeps,
+    `Sleep<Futex>`, where an endpoint spins for some time and then may sleep, and
+    `SpinOrSleep<Futex>`, where each endpoint does one or the other.
+  - The timed forms are offered by the choice: the spin forms over `SpinOnly` and `SpinOrSleep`,
+    and the spin and sleep forms over `Sleep` and `SpinOrSleep`. A form a ring does not offer does
+    not compile, so a sleep is never a spin under another name, as v3's is over `NoWake`.
+  - `Futex` is how a sleeper sleeps and is woken, a `Wake`, and not a choice: a v4 ring over a bare
+    `Futex` or `NoWake` does not compile. The choices implement `Waits`, which v4's types are
+    bounded by.
+  - `SpinOrSleep<Futex>` is `Sleep<Futex>`'s code exactly. Its name is how a caller says a mix of
+    spinners and sleepers is on purpose, since the spinners pay for the checks that wake the
+    sleepers. The names are the user's. iiac-perf's sketch called the mix `Mixed<Futex>`, which did
+    not say mixed with what.
+  - A `spin_time` of `Ticks::FOREVER` given to a spin and sleep form on a ring over `Sleep` still
+    compiles, the time being a value. The docs say so, and no assertion is built.
+- The checks a ring that sleeps makes, and what they have cost, are in the `mpsc::v4` module docs
+  and in [MPSC v4 measured](#mpsc-v4-measured).
+- A ring records its wake protocol, none, futex, or other, in its control block at `init`, and an
+  `attach` over another is `Error::BadWake`. On a v3 ring two processes can wake two ways and
+  nothing says so, the sleeper left to its timeout at every message.
+  - The protocol is a constant on `Wake` with a default, so the one line added to code that existed
+    is `Futex`'s. A futex's timeout is not part of it.
+  - `Sleep<Futex>` and `SpinOrSleep<Futex>` are one protocol and share a ring.
+  - v4 has its own magic, so a v3 ring and a v4 ring refuse each other's `attach`. The two layouts
+    differ by the one word.
+- Plain names, each word with one meaning, listed at the top of the module docs.
+  - A role is taken with `ring.producer()` or `ring.consumer()`, v3's `claim_producer` and
+    `claim_consumer`, and given back with `release`. "Claim" meant a role, a slot, and a slot being
+    written.
+  - A slot is not where a message is. In the typical use the message is in a pool buffer and the
+    slot holds its id, a `Desc`, so the message is never copied. The user's general form of an id
+    is `<url>-<pool>-<offset>`, a machine, a pool on it, and a place in the pool, zero-copy
+    wherever the two sides' `<url>` is the same. `Desc` holds the pool and the buffer, with no
+    machine part.
+  - The closures keep the names `write_msg` and `read_msg`, though what they write and read is the
+    slot's value.
+- A tick has no dimension a caller may rely on, a nanosecond today and perhaps a CPU's cycle
+  counter later. So the conversions, `secs_to_ticks` and `millis_to_ticks` added beside the two
+  there were, are ordinary functions and not `const`, since a later one may read a rate found when
+  the program runs.
+
+### MPSC v4 measured
+
+Measured 2026-10-06 at the rung `feat: mpsc v4 in the tools`, with `tp-stream -d 1 --depth 8` and
+`tp-stream -d 1 --depth 8 -p 2`, on the 3900X, two segments, the other two machines following
+below. The build profile is `lto`, one
+codegen unit with fat LTO, the profile [MPSC v3 across machines and build
+profiles](#mpsc-v3-across-machines-and-build-profiles) found the steadier. Three runs of each, ns
+per message, every run shown beside its median. Each v4 flavor is beside the v3 flavor of the same
+name: `plain` is `mpsc-v3` and `mpsc-v4`, `Multi` with nothing sleeping, `single` the one-segment
+mode, `futex` a ring whose wake checks run though every endpoint spins, and `backoff` producers
+that back off after a lost slot.
+
+- One producer:
+
+  | placement | flavor | v3 runs | v3 median | v4 runs | v4 median | v4 / v3 |
+  |---|---|---|---:|---|---:|---:|
+  | 11,10 CCX | plain | 9.6, 9.6, 9.6 | 9.6 | 9.7, 10.1, 10.3 | 10.1 | 1.05 |
+  | 11,10 CCX | single | 9.4, 9.4, 9.3 | 9.4 | 9.2, 9.2, 9.2 | 9.2 | 0.98 |
+  | 11,10 CCX | futex | 9.7, 9.7, 9.7 | 9.7 | 9.9, 9.9, 9.9 | 9.9 | 1.02 |
+  | 11,10 CCX | backoff | 9.7, 9.7, 9.7 | 9.7 | 9.4, 9.4, 9.5 | 9.4 | 0.97 |
+  | 11,8 x-CCX | plain | 31.8, 31.7, 31.9 | 31.8 | 31.3, 32.3, 31.2 | 31.3 | 0.98 |
+  | 11,8 x-CCX | single | 27.0, 27.0, 27.0 | 27.0 | 27.2, 27.4, 27.2 | 27.2 | 1.01 |
+  | 11,8 x-CCX | futex | 31.8, 31.6, 31.7 | 31.7 | 31.8, 31.9, 31.5 | 31.8 | 1.00 |
+  | 11,8 x-CCX | backoff | 31.9, 31.8, 31.9 | 31.9 | 33.0, 31.7, 31.8 | 31.8 | 1.00 |
+  | 11,23 SMT | plain | 6.4, 6.5, 6.4 | 6.4 | 6.5, 6.5, 6.4 | 6.5 | 1.02 |
+  | 11,23 SMT | single | 6.5, 6.5, 6.5 | 6.5 | 6.5, 6.5, 6.5 | 6.5 | 1.00 |
+  | 11,23 SMT | futex | 6.5, 6.5, 6.5 | 6.5 | 6.9, 7.1, 7.0 | 7.0 | 1.08 |
+  | 11,23 SMT | backoff | 6.3, 6.3, 6.3 | 6.3 | 6.5, 6.6, 6.5 | 6.5 | 1.03 |
+  | unpinned | plain | 9.6, 9.6, 9.5 | 9.6 | 9.4, 9.4, 9.4 | 9.4 | 0.98 |
+  | unpinned | single | 9.4, 9.3, 9.7 | 9.4 | 9.1, 9.0, 8.8 | 9.0 | 0.96 |
+  | unpinned | futex | 9.8, 9.8, 9.5 | 9.8 | 9.7, 9.6, 9.5 | 9.6 | 0.98 |
+  | unpinned | backoff | 9.3, 9.4, 9.5 | 9.4 | 9.3, 9.6, 9.5 | 9.5 | 1.01 |
+
+- Two producers, the consumer on cpu 11, and the producers on 10 and 9 for own cores near, 8 and 7
+  for own cores x-L3, and 10 and 22 for shared cores:
+
+  | placement | flavor | v3 runs | v3 median | v4 runs | v4 median | v4 / v3 |
+  |---|---|---|---:|---|---:|---:|
+  | own cores near | plain | 48.9, 49.0, 49.0 | 49.0 | 49.1, 49.4, 49.5 | 49.4 | 1.01 |
+  | own cores near | single | 48.9, 48.9, 49.0 | 48.9 | 48.7, 48.8, 48.8 | 48.8 | 1.00 |
+  | own cores near | futex | 49.4, 49.4, 49.4 | 49.4 | 48.1, 48.3, 48.2 | 48.2 | 0.98 |
+  | own cores near | backoff | 21.1, 21.2, 21.1 | 21.1 | 19.7, 19.8, 19.7 | 19.7 | 0.93 |
+  | own cores x-L3 | plain | 69.5, 69.4, 69.5 | 69.5 | 69.1, 69.6, 69.3 | 69.3 | 1.00 |
+  | own cores x-L3 | single | 74.9, 75.0, 75.0 | 75.0 | 75.2, 75.2, 74.8 | 75.2 | 1.00 |
+  | own cores x-L3 | futex | 71.6, 71.6, 71.6 | 71.6 | 71.6, 71.5, 71.6 | 71.6 | 1.00 |
+  | own cores x-L3 | backoff | 67.6, 67.8, 68.0 | 67.8 | 67.6, 67.4, 67.9 | 67.6 | 1.00 |
+  | shared cores | plain | 24.8, 24.9, 24.9 | 24.9 | 25.2, 25.0, 25.2 | 25.2 | 1.01 |
+  | shared cores | single | 24.7, 24.7, 24.8 | 24.7 | 24.5, 24.5, 24.5 | 24.5 | 0.99 |
+  | shared cores | futex | 25.5, 25.6, 25.5 | 25.5 | 25.3, 25.3, 25.3 | 25.3 | 0.99 |
+  | shared cores | backoff | 13.3, 13.3, 13.3 | 13.3 | 13.3, 13.3, 13.4 | 13.3 | 1.00 |
+  | unpinned | plain | 48.6, 160.4, 48.9 | 48.9 | 49.8, 46.8, 48.2 | 48.2 | 0.99 |
+  | unpinned | single | 49.0, 52.2, 50.3 | 50.3 | 49.1, 48.7, 48.1 | 48.7 | 0.97 |
+  | unpinned | futex | 49.5, 52.4, 48.5 | 49.5 | 50.4, 47.9, 50.6 | 50.4 | 1.02 |
+  | unpinned | backoff | 21.1, 20.7, 21.1 | 21.1 | 21.0, 20.5, 20.4 | 20.5 | 0.97 |
+
+- v4 runs as v3 does. Of the 32 medians, 28 are within 3% of their v3 twin, and all are within 8%
+  above and 7% below.
+  - v4's message paths are v3's: the producer's `send` is unchanged, and the consumer's `recv` is
+    v3's reserve and release in one call around a closure.
+  - The tools read a v4 message by copying it out inside that closure, where they read a v3
+    message through its guard, and the rows do not tell the two apart.
+- The row farthest above its twin is `futex` on the SMT pair at one producer, 7.0 against 6.5, each
+  of its three runs within 0.1 of its median. v4's `futex` flavor is a ring over
+  `SpinOrSleep<Futex<10>>` where v3's is over `Futex<10>`, and the first forwards to the second on
+  the sleep path alone, which no endpoint takes here. We think the gap is how the two loops were
+  compiled and fall into step, as the Todo `Measurement builds and the producer-consumer rhythm`
+  describes, and not the forwarding.
+- The row farthest below is `backoff` at two producers on own cores near, 19.7 against 21.1.
+- The wake checks cost less under `lto` than the first v3 tables showed under the default profile.
+  At one producer, `futex` against `plain`:
+  - v3: 9.7 against 9.6 same-CCX, 31.7 against 31.8 cross-CCX, 6.5 against 6.4 on the SMT pair, 2%
+    at most.
+  - v4: 9.9 against 10.1 same-CCX, 31.8 against 31.3 cross-CCX, 7.0 against 6.5 on the SMT pair,
+    8% at most.
+  - Under the default profile [MPSC v3 measured](#mpsc-v3-measured) has 15.6 against 12.2 on the
+    SMT pair at this depth, 28%.
+- One run is an outlier and its median stands: `plain` v3, two producers unpinned, 160.4 in the
+  second run against 48.6 and 48.9.
+- Not measured here:
+  - The timed forms, `recv_spin`, `recv_spin_sleep`, `send_spin`, and `send_spin_sleep`. Every
+    flavor sends and receives by the general `send` and `recv` with a spin policy, as the v3
+    flavors do, so a row compares the rings and not the waits. An endpoint asleep is in no row.
+  - The default profile, depths 1 and 64, and the round trips of `tp-matrix`.
+- The 7600X and the Pi 5, measured 2026-10-07 at the cycle's close, the same tree and the same
+  `lto` profile, the base cpu 5 on the 7600X and 3 on the Pi 5:
+  - The 7600X, one producer:
+
+    | placement | flavor | v3 runs | v3 median | v4 runs | v4 median | v4 / v3 |
+    |---|---|---|---:|---|---:|---:|
+    | 5,4 CCX | plain | 10.5, 10.6, 10.5 | 10.5 | 11.1, 11.1, 11.1 | 11.1 | 1.06 |
+    | 5,4 CCX | single | 10.3, 10.3, 10.3 | 10.3 | 10.7, 10.7, 10.7 | 10.7 | 1.04 |
+    | 5,4 CCX | futex | 10.7, 10.7, 10.7 | 10.7 | 10.8, 10.8, 10.8 | 10.8 | 1.01 |
+    | 5,4 CCX | backoff | 10.6, 10.6, 10.6 | 10.6 | 10.9, 11.0, 10.9 | 10.9 | 1.03 |
+    | 5,11 SMT | plain | 5.1, 5.1, 5.1 | 5.1 | 4.8, 4.8, 4.8 | 4.8 | 0.94 |
+    | 5,11 SMT | single | 5.4, 5.5, 5.5 | 5.5 | 5.4, 5.4, 5.5 | 5.4 | 0.98 |
+    | 5,11 SMT | futex | 5.4, 5.4, 5.4 | 5.4 | 5.7, 5.7, 5.7 | 5.7 | 1.06 |
+    | 5,11 SMT | backoff | 5.1, 5.1, 5.1 | 5.1 | 5.0, 5.0, 4.9 | 5.0 | 0.98 |
+    | unpinned | plain | 10.9, 6.8, 11.0 | 10.9 | 11.6, 10.9, 11.7 | 11.6 | 1.06 |
+    | unpinned | single | 11.1, 11.1, 11.1 | 11.1 | 11.4, 11.4, 11.4 | 11.4 | 1.03 |
+    | unpinned | futex | 11.3, 8.1, 11.2 | 11.2 | 11.2, 7.3, 11.2 | 11.2 | 1.00 |
+    | unpinned | backoff | 10.9, 6.8, 10.9 | 10.9 | 11.5, 10.9, 11.6 | 11.5 | 1.06 |
+
+  - The 7600X, two producers, the consumer on cpu 5, and the producers on 4 and 3 for own cores
+    near and 4 and 10 for shared cores:
+
+    | placement | flavor | v3 runs | v3 median | v4 runs | v4 median | v4 / v3 |
+    |---|---|---|---:|---|---:|---:|
+    | own cores near | plain | 40.7, 43.6, 41.3 | 41.3 | 40.6, 40.5, 40.6 | 40.6 | 0.98 |
+    | own cores near | single | 40.7, 42.4, 40.3 | 40.7 | 39.4, 40.0, 39.6 | 39.6 | 0.97 |
+    | own cores near | futex | 43.5, 40.5, 40.5 | 40.5 | 40.7, 40.7, 40.7 | 40.7 | 1.00 |
+    | own cores near | backoff | 14.1, 14.0, 14.1 | 14.1 | 13.6, 13.6, 13.6 | 13.6 | 0.96 |
+    | shared cores | plain | 23.3, 23.9, 23.2 | 23.3 | 22.9, 23.0, 23.0 | 23.0 | 0.99 |
+    | shared cores | single | 22.2, 22.1, 22.1 | 22.1 | 22.3, 22.2, 22.2 | 22.2 | 1.00 |
+    | shared cores | futex | 23.1, 22.6, 22.9 | 22.9 | 22.6, 22.6, 22.6 | 22.6 | 0.99 |
+    | shared cores | backoff | 11.8, 23.1, 11.8 | 11.8 | 11.0, 11.0, 11.0 | 11.0 | 0.93 |
+    | unpinned | plain | 45.7, 45.3, 41.3 | 45.3 | 40.6, 37.9, 45.0 | 40.6 | 0.90 |
+    | unpinned | single | 44.9, 41.1, 44.4 | 44.4 | 44.0, 44.1, 40.3 | 44.0 | 0.99 |
+    | unpinned | futex | 45.3, 45.5, 45.7 | 45.5 | 40.5, 40.4, 40.2 | 40.4 | 0.89 |
+    | unpinned | backoff | 14.0, 14.0, 14.0 | 14.0 | 13.6, 14.5, 13.6 | 13.6 | 0.97 |
+
+  - The Pi 5, one producer:
+
+    | placement | flavor | v3 runs | v3 median | v4 runs | v4 median | v4 / v3 |
+    |---|---|---|---:|---|---:|---:|
+    | 3,2 CCX | plain | 51.7, 51.7, 51.7 | 51.7 | 51.8, 51.7, 51.7 | 51.7 | 1.00 |
+    | 3,2 CCX | single | 53.1, 51.3, 51.3 | 51.3 | 52.6, 51.3, 51.3 | 51.3 | 1.00 |
+    | 3,2 CCX | futex | 52.7, 52.7, 52.7 | 52.7 | 52.7, 52.8, 52.8 | 52.8 | 1.00 |
+    | 3,2 CCX | backoff | 54.7, 55.0, 54.8 | 54.8 | 65.3, 65.9, 67.6 | 65.9 | 1.20 |
+    | unpinned | plain | 51.7, 51.7, 51.7 | 51.7 | 51.8, 51.7, 51.7 | 51.7 | 1.00 |
+    | unpinned | single | 51.4, 51.4, 51.4 | 51.4 | 51.3, 51.4, 51.3 | 51.3 | 1.00 |
+    | unpinned | futex | 52.6, 52.6, 52.6 | 52.6 | 52.8, 52.7, 52.8 | 52.8 | 1.00 |
+    | unpinned | backoff | 54.8, 54.8, 54.8 | 54.8 | 62.1, 56.6, 60.9 | 60.9 | 1.11 |
+
+  - The Pi 5, two producers, the consumer on cpu 3 and the producers on 2 and 1:
+
+    | placement | flavor | v3 runs | v3 median | v4 runs | v4 median | v4 / v3 |
+    |---|---|---|---:|---|---:|---:|
+    | own cores near | plain | 123.7, 123.4, 123.4 | 123.4 | 123.8, 123.5, 123.5 | 123.5 | 1.00 |
+    | own cores near | single | 123.1, 123.1, 123.3 | 123.1 | 123.1, 123.1, 123.1 | 123.1 | 1.00 |
+    | own cores near | futex | 123.5, 123.5, 123.7 | 123.5 | 123.6, 123.8, 123.7 | 123.7 | 1.00 |
+    | own cores near | backoff | 104.4, 104.3, 104.4 | 104.4 | 103.8, 103.8, 103.8 | 103.8 | 0.99 |
+    | unpinned | plain | 123.2, 124.0, 123.7 | 123.7 | 123.5, 123.5, 123.7 | 123.5 | 1.00 |
+    | unpinned | single | 122.3, 123.0, 123.1 | 123.0 | 123.0, 123.1, 123.1 | 123.1 | 1.00 |
+    | unpinned | futex | 124.1, 123.9, 123.9 | 123.9 | 123.9, 124.1, 123.7 | 123.9 | 1.00 |
+    | unpinned | backoff | 104.1, 104.3, 104.3 | 104.3 | 103.8, 103.9, 103.8 | 103.8 | 1.00 |
+
+  - Across the three machines v4 runs as v3 does, with no one direction: on the 7600X v4 is 3 to
+    6% the slower at one producer on separate cores and 2 to 7% the faster at two producers on
+    pinned cores, each gap alike in its three runs. Its unpinned rows scatter, single runs jumping
+    by a third.
+  - `futex` on an SMT pair at one producer is the slower on both AMD machines, 8% on the 3900X and
+    6% on the 7600X.
+  - One row stands apart: `backoff` on the Pi 5 at one producer, 65.9 against 54.8 pinned, 20%, and
+    60.9 against 54.8 unpinned. v4's consumer found the ring empty at 23% of its looks, where
+    v3's found it empty at 0.4%, so v4's producer is the slow side. The tools' two backoff
+    policies are the same code but for the trait's name, and the row is level at two producers
+    and on both AMD machines. With one producer no slot is lost, so `on_lost` should not run. We
+    think a weak compare-and-swap failing spuriously on arm64 calls it, on both versions, and
+    that the two `send` loops were compiled differently there. Not looked into, the Todo `MPSC v4
+    backoff trails v3 on the Pi 5 at one producer`.
 
 ### MPSC v3 long-term possibilities
 
