@@ -171,7 +171,8 @@ and the bookmark derive from one bare title):
 - `jj bookmark set <bookmark> -r <rev> -R .` creates it without publishing, for a line that is not
   ready to be seen.
 
-**Land**, once the close-out is approved: the sequence that makes the cycle permanent. Every
+**Land**, once the close-out is approved: the sequence that makes the cycle permanent, begun by a
+sync that found `main` unmoved ([Sync](../AGENTS.md#sync)). Every
 `jj git push` in it is a push under [Approval per push](../AGENTS.md#before-any-push) and [Hard
 stop after the final push](../AGENTS.md#at-rest-push-stop-squash-push), its own approval, the
 closing words before the final invocation, silence after ([At

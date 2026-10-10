@@ -9,14 +9,9 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- The cycle `feat: mpsc v4` is closed and its Land is the step in flight if `main` is not yet at
-  its trapezoid: restore the plain names, reshape, fast-forward `main`, install, delete the
-  bookmark `feat-mpsc-v4`, each push with the user's go.
-- Owed after Land: a line on the thread `m-8` in `../vc-x1-messages` that links the landed cycle by
-  sha, and tells iiac-perf what `m-8-6` did not have: the wake protocol in the control block and
-  `Error::BadWake`, `millis_to_ticks` and `secs_to_ticks` by sha, v4 in the demo and the ipm test,
-  and the three machines' tables. The user plans for iiac-perf to measure v4 with better precision.
-- `m-7` still waits on iiac-perf's reply.
+- Owed after the Land of `agent-files(adoption): v0.2.8`, both in `../vc-x1-messages`: a reply on
+  `m-9` saying the set is taken whole, both `custom.md` lines included, linking the landed commit
+  by sha, and a `done` on `m-7`, which iiac-perf's `m-7-4` leaves ready to close.
 - Scratch left for the user to keep or delete: `~/tmp/zc-v4` on the 7600X and the Pi 5, and
   `target/lto` here, from this cycle. `~/tmp/zc-ab` on the 7600X and the Pi, source trees and
   `tp-stream` builds, the Pi's demo build and test build, from before.
@@ -240,20 +235,6 @@ the choices side by side before any is the default beyond today's.
   dominates energy and the clock matters only for reaction.
 - Every cycle counts, measured in a small device's battery life, the user's rule, and the reason
   to measure rather than assume. From `feat: mpsc v3 deadline sends` on 2026-09-29.
-
-### Cycle block: the ladder last, above its rung subsections
-
-In a multi-step cycle's block the ladder sits between the acceptance check and the deliberation,
-and the rung subsections follow under their own `#### Ladder details` heading, so the ladder and
-the subsections it links are apart. The user's preference, 2026-09-26: problem, solution,
-acceptance check, deliberation, then `#### Ladder` directly above the rung subsections, with no
-`#### Ladder details` heading.
-
-- The agent-files that state the order: `agent-data/notes.md`'s The In Progress block,
-  `agent-data/cycle-model.md`'s specimen, and anything citing `Ladder details`, as an
-  `agent-files` proposal cycle, its own commit and its own cycle.
-- A single-step cycle's block already takes the order, from `feat: test inter-process message`,
-  where the user moved it by hand.
 
 ### Find a ring by name
 
@@ -741,563 +722,75 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### feat: mpsc v4
+### agent-files(adoption): v0.2.8
 
 #### Problem
 
-MPSC v3's consumer cannot wait at an empty ring the way its producer waits at a full one. The
-producer has `send` over a policy, `send_spin`, and `send_spin_sleep`, each time a `Ticks`. The
-consumer has `reserve_slot_with`, a poll whose policy counts attempts, and `reserve_slot_wait`,
-which sleeps at every empty look with no spin before it and no deadline, bounded by the wake's own
-timeout alone. A caller cannot compose the timed form, since `now_ticks` and `Deadline::at` are
-`pub(crate)`. iiac-perf asked for it in the message thread `m-8`: their round-trip benches never
-fill a ring, so the only waits they measure are the consumer's.
+The family's agreed set is v0.2.8 and ours was v0.2.5, three proposals behind, so
+`vc-x1 agent-files diff -c ../vc-x1` named most of the set. vc-x1 asked for the adoption on the
+thread `m-9` in `../vc-x1-messages`, its set at `1139c742b8d4`. What the three bring:
+
+- v0.2.6: the In Progress block's ladder sits below the deliberation and heads the rung
+  subsections, with no `#### Ladder details` heading.
+- v0.2.7: `## Acquaint` in `AGENTS.md`, a session's first steps in order, with a repo check of four
+  findings.
+- v0.2.8: `## Sync` in `AGENTS.md`, one command, `vc-x1 sync --scope=both`, a look at an acquaint
+  and a sync when a cycle opens and when it lands.
 
 #### Solution
 
-`mpsc::v4` is a copy of v3 whose consumer receives as its producer sends, whose ring is made with a
-choice of how its endpoints wait, and whose names are plain. v3 is untouched, the reference to
-measure against.
-
-- The mode stays: v4 has `Single` and `Multi` as v3 does.
-- The consumer receives by a closure, `recv(policy, read_msg)`, with `recv_spin` and
-  `recv_spin_sleep` beside it, each the mirror of the send of the same suffix. One policy trait,
-  `WaitPolicy`, serves both sides. v3's read handle and its two reserves are gone from v4.
-- The ring's second type parameter is a choice of wait, `SpinOnly`, `Sleep<Futex>`, or
-  `SpinOrSleep<Futex>`, and the timed forms exist only where the choice offers them. The docs say
-  what a ring that sleeps costs and where that was measured.
-- A ring records its wake protocol, and an `attach` over another is `Error::BadWake`.
-- A role is taken with `ring.producer()` or `ring.consumer()`, and the module docs open with a list
-  of words, each with one meaning, a slot's value being an id in the typical use.
-- `millis_to_ticks` and `secs_to_ticks` join the two conversions there were, and a tick is said to
-  have no dimension a caller may rely on.
-- v4 is in `tp-stream`, `tp-matrix`, `tp-cell`, the demo, and the ipm test, and is measured beside
-  v3 on three machines under one build profile: it runs as v3 does.
-- The design is in the design note's `MPSC v4: matching sends and receives`, the how-to in the user
-  guide's MPSC v4 section, and a zero-copy program in `examples/guide_mpsc_v4.rs`.
+A single-step adoption, the source's set taken whole by `vc-x1 agent-files copy -c ../vc-x1`:
+`agent-data/agent-files-v0.2.5` renamed to `agent-data/agent-files-v0.2.8`, eight agent-files
+changed, `agent-data/session-lock.md` new, and `custom.md` taken as the family's, with its two new
+lines. Done as stated, and the diff against `../vc-x1` reports nothing differing.
 
 #### Acceptance check
 
-- `jj diff --from main --to feat-mpsc-v4 src/mpsc/v3` prints nothing.
-- `cargo test --all-features` passes, with v4 tests of the consumer's waits: over `SpinOnly`, no
-  spin, a timed spin, and a spin forever, and over `Sleep<Futex>` and `SpinOrSleep<Futex>`, no
-  spin, a timed spin, and a spin forever, each with no sleep, a timed sleep, and a sleep until a
-  commit, as far as the choice offers them.
-- Every wait method of the v4 producer has a consumer counterpart of the same name form and
-  parameter meanings, or the design note says why the two differ.
-- A spin alone on a ring over `Sleep<Futex>`, and a sleep on a ring over `SpinOnly`, each fail to
-  compile, held by a doc test marked to fail compiling.
-- A v4 test holds that an endpoint whose wake disagrees with the ring's recorded one is refused.
-- `tp-stream` runs each v4 flavor, and the design note holds its rows beside the matching v3 rows,
-  each table naming its build profile.
-- `cargo run --release --example guide_mpsc_v4` runs to its last line.
-- The thread `m-8` holds a reply that links the landed cycle.
+`vc-x1 agent-files diff -c ../vc-x1` reports 0 of 12 differing, `vc-x1 agent-files version` prints
+`v0.2.8`, and `agent-data` holds no `agent-files-v0.2.5`.
 
-Checked at the close, 2026-10-07. Seven pass and one is not yet due:
-
-- Passed: the diff of `src/mpsc/v3` between `main` and the bookmark is empty.
-- Passed: `cargo test --all-features` passes, 270 library tests, 3 ipm tests, and 4 doc tests. The
-  consumer's waits are tested over `SpinOnly` for no spin, a timed spin, and a spin forever, over
-  `Sleep<Futex>` for no spin and a timed spin, each with no sleep, a timed sleep, and a sleep until
-  a commit, and over `SpinOrSleep<Futex>` for a spin forever and a sleep until a commit. A spin
-  forever through the spin and sleep form over `Sleep<Futex>` alone is not tested.
-- Passed, by this rung: every wait method of the v4 producer has a consumer counterpart of the same
-  name form and parameter meanings, and the design note's `MPSC v4: matching sends and receives`
-  has the table of where the two sides are the same and where they differ. Until this rung the
-  differences were in this block alone.
-- Passed: three doc tests marked to fail compiling hold a sleep over `SpinOnly`, a spin alone over
-  `Sleep<Futex>`, and a ring over a bare `Futex`.
-- Passed: `attach_checks_the_wake` holds the refusal within a process, and the ipm test between
-  processes. The refusal is at `attach`, of the ring's handle, from which every endpoint comes.
-- Passed: `tp-stream` runs the four v4 flavors, and the design note's `MPSC v4 measured` has their
-  rows beside v3's, the profile named.
-- Passed: the example prints `mpsc v4: 100000 messages by id, never copied, 2 segments of 8, 93
-  switches, roles and ring released`, the switch count varying by run.
-- Not yet due: the reply on `m-8` that links the landed cycle is written after Land, when there is
-  a commit on `main` to link.
-
-#### Ladder
-
-- [feat: mpsc v4 opening][1] (done)
-- [feat: mpsc v4 as a copy of mpsc v3][2] (done)
-- [feat: mpsc v4 consumer policy][3] (done)
-- [feat: mpsc v4 plain names][8] (done)
-- [feat: mpsc v4 waiters say their cost][9] (done)
-- [feat: ticks from millis and secs][12] (done)
-- [feat: mpsc v4 refuses a wake mismatch][10] (done)
-- [feat: mpsc v4 in the tools][4] (done)
-- [docs: mpsc v4 consumer waits measured][5] (done)
-- [docs: mpsc v4 guide and example][6] (done)
-- [feat: mpsc v4 in the demo and the ipm test][13] (done)
-- [feat: mpsc v4 closing][7] (done)
+Passed (2026-10-13): the diff reports all twelve files the same, the version prints `v0.2.8`, and
+`ls agent-data` lists `agent-files-v0.2.8` alone among the version files.
 
 #### Deliberation
 
-- A new version, not a change to v3, the user's call of 2026-10-06: no existing code changes, so
-  v3's callers, iiac-perf's benches among them, keep building.
-  - Weighed: the timed methods added to v3 over a private mechanism, the smaller change, with the
-    symmetric form left for later. It would have changed v3's API twice.
-- The mode stays, the user's call of 2026-10-06: the first measurements of dropping it indicate a
-  performance hit.
-  - The mode drop was this version's first scope, the Todo then titled `MPSC v4: v3 without Single
-    and Multi`. That entry stays in `## Todo`, retitled `MPSC without Single and Multi`.
-- Symmetric, and identical where the semantics are the same, the user's rule of 2026-10-06, stated
-  in the solution.
-- No new waiter: the consumer already carries the ring's `W: Wake` and sleeps through `W::wait`, and
-  `Wake` already has `wait_until`. What the consumer lacks is the deadline and a policy that can
-  choose to sleep.
-- The copy is its own rung, so the consumer policy rung's diff shows that change alone.
-- The consumer reads by a closure, `recv(policy, read_msg)`, the user's call of 2026-10-06: the
-  handle `reserve_slot_with` returned, called a guard, guarded nothing a newcomer would recognize,
-  and one dropped without `release` re-delivered its message silently.
-  - With it the two sides' names are identical after the verb, `send` and `recv`, `_spin`, and
-    `_spin_sleep`, so the symmetry rule is met with no exception for the call's shape.
-  - Lost: holding a message across calls, and looking at one without consuming it. A zero-copy
-    message is a `Desc`, copied out of the closure, and a peek can be added when someone needs it.
-  - Proposed first and set aside: the guard kept, as `reserve_slot`, `reserve_slot_spin`, and
-    `reserve_slot_spin_sleep`, iiac-perf's proposed name among them.
-- One policy trait, `WaitPolicy`, for both sides, the user's call of 2026-10-06: the question a
-  policy answers is the same at a full ring and an empty one, and one policy type then waits on
-  either side. The producer's `on_lost` is its one method a consumer never calls.
-  - Weighed: v3's `SendPolicy` kept and a second trait for the consumer, which leaves v4's producer
-    as v3's.
-- v4 drops `reserve_slot_with` and `reserve_slot_wait`, the user's call of 2026-10-06, since v3
-  keeps them.
-- Plain names are their own rung, inserted on 2026-10-06 with the user's go: "claim" means three
-  things, becoming a producer or the consumer, taking a slot, and a slot being written, and the
-  rung gives the first its own words, `ring.producer()` and `ring.consumer()`. "release" stays for
-  giving a role back.
-- iiac-perf's three asks in `m-8-3` are two rungs of this cycle, the user's call of 2026-10-06,
-  inserted after the names and before the tools, so the tools and the tables see v4's final API.
-  - Their measurement, the 7600X, an SMT pair, ten runs each, against v3: a round trip on a ring
-    over `Futex` where nobody sleeps is 48.95 ns, and 45.87 ns over `NoWake`, the wake's checks
-    costing a spinner about 3 ns. They call the size provisional.
-  - The waiter type and the gated methods are one rung, since the gate is what makes the type
-    worth writing down. The control block's wake protocol is the other, a layout change.
-- A waiver, the user's of 2026-10-06 on leaving: "complete this cycle if possible up to closing,
-  but don't close, I'll review when I get back".
-  - What we take it to cover: for each rung from `feat: mpsc v4 refuses a wake mismatch` to `docs:
-    mpsc v4 guide and example`, the work review, the description review, the push's approval, and
-    the hard stop after the push.
-  - What it does not cover: the closing rung, the close-out shape, Land, any push of `main`, any
-    rewrite of a pushed commit, and any push of the messages repo.
-  - Every rung under it is still validated in full before its push, and is a draft on the bookmark
-    for the user's review on return.
-  - A design choice made under it without the user is marked in its rung's details as the agent's.
-- The demo and the ipm test are a rung of their own, inserted on 2026-10-07 with the user's go: the
-  tools rung left them out, the agent's choice under the waiver, and the user, back, ran the demo
-  and found no MPSC v4 in it.
-- A policy still cannot sleep to a deadline of its own, on either side: `Waiter::sleep` takes none,
-  and only the built-in timed methods do. Exposing the clock is the Todo `Clock choices for the
-  deadline sends`.
-- The build profile for the tables is one codegen unit and fat LTO, the profile the Todo
-  `Measurement builds and the producer-consumer rhythm` found alike on three machines.
-- The version advances by a patch, the default.
+- Single-step: a copy and no design, so one commit carrying the bare version and no dev rename, as
+  the v0.2.3 and v0.2.4 adoptions did.
+- One adoption for three proposals: v0.2.6 and v0.2.7 were never adopted here on their own, and the
+  set is copied whole, so the version file goes from v0.2.5 to v0.2.8 in one rename.
+- Adoptions copy and bump nothing: the version file is the source's ([Agent-files
+  version](agent-data/versioning.md#agent-files-version)).
+- Both new `custom.md` lines are taken as vc-x1 wrote them, the user's call (2026-10-13), so the
+  `-c` stays on the copy and the diff.
+  - The messages fetch: a session does the messages README's Fetch action at an acquaint and at
+    every cycle start, the user's permission standing.
+  - The session lock is off, and `agent-data/session-lock.md` holds how to turn it on.
+- The copy was already in the working copy when this session acquainted, with no continuation note
+  naming it, so the acquaint reported it as uncommitted work and the user said to adopt it. The
+  session did not make the copy. It checked it, by the diff against `../vc-x1`, and ran the cycle
+  around it.
+- The reference checkout, `../vc-x1`, was at `20ab9235e3a5` when the diff ran, past the
+  `1139c742b8d4` that `m-9` names, and its set is still v0.2.8.
+- The installed `vc-x1` is 0.84.31, past the 0.84.30 that `m-9` asks for, since the Sync rule relies
+  on `sync --dry-run` and on sync holding a repo back.
+- The Todo `Cycle block: the ladder last, above its rung subsections` retires into this cycle: it
+  asked for the order as an `agent-files` proposal, vc-x1 proposed it as v0.2.6, and this adoption
+  brings it. Its text, for the record: the user's preference (2026-09-26) was problem, solution,
+  acceptance check, deliberation, then `#### Ladder` directly above the rung subsections.
+- The size row is written by hand: `vc-x1 agent-files size` counts the set, 10 files and 1873
+  lines, and slides a table headed `| File |`, which `notes/agent-files-size.md` here does not
+  have, its per-file counts being a code block. Reshaping that file to the tool's table is not
+  this cycle's.
+- The continuation notes: the two the working copy had already dropped, the `feat: mpsc v4` Land
+  and the line owed on `m-8`, were done, `main` at that cycle's closing and `m-8` closed after
+  `m-8-7`. The `m-7` note goes too, since iiac-perf's reply arrived as `m-7-4`. The ones open for
+  the user stay, and one is added for the two lines owed after Land.
+- `## Waiting` is `_None._`, nothing to promote.
 
-#### Ladder details
+#### Ladder
 
-##### feat: mpsc v4 opening
-
-The cycle's setup commit: create and publish the bookmark, delete `## Closed`'s contents, write this
-block, bump the version-of-record, and rename the package and bins to their `-dev` names.
-
-- The block is written new, not moved from a `## Todo` entry: the entry that named v4 was the mode
-  drop, which v4 does not do, so that entry is retitled and stays.
-- The design note's one mention of that entry follows its new title.
-
-##### feat: mpsc v4 as a copy of mpsc v3
-
-v4 needs a starting point that is v3 exactly. Copy `src/mpsc/v3/` to `src/mpsc/v4/`, renamed, with
-its tests passing and nothing else changed.
-
-- The copy is v3's three files with their tests, so every v3 test also runs as a v4 test.
-- One thing differs, the magic, `ZCM4` for v3's `ZCM3`, as each ring version before has its own.
-  The two layouts are the same today, so without it a v3 process could attach to a v4 ring. We
-  think a later v4 change to what the shared words mean would then part the two silently. One new
-  test holds that neither attaches to the other's ring. No sharing between the two is needed at
-  this point, the user's call of 2026-10-06.
-- The layout version stays 1, v4's own count from its own magic.
-- The module docs name v4 and say what it is, a copy, and still describe the ring in v3's words.
-  They point at v3's example program until the guide rung gives v4 its own.
-- Left for the guide rung: `Error`'s docs and `policy::backoff`'s name MPSC v3 alone, though v4
-  returns the same errors and takes the same policies.
-
-##### feat: mpsc v4 consumer policy
-
-The v4 consumer has a poll and an unbounded sleep, where the producer has a policy and two timed
-sends. Give the consumer a general receive over a policy that can sleep to a deadline, and the timed
-spin and spin-then-sleep written for it, named by the symmetry rule.
-
-- The consumer's three receives are `recv`, `recv_spin`, and `recv_spin_sleep`, each the mirror of
-  the send of the same suffix: the same parameters with the same meanings, the clock read only
-  after the first empty look, and over `NoWake` the spin and the sleep spun together.
-- `recv` reads by a closure and frees the slot when the closure returns, returning what the closure
-  returned. A closure that panics leaves the message in its slot, and the next `recv` reads it
-  again, the mirror of a `send` whose closure panics, which leaves its slot taken.
-  - `MpscReadSlot` is gone from v4, and with it the one public release of a slot.
-- `WaitPolicy` and `Waiter` are v3's `SendPolicy` and `Room` under names that fit both sides,
-  `on_full` now `on_wait`, in a file of their own. A closure is still a policy.
-- The consumer's sleep takes a deadline, which is what v3's lacked: one empty look is a small
-  value holding what a sleep waits on, and the timed receive sleeps on it to its deadline while a
-  policy sleeps on it through `Waiter` to the wake's own timeout.
-  - Over `NoWake` the consumer's sleep is one spin hint and touches no shared word, where v3's
-    `reserve_slot_wait` set and cleared the waiting flag around a spin.
-- Where the two sides still differ, and why:
-  - What a sleep waits for: a producer is woken at each half segment of releases with every other
-    sleeping producer, and may find the room taken, and the consumer is woken after each commit.
-    The contract is the same, a sleep until the other side acts or the time passes.
-  - A wake can reach the consumer between a producer's taking a slot and its commit. The consumer
-    then looks, finds nothing committed, and its next sleep returns at once, so it spins until the
-    commit lands.
-  - The sends take `&self` and the receives `&mut self`, since a ring has many producers and one
-    consumer.
-- The tests: every v3 consumer test runs over `recv`, the dropped-guard test is now a read that
-  panics, and four new tests hold the timed receives over `NoWake` and `Futex`, no spin, a timed
-  spin, and a spin forever, each with no sleep, a timed sleep, and a sleep until a commit.
-- Not in this rung: iiac-perf's three asks in `m-8-3`, which are the rungs `feat: mpsc v4 waiters
-  say their cost` and `feat: mpsc v4 refuses a wake mismatch`.
-
-##### feat: mpsc v4 plain names
-
-"Claim" names three things in v4's API and docs, and a newcomer cannot tell which. Rename the role
-methods to `ring.producer()` and `ring.consumer()`, and write the public docs in a small set of
-words, each with one meaning, listed at the top of the module.
-
-- A role is taken with `ring.producer()` or `ring.consumer()`, v3's `claim_producer` and
-  `claim_consumer`, and given back with `release`, which is now the one thing `release` means on an
-  endpoint.
-- The module docs open with what the ring is for, then a list of twelve words, ring, message, id,
-  slot, segment, producer, consumer, role, send, receive, policy, and wake, then four steps of use,
-  then what v4 changes from v3, and only then the ring's inside.
-- A slot is not where a message is, the user's correction of 2026-10-06 at this rung's review: in
-  the typical use the message is in a pool buffer and the slot holds its id, a `Desc`, so the
-  message is never copied. A message that fits a slot may be the slot's value itself, the lesser
-  case.
-  - The user's general form of an id is `<url>-<pool>-<offset>`, a machine, a pool on it, and a
-    place in the pool, zero-copy wherever the two sides' `<url>` is the same. `Desc` holds the pool
-    and the buffer, with no machine part.
-  - The closures keep their names, `write_msg` and `read_msg`, though what they write and read is
-    the slot's value, an id in the typical use.
-- In the public docs a role is taken, a send takes a slot, and a slot between its taking and its
-  commit is being written. "Claim" stays in one place, the claim word, the source's name for the
-  ring's word that says where the next send goes, defined where the inside of the ring is
-  described.
-- Not renamed: the source's own names, `claim()`, the claim CAS in comments, and the test names,
-  which a user of the API does not read.
-- `reflow.py` ran over v4's four files after the rewording.
-
-##### feat: mpsc v4 waiters say their cost
-
-A spin on a ring over `Futex` pays the wake's checks and says nothing, and a sleep on a ring over
-`NoWake` is one spin hint and says nothing. Add a waiter type that is `Futex`'s code under a name
-that says a mix of spinners and sleepers is on purpose, with the cost in its docs, and gate the
-timed methods of both endpoints by the waiter, so a spin without end on a plain `Futex` ring and a
-sleep on a `NoWake` ring do not compile. The general `send` and `recv` over a policy stay open.
-
-- A v4 ring takes a choice of how its endpoints wait, one of three types in `wake.rs`, where a v3
-  ring takes a wake: `SpinOnly`, `Sleep<S>`, and `SpinOrSleep<S>`, `S` being what a sleeper sleeps
-  on, `Futex`. A ring reads `MpscRing<Multi, SpinOnly>`, `MpscRing<Multi, Sleep<Futex>>`, or
-  `MpscRing<Multi, SpinOrSleep<Futex>>`, each with `Single` for `Multi` as well.
-  - The names are the user's call of 2026-10-06 at this rung's review. Built first: `NoWake`,
-    `Futex`, and a `Mixed<Futex>`, iiac-perf's sketch, where "mixed" does not say with what and
-    `NoWake` says what the ring lacks.
-  - Weighed: `Futex` renamed `WaiterFutex`, the user's first thought. `Waiter` is already v4's
-    handle a policy sleeps through, the rename would touch v3, and inside `Sleep<...>` the position
-    says what the prefix would.
-  - The choice and the mechanism are apart: `Futex` is a `Wake`, how a sleeper sleeps and is woken,
-    and a choice is a `Waits`, which v4's ring and endpoints are bounded by. So a v4 ring over
-    plain `Futex` or `NoWake` does not compile, and no ring is made without the choice.
-  - `Sleep` and `SpinOrSleep` over a wake that does not sleep, `NoWake`, fail to compile where the
-    ring is used, by an assertion in a constant.
-- Two marker traits say what a choice offers: `Spins`, `SpinOnly` and `SpinOrSleep`, and `Sleeps`,
-  `Sleep` and `SpinOrSleep`.
-  - `send_spin` and `recv_spin` need `W: Spins`, and `send_spin_sleep` and `recv_spin_sleep` need
-    `W: Sleeps`, the same bound on both sides.
-  - The bounds are on the four methods alone. `send` and `recv` take any policy on any ring, so a
-    policy of the caller's own still spins or sleeps on any ring.
-- `SpinOrSleep<S>` forwards to `S` as `Sleep<S>` does, so the two are one wake protocol, and a
-  process attached over one and a process over the other share a ring. Its docs state the cost,
-  with the measurements.
-- v3's timed sends promised that over `NoWake` the spin and the sleep are spun together, and v4's
-  did until this rung. That promise is gone from v4: a sleep over `SpinOnly` does not compile, so
-  nothing spins under the name of a sleep. iiac-perf's first ask, `m-8-0`, wanted that promise for
-  the consumer, and their `m-8-3` replaces it.
-- The tests spell their rings with the plain names, `Sleep<Futex<500>>` and
-  `SpinOrSleep<Futex<500>>`, the user's call of 2026-10-06 at this rung's review. An alias,
-  `SlowFutex`, and one for the mixed ring are gone, "slow" reading as a fault.
-- The next rung, `feat: ticks from millis and secs`, is inserted from the same review: the tests'
-  times read `microsecs_to_ticks(20_000)`, and the user wants them named, by conversions for
-  milliseconds and seconds that do not exist yet.
-- Not built: a check that catches a `spin_time` of `Ticks::FOREVER` passed to a `_spin_sleep` form
-  on a ring over `Sleep`. The time is a value, so it compiles, and the methods' docs say what it is
-  and name `SpinOrSleep`. A debug assertion would need the wake to say at run time whether it
-  spins, a constant on `Wake` that v3's wakes would have to carry too.
-- The wake additions are in `wake.rs`, which v3 also uses: additive, and v3's code and behavior are
-  as they were.
-- The module docs gain a section, `Waits`, with the six ring types, three choices in each of two
-  modes, the user's call that the docs show `Single` beside `Multi`, then the three choices as a
-  list, and four examples the doc tests run: a sleep over `SpinOnly`, a spin alone over `Sleep`,
-  and a ring over a bare `Futex`, each marked to fail compiling, and the forms that compile. They
-  are the crate's only doc tests.
-  - The list was a table first, which `reflow.py` joins into one paragraph, so it is a list.
-- The section says what the checks are, why they cost, and how much, the user's call of 2026-10-06
-  at this rung's review, where the first draft said "the cost is the checks" and no more.
-  - What they are: a producer's test after each commit of the consumer's waiting flag, and the
-    consumer's fence and read of the producers' waiting count at every half segment of messages
-    read, at each segment it gives back, and before it sleeps.
-  - How much, every endpoint spinning and none asleep, a ring over `Futex` against one over
-    `NoWake`: in the design note's first v3 streams, the 3900X, one producer, from no difference to
-    28% more a message, 15.6 against 12.2 ns at depth 8 on the SMT pair, and at depth 1 the ring
-    over `Futex` the faster by up to 14%, 32.0 against 37.4 ns. In iiac-perf's round trips, 7%.
-  - The docs say the cost moves with the cores, the depth, the producers, the machine, the build
-    profile, and the two loops' rhythm, that every situation has to be measured, and that
-    spinning over `SpinOnly` has been the quickest in most of what we measured. They link the design
-    note's two v3 sections.
-  - We think the rows where the ring over `Futex` is faster are the rhythm between the two loops
-    and not the checks helping, as the Todo `Measurement builds and the producer-consumer rhythm`
-    describes.
-- The tests: the two `NoWake` checks of a spin and sleep form are removed with the promise, and a
-  new test runs a ring over `SpinOrSleep`, its consumer asleep and woken by a producer that only
-  spins,
-  then spinning alone, and its producer giving up by both forms at a full ring.
-
-##### feat: ticks from millis and secs
-
-A caller makes a `Ticks` from microseconds or nanoseconds only, so 20 ms is written
-`microsecs_to_ticks(20_000)`. Add `millis_to_ticks` and `secs_to_ticks`, and give the times in
-v4's tests names that say spin or sleep and how long.
-
-- A tick has no dimension a caller may rely on, the user's notion, restated on 2026-10-06: it is a
-  nanosecond today, and a later clock may count a CPU's cycle counter, whose rate is found when
-  the program runs.
-  - So the conversions stay ordinary functions. Making the four `const fn` was this rung's first
-    plan, for constants a caller could name, and it would have fixed the tick at a nanosecond in
-    the public API, since a `const fn` cannot read a rate found at run time.
-  - `Ticks`'s own docs already said a later clock may count the CPU's counter. The clock module's
-    said only "a tick is one nanosecond", and now say the rest.
-- The two existing conversions are untouched, and the two new ones are beside them, so `clock.rs`
-  only gains. A test, the clock module's first, holds that each unit is a thousand of the next and
-  that a duration too long to count is `Ticks::FOREVER`, neither of which says what a tick is.
-- v4's tests name each time where it is used, by role and length, `spin_100us`, `sleep_20ms`,
-  `sleep_500ms`, with `let`, since a conversion is not `const`. A constant, the futex's timeout in
-  microseconds, is gone, and the two tests that used it say in a comment why 500 ms.
-- Where the clock runs, as the code reads, the user's question of 2026-10-06:
-  - Any Linux, the Pi 5's arm64 and RISC-V included: `clock_gettime(CLOCK_MONOTONIC)` through
-    `libc`, with `Futex` to sleep on.
-  - macOS and Windows: `std::time::Instant` with the `std` feature, and no timed sends or receives
-    without it. `Futex` is Linux only, so `SpinOnly` is the one choice there.
-  - A target with no operating system: no clock, so no timed sends or receives.
-  - Run so far on the 3900X, the 7600X, and the Pi 5. RISC-V, macOS, and Windows are not built or
-    run in any record we have.
-- v3's tests keep their times as they are.
-
-##### feat: mpsc v4 refuses a wake mismatch
-
-Two processes can attach to one ring with different wakes, and nothing detects it: a `NoWake`
-producer never wakes a `Futex` consumer, whose every wake is then its timeout. Record the wake
-protocol, none or futex, in the control block at `init`, and refuse the endpoint whose wake
-disagrees.
-
-- The ring's control block gains one word, its wake protocol, written at `init` and compared at
-  `attach`, where a disagreement is a new error, `Error::BadWake`.
-  - The check is at `attach`, beside the mode's: the wake is the ring handle's type, and every
-    endpoint comes from a handle, so no endpoint is reached without it. iiac-perf's sketch had the
-    check at the claim of a role. The agent's choice under the waiver.
-- The protocol is a number on `Wake`, `PROTOCOL`: none, futex, or other.
-  - It is a constant with a default, none for a wake that does not wake and other for one that
-    does, so the one line added to existing code is `Futex`'s, which names itself. `NoWake` is as
-    it was, and so is a wake written outside the crate. The agent's choice under the waiver,
-    against a constant every wake must write, which would change `NoWake` too.
-  - A futex's timeout is not part of the protocol: two processes with different timeouts wake each
-    other correctly.
-  - `Sleep<S>` and `SpinOrSleep<S>` take `S`'s protocol, so the two are one, and `SpinOnly` is
-    none.
-- The control block's word fits in the info line's spare room, so no size or offset changes, and
-  v4's layout version stays 1: nothing has been made with the layout before this rung outside
-  this bookmark.
-- What it does not catch: a v3 ring, which has no such word, and two wakes written outside the
-  crate that both leave the default, which read as one protocol.
-- A test holds each direction of the refusal, and that a process over `Sleep<Futex<5>>` and one
-  over `SpinOrSleep<Futex<500>>` share a ring.
-
-##### feat: mpsc v4 in the tools
-
-No tool can run v4. Add v4 flavors to `tp-stream` and the other tools, beside v3's.
-
-- Four flavors, each the twin of a v3 one, in `tp-stream`, `tp-matrix`, and `tp-cell`: `mpsc-v4`,
-  `Multi` over `SpinOnly`, `mpsc-v4-single`, `mpsc-v4-futex`, and `mpsc-v4-backoff`. They follow
-  the v3 block in every table, so a v4 row sits four rows under its v3 twin.
-  - `mpsc-v4-futex` is `Multi` over `SpinOrSleep<Futex<10>>` with every endpoint spinning, the
-    honest name for what `mpsc-v3-futex` does over a bare `Futex<10>`: the checks run though
-    nothing sleeps. The flavor's own name keeps `futex`, so it lines up with its twin.
-  - Every v4 flavor sends and receives by the general `send` and `recv` with the spin policies the
-    v3 flavors use, not by the timed forms, so a v4 row differs from its v3 twin in the ring alone.
-- The tools' shared loops reserve a slot, read it, and release it, which v4's consumer does not
-  do. An adapter in the tools gives the v4 consumer that shape: its reserve is a `recv` whose
-  closure copies the message out, and its release does nothing. The loops for v0 to v3 expand as
-  they did.
-  - So a v4 row's receive copies a small message out of the slot inside the closure, where a v3
-    row reads it through the guard, the same work in another place.
-  - The probe labels a v4 cell prints still read `reserve+release`, the shared loop's words.
-- Not done, the agent's choices under the waiver: no v4 in `zc-ring-x1-demo` or `zcr-test-ipm`,
-  which the measured rung and the acceptance check do not need. `tp-cell` cannot select `spsc-v4`
-  by name, found here and left. `tp_matrix/README.md` says "the seven rings" and shows a banner
-  from before `mpsc-v3`, found here and left, and its flavor paragraph now names
-  `mpsc-v3-backoff`, which it lacked.
-- `vc-x1 validate`'s clippy and tests cover the root package alone, found here: the tools are a
-  workspace, so they were also linted and tested with `--workspace` by hand, and pass. A default
-  `tp-stream` or `tp-matrix` run is 64 cells where it was 48.
-- The work was done by a second agent given the v4 API and limited to `tp_matrix/` and
-  `tp_runner/`, and checked here by its diff and a run.
-
-##### docs: mpsc v4 consumer waits measured
-
-Whether the copy and the new reserve cost anything is not known. Measure each v4 flavor against its
-v3 flavor under one named build profile, and put the rows in the design note.
-
-- The design note has a new section, `MPSC v4 measured`: `tp-stream` at depth 8, one and two
-  producers, three runs each, on the 3900X, built with one codegen unit and fat LTO, each v4 flavor
-  beside its v3 twin.
-- v4 runs as v3 does: 28 of the 32 medians are within 3% of their twin, and all are within 8% above
-  and 7% below. So the closure `recv`, the shared policy trait, and the control block's new word
-  cost nothing the streams can show.
-- The wake checks cost less under this profile than the docs' figure from the default one: 2% at
-  most on v3 and 8% at most on v4, against 28%. The v4 module docs still give the range "from no
-  difference to about 28%", which stays true of what has been measured, and they name no profile.
-  - Left for the user: whether the docs should say the profile, or lead with the smaller figures.
-- The rung's title says the consumer's waits are measured, and they are not: the tools send and
-  receive by the general forms with a spin policy, so the rows compare the rings. The timed forms
-  and an endpoint asleep are in no row. The agent's finding under the waiver, with the title left
-  as the ladder has it.
-  - iiac-perf's benches, named by spin and wait, are where the timed forms get measured, once v4
-    is on `main`.
-- Measured on one machine only. The 7600X and the Pi 5, which the v3 tables have, were not reached
-  from this session.
-- The tools were built in a target directory of their own, `target/lto`, with the profile set by
-  two environment variables, so the default build is as it was.
-
-##### docs: mpsc v4 guide and example
-
-The user guide, README.md, and `examples/` teach v3 only. Add v4's section and one complete program,
-`examples/guide_mpsc_v4.rs`.
-
-- The example is the typical zero-copy use the user described on 2026-10-06, not v3's example
-  ported: two pools, one for the ring's segments and one for the messages, a `PoolRegistry`, the
-  producer writing each message into a message buffer and sending the buffer's id, a `Desc`, and
-  the consumer receiving the id, reading the message where it was written, and freeing the buffer.
-  - It is a ring over `Multi` and `Sleep<Futex>`, each side spinning 20 microseconds and then
-    sleeping, with a comment at the ring saying what `Single` and `SpinOnly` would be in their
-    places. Linux only, as v3's example is.
-  - It prints `mpsc v4: 100000 messages by id, never copied, 2 segments of 8, 110 switches, roles
-    and ring released`, the switch count varying by run.
-  - v3's example sends the message itself in the slot, the lesser case, and is left as it is.
-- README.md gains a row for `mpsc::v4` in its table of MPSC versions and a section after v3's: the
-  matching sends and receives, the six ring types, the roles, `BadWake`, the example, and the
-  measurements.
-- The user guide gains a section after v3's, with a fragment that sends and receives an id, what a
-  slot holds, the two type parameters, what each wait offers and costs, the general and the timed
-  forms, ticks, roles, joining from another process, and what a panic leaves. Its intro names v4,
-  and its table of errors gains v4's rows.
-- The v4 module docs point at v4's example, where they pointed at v3's.
-- Paid from the copy rung: `Error`'s docs say "MPSC v3 and v4" where they said v3, and
-  `policy::backoff`'s name v4's `WaitPolicy` beside v3's `SendPolicy`.
-- Not done, for the close-out or the user: `notes/README.md`, which the close-out updates when
-  functionality changed. README.md's "which ring to use" lines still recommend `mpsc::v3` and do
-  not weigh v4, a recommendation the agent did not make under the waiver. `Ticks`'s docs in
-  `lib.rs` still name a send's `give_up`, `spin`, and `wait`, words from before the timed sends
-  were renamed.
-
-##### feat: mpsc v4 in the demo and the ipm test
-
-The demo shows every ring but MPSC v4, and nothing runs a v4 ring between processes: its `attach`,
-its magic, and its refusal of another wake protocol are tested within one process alone. Add v4 to
-`zc-ring-x1-demo` beside v3, and to `zcr-test-ipm` and `tests/ipm.rs`, with a process that attaches
-over another wait and is refused.
-
-- The demo prints an MPSC v4 line wherever it prints an MPSC v3 one: the one-message loops at one,
-  two, and three threads, as `mpsc4_...` and `mpsc4s_...` for `Single`, `mpsc-v4` and
-  `mpsc-v4-single` rows in the depth sweep, and the burst, lagging, and stream lines of the segment
-  stress with their switch costs. Every v3 line in the demo is over `NoWake`, so every v4 line is
-  over `SpinOnly`.
-  - The demo's shared loops reserve, read, and release, so v4 runs them through adapters, as the
-    tools do. The demo's message is not `Copy`, and no derive was added to a type that exists, so
-    the adapter copies the message out by its bytes.
-- `zcr-test-ipm` runs its MPSC mode over a v4 ring as well, by `mpsc4-consumer`, `mpsc4-producer`,
-  and `mpsc4-release`, in a region file of its own. The ring is `Multi` over `Sleep<Futex<10>>`,
-  the twin of v3's `Multi` over `Futex<10>`, whose two sides both sleep.
-  - `mpsc4-attach-wrong-wait` attaches to the live ring as `MpscRing<Multi, SpinOnly>` and exits 0
-    only when the attach is `Error::BadWake`.
-- `tests/ipm.rs` has the v4 twin of the MPSC test: the release refused while a role is held, two
-  producer processes, a consumer handing off to a second mid-stream, a third consumer and a late
-  producer, the release, and a producer after it refused. It runs the wrong-wait attach twice
-  while the ring is live, once at the start and once after the handoff.
-  - So v4's `attach`, its own magic, its roles, and its refusal of another wake protocol are now
-    held between processes, where the library's tests hold them within one.
-- Found and left: v3's ipm consumer bounds its whole run by one deadline and reports it as a wait
-  for one message, and v4's mirrors the behavior. The demo's comment on its sweep's segments names
-  two rings of the five that have segments.
-- README.md's steps for running the ipm test by hand name the v3 subcommands alone, left for the
-  close-out.
-- The work was done by a second agent limited to the three files, and checked here by its diff and
-  a full validation.
-
-##### feat: mpsc v4 closing
-
-Closing out the cycle.
-
-- The cycle grew from seven rungs to twelve, each added rung the user's call: the plain names, the
-  waiters, the ticks, the wake mismatch, and the demo and the ipm test. Its subject held, a v4 whose
-  consumer waits as its producer does, and the growth was what "plain for someone new" turned out
-  to ask.
-- Names were built before they were settled, three times: the consumer's `reserve_slot_spin_sleep`
-  became `recv_spin_sleep`, `claim_producer` became `producer`, and `NoWake`, `Futex`, and
-  `Mixed<Futex>` became `SpinOnly`, `Sleep<Futex>`, and `SpinOrSleep<Futex>`. Each rename came at
-  a review of working code, and two had already been sent to iiac-perf, who needed a correcting
-  message each time.
-  - We think an API's names are cheaper shown as a table of types and calls, before a line is
-    built or a message sent, as the consumer policy rung's were and the waiters rung's were not.
-- A waiver ran five rungs while the user was away, recorded in the deliberation. Under it the agent
-  left the demo and the ipm test out of the tools rung as not needed by the acceptance check, and
-  the user, back, ran the demo first and found v4 missing.
-  - We think a rung that puts a version in the tools means every tool that shows the versions,
-    unless the block says which and why.
-- The measured rung's title says the consumer's waits are measured, and the tools measure the rings
-  with every endpoint spinning. The timed forms and an endpoint asleep are in no row of ours.
-  iiac-perf is to measure v4 with better precision, the user's plan of 2026-10-07.
-- Two machines the measured rung did not reach were reached at the close, the user saying the
-  agent's shell could: the 7600X and the Pi 5. Their tables are in the design note, with one row
-  that stands apart and is not explained, a Todo.
-- Written into the notes by this rung, so they outlive the block: the design note's `MPSC v4:
-  matching sends and receives`, and the two machines' tables in `MPSC v4 measured`. Two Todos
-  carry what was found and left.
-- `notes/README.md` names v4 in both its design and guide lines, and README.md's steps for the ipm
-  test name the v4 subcommands.
-- README.md's two sample runs of the demo, the 3900X's and the 7600X's, are replaced with runs of
-  2026-10-07: the old ones were from before SPSC v4, MPSC v3, and MPSC v4, and had no segment
-  stress table. The user found it at this rung's review and ran the demo to show it. The samples
-  here are machine-captured runs of the same build, not the user's paste retyped.
-- `tp_matrix/README.md`'s samples of `tp-matrix` and `tp-stream` are replaced the same way, at the
-  user's word: each a run of 2026-10-07 on the 3900X, its banner naming every ring of segments and
-  its rows showing `spsc-v4`, `mpsc-v3`, and `mpsc-v4`, with the columns the tools print now. Its
-  table of the tools says every flavor, 16, where it said the seven rings.
-- Close-out shape: trapezoid, the default, the agent's proposal, which the user's go at this rung's
-  review took.
-- No agent-file changed, so `notes/agent-files-size.md` gets no row.
-- Scratch left for the user to keep or delete: `~/tmp/zc-v4` on the 7600X and the Pi 5, the tree
-  and its `tp-stream` build, and `target/lto` here.
+- agent-files(adoption): v0.2.8 (done)
 
 # References
 
-[1]: #feat-mpsc-v4-opening
-[2]: #feat-mpsc-v4-as-a-copy-of-mpsc-v3
-[3]: #feat-mpsc-v4-consumer-policy
-[4]: #feat-mpsc-v4-in-the-tools
-[5]: #docs-mpsc-v4-consumer-waits-measured
-[6]: #docs-mpsc-v4-guide-and-example
-[7]: #feat-mpsc-v4-closing
-[8]: #feat-mpsc-v4-plain-names
-[9]: #feat-mpsc-v4-waiters-say-their-cost
-[10]: #feat-mpsc-v4-refuses-a-wake-mismatch
 [11]: notes/chores/chores-01.md#follow-on-endpoints-and-wait-policies
-[12]: #feat-ticks-from-millis-and-secs
-[13]: #feat-mpsc-v4-in-the-demo-and-the-ipm-test

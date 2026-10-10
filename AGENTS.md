@@ -71,6 +71,10 @@ what it does not, so a waiver over a cycle's pushes says whether Land is inside 
 silently.
 
 - Read custom.md first: read [custom.md](custom.md), whose rules override all others.
+- Acquaint before work: a session acquaints first, and what its repo check finds is reported and
+  left as found until the user says how to proceed ([Acquaint](#acquaint)).
+- Sync where `main` matters: a look at acquaint and a sync at the opening and at Land, each
+  reported, and a repo held back stops the step ([Sync](#sync)).
 - A session's rules are its own agent-files: the ones it started in, binding in every repo it
   writes, and another repo's rules bind only by delegation ([A session's rules are its own
   agent-files](#a-sessions-rules-are-its-own-agent-files)).
@@ -102,6 +106,45 @@ silently.
   ([Conventional-commit shape](agent-data/prose.md#conventional-commit-shape-ladder--commit)).
 - Alert on unwrap: say so when introducing an `unwrap` / `expect` / `unwrap_or*` site, with its
   `// OK: ...` comment ([`// OK` comments](agent-data/code.md#-ok--comments-on-unwrap-calls-rust)).
+
+## Acquaint
+
+What a session does first, at its start and whenever the user says "acquaint" or "reacquaint",
+in this order ([why](agent-data/rationale.md#acquaint)):
+
+1. custom.md: read [custom.md](custom.md), and do what it asks for at acquaint.
+2. Repo check: look at each repo of the workspace for the four findings below, and report what is
+   found before anything else. Nothing is opened, pushed, rebased, committed, or discarded until
+   the user says how to proceed.
+   - Not up to date: a repo whose `main` is behind, ahead of, or diverged from its remote's, as
+     the look reports it ([Sync](#sync)), run again with `--bookmark <bookmark>` when a cycle is
+     in flight. A look that fails is reported as the check not made.
+   - Uncommitted work: a work-repo `@` that is not empty, as `jj st` prints it. What the
+     continuation notes account for, the notes themselves or a rung in flight they describe, is
+     theirs to direct at step 3, and any other change is a finding. The agent-repo's `@` holds the
+     session's own data and is never one.
+   - Work off `main`: commits on a bookmark, a cycle's or any other, that do not descend from the
+     remote's `main`. The user is told, and a rebase onto `main` is suggested.
+   - Conflicts: a conflicted commit or working copy, as `jj st` and `jj log -r 'conflicts()'` show
+     them. The acquaint stops there and the user is informed.
+3. TODO.md: read the acquaint slice ([File
+   reads](agent-data/notes.md#file-reads-read-the-slice-you-need)), the continuation notes first,
+   each acted on, filed or kept, and the section reset ([Todo
+   format](agent-data/notes.md#todo-format)).
+4. Report: say where things stand, the cycle in flight or the top of `## Todo`, and wait.
+
+## Sync
+
+One command, `vc-x1 sync --scope=both`, brings both repos up to date, each `main` at the commit
+its remote's `main` is at. It runs at the three moments a cycle depends on `main`, and what it
+prints is reported ([why](agent-data/rationale.md#sync)):
+
+- Acquaint looks: with `--dry-run`, which moves nothing, so each repo is reported as found.
+- Opening syncs: as its first step, so the cycle's bookmark is created on an up-to-date `main`.
+- Land syncs: as its first step, and a `main` the sync moved stops the Land.
+
+A sync that fails or holds a repo back stops the step until the user says how to proceed, and
+`--force` and `--rebase` are the user's to ask for.
 
 ## Cycle protocol
 
@@ -153,8 +196,9 @@ it has pushed.
 A cycle's record is its `TODO.md > ## In Progress` block and nothing else, the cycle-record
 ([why](agent-data/rationale.md#cycle-record)).
 
-- Items: title, problem, solution, acceptance check, ladder, deliberation, and `Ladder details`, all
-  provisional until close-out ([The In Progress block](agent-data/notes.md#the-in-progress-block)).
+- Items: title, problem, solution, acceptance check, deliberation, and the ladder heading its rung
+  subsections, all provisional until close-out ([The In Progress
+  block](agent-data/notes.md#the-in-progress-block)).
 - Life: written at the opening, revised as rungs land, finalized by the closing commit, which moves
   it whole to `## Closed` (a single-step cycle's one commit writes it there directly), deleted by
   the next opening.
@@ -173,20 +217,21 @@ A cycle's record is its `TODO.md > ## In Progress` block and nothing else, the c
 ### Opening
 
 The cycle's first commit, when it needs setup (a lightweight cycle starts at its first commit, which
-then carries step 1). A single-step cycle does all of it in its one commit, after step 1 ([Cycle
-shape](#cycle-shape)). Before that commit ([why](agent-data/rationale.md#opening)):
+then carries steps 1 and 2). A single-step cycle does all of it in its one commit, after steps 1
+and 2 ([Cycle shape](#cycle-shape)). Before that commit ([why](agent-data/rationale.md#opening)):
 
-1. Bookmark: create and publish the cycle's bookmark, a push that needs approval.
-2. Waiting: check each `## Waiting` entry's condition, and promote what is met into `## Todo` at
+1. Sync: sync both repos ([Sync](#sync)), whatever the cycle's form.
+2. Bookmark: create and publish the cycle's bookmark, a push that needs approval.
+3. Waiting: check each `## Waiting` entry's condition, and promote what is met into `## Todo` at
    the rank it names.
-3. In Progress block: delete whatever `## Closed` holds, then move the chosen `## Todo` entry into
+4. In Progress block: delete whatever `## Closed` holds, then move the chosen `## Todo` entry into
    `## In Progress`, shaped as [The In Progress block](agent-data/notes.md#the-in-progress-block)
    says, the specimen in [cycle-model.md](agent-data/cycle-model.md).
-4. Bump: bump the version-of-record to the opening's version ([Suffix
+5. Bump: bump the version-of-record to the opening's version ([Suffix
    scheme](agent-data/versioning.md#suffix-scheme)), and the agent-files version with it when the
    cycle is an `agent-files` proposal ([Agent-files
    version](agent-data/versioning.md#agent-files-version)).
-5. Rename: when the built artifact has consumers, rename `<name>` to `<name>-dev` ([Dev artifact
+6. Rename: when the built artifact has consumers, rename `<name>` to `<name>-dev` ([Dev artifact
    name](agent-data/versioning.md#dev-artifact-name)). Land restores it.
 
 Rungs are named, not numbered ([Steps are named, not numbered][snn]), and a multi-step cycle's
@@ -203,8 +248,8 @@ immediately before acting ([why](agent-data/rationale.md#the-per-rung-flow)):
    `agent-files` proposal cycle.
 3. Work: do the work. On any deviation from the agreed plan, or any question, stop ([Stop and
    ask](#stop-and-ask)).
-4. Ladder details: write what this rung changed, conceptually, into its subsection. The rung stays
-   `(current)` until step 7.
+4. Rung subsection: write what this rung changed, conceptually, into its subsection under the
+   ladder. The rung stays `(current)` until step 7.
 5. Validate: `vc-x1 validate` before every review, doc-only commits included. The full run rewrites
    files (`cargo fmt`), so use `--fast` while a review iterates.
 6. Work review: stop before writing any description and say "please review", as its own message with
@@ -285,9 +330,10 @@ does all of it in its one commit, step 5 aside ([Cycle shape](#cycle-shape)):
    - choose with the user: trapezoid (the default) or keep separate
    - record the choice in the closing rung's subsection
    - reshape nothing yet, Land does.
-6. Land: on the user's go, restore the plain name, reshape per the choice, fast-forward `main`,
-   install the artifact, delete the bookmark locally and remotely ([Bookmark per
-   cycle](#cycles-run-on-a-bookmark), [Land](agent-data/jj.md#cycle-bookmarks-create-and-land)).
+6. Land: on the user's go, sync ([Sync](#sync)), restore the plain name, reshape per the choice,
+   fast-forward `main`, install the artifact, delete the bookmark locally and remotely ([Bookmark
+   per cycle](#cycles-run-on-a-bookmark),
+   [Land](agent-data/jj.md#cycle-bookmarks-create-and-land)).
 7. Restart: the user restarts the agent, and before the exit anything the next agent needs is
    written into `TODO.md > ## Continuation notes`, the first section, which the next acquaint reads
    first, files or keeps, and resets ([Todo format](agent-data/notes.md#todo-format)).

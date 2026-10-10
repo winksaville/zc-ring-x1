@@ -197,6 +197,10 @@ unique by construction ([Project-declared types](prose.md#project-declared-types
   scheme](#suffix-scheme) beside the artifact's version, `-0`, `-1`, then bare at the close-out, so
   a set copied from a draft bookmark says on its face that it is unfinished. An adoption copies the
   source's bare file and bumps nothing.
+- **An adoption is a copy and a check**: `vc-x1 agent-files copy -c <src>` takes the set and the
+  family's `custom.md` with it, and `vc-x1 agent-files diff -c <src>` is the adoption's last act,
+  exiting zero when the two copies are the same. An adopter that keeps a `custom.md` of its own
+  drops the `-c` from both, which is its prerogative.
 - **Agreed**: the payload's number is the family's agreed version. An adopter ahead of it is
   proposing, one behind has not re-synced, and two proposers claiming one number are settled by the
   maintainer at convergence, the loser re-proposing under the next.

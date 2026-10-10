@@ -259,13 +259,13 @@ The two surfaces apply it as:
   reference-linked to the rung's subsection via `[M]: #<slug>` in the file's `# References` (the
   closing rung linked like the rest), and the `(current)` / `(done)` marker. Its position in the
   list is its position in the ladder. The last rung is the close-out and its text says so. Detail
-  lives not on the rung but in the block's `Ladder details` subsection headed by the rung's exact
+  lives not on the rung but in its subsection under the ladder, headed by the rung's exact
   title (see the protocol's [Opening](../AGENTS.md#opening)), bulleted, never `;`-joined inline.
 - **Commit description**: no prefix. The title is the first line, and the body is the prose (see
   [Commit description](../AGENTS.md#commit-description)).
 
 The title is **identical** across both for a given step, so a step's ladder entry and its commit
-title line up verbatim. A `Ladder details` subsection heading carries the same title, a third
+title line up verbatim. The rung's subsection heading carries the same title, a third
 surface on every rung (the closing rung's exists only when close-out gotchas occurred: see the
 protocol's [Opening](../AGENTS.md#opening)). Pick the commit title first and reuse it.
 

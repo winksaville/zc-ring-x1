@@ -23,18 +23,20 @@ so the table is the history of the count and nothing else. Rows before 2026-09-1
 | 2026-09-10 | fix: mpsc handling of capacity 1 | 10 | 2315 | unchanged, no agent-file touched |
 | 2026-09-11 | agent-files(adoption): v0.2.4 | 10 | 2315 | vc-x1's set at e378ce9ee494, the version file renamed and one clause of `custom.md` reworded, so the count holds |
 | 2026-09-16 | agent-files(proposal): v0.2.5 | 9 | 1774 | a size row only when an agent-file changed, and `rationale.md` out of the count, so the files drop to 9 and the total from 2315 less its 541 |
+| 2026-10-13 | agent-files(adoption): v0.2.8 | 10 | 1873 | vc-x1's set at 1139c742b8d4, v0.2.6 and v0.2.7 with it: `## Acquaint` and `## Sync` in `AGENTS.md`, `session-lock.md` new, two lines in `custom.md` |
 
 Per file at the last row, replaced at each close-out, the history being in the commits:
 
 ```
-   384 AGENTS.md
-    12 custom.md
+   430 AGENTS.md
+    17 custom.md
     94 agent-data/code.md
     42 agent-data/commit-model.md
-    76 agent-data/cycle-model.md
-   391 agent-data/jj.md
+    74 agent-data/cycle-model.md
+   392 agent-data/jj.md
    166 agent-data/notes.md
    405 agent-data/prose.md
-   204 agent-data/versioning.md
-  1774 total
+    45 agent-data/session-lock.md
+   208 agent-data/versioning.md
+  1873 total
 ```

@@ -7,7 +7,7 @@ words. The rules are in [The In Progress block](notes.md#the-in-progress-block).
 One thing the specimen cannot show:
 
 - a single-step cycle drops both bookends and all the steps are in the one commit: the ladder is one
-  unlinked rung with the bare title, and there is no `Ladder details` area ([Cycle
+  unlinked rung with the bare title, and there are no rung subsections under it ([Cycle
   shape](../AGENTS.md#cycle-shape)).
 
 ## In Progress
@@ -29,12 +29,6 @@ call alike.
 `cargo test` passes with a new test that loads a config from a fixture file without touching `main`,
 and `vc-x1 config --validate` reports the same findings as before the move.
 
-#### Ladder
-
-- [refactor: extract config loader opening][1] (done)
-- [refactor: split loader from parser][2] (current)
-- [refactor: extract config loader closing][3]
-
 #### Deliberation
 
 - one work rung, not two: the parser and the loader were going to be split first and moved second,
@@ -42,7 +36,11 @@ and `vc-x1 config --validate` reports the same findings as before the move.
 - the acceptance check compares `config --validate` output rather than asserting on internals, so a
   later rename inside the module does not invalidate it
 
-#### Ladder details
+#### Ladder
+
+- [refactor: extract config loader opening][1] (done)
+- [refactor: split loader from parser][2] (current)
+- [refactor: extract config loader closing][3]
 
 ##### refactor: extract config loader opening
 

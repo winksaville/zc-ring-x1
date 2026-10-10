@@ -126,23 +126,23 @@ under a program heading, each one deeper):
 - **acceptance check**: the measure of "are you finished?", specific enough that a reader can run
   it. Not the per-commit validation, which asks whether the artifact still works. A changed check is
   one of the things the deliberation exists to justify
+- **deliberation**: how the other five were decided, one bullet per decision. The bullet's lead
+  names the decision and its sentence states it, and the sub-bullets carry the reasons, the
+  alternatives weighed, and the costs accepted, so a reader can skim the decisions and read the
+  reasons only where they doubt one. `_None._` when there was nothing to deliberate, which is a real
+  answer
 - **ladder**: one rung per step, `- [<title>][M]` plus `(current)` / `(done)`, with `[M]: #<slug>`
   in the file's `# References`. The markers stay when the block moves to `## Closed`. `<title>` is
   the rung's commit title, `<type>: <desc>` per
   [Conventional-commit shape](prose.md#conventional-commit-shape-ladder--commit), so a moved
   `## Todo` entry is retitled. The closing rung, `<cycle title> closing`, is linked like the rest
-- **deliberation**: how the five above were decided, one bullet per decision. The bullet's lead
-  names the decision and its sentence states it, and the sub-bullets carry the reasons, the
-  alternatives weighed, and the costs accepted, so a reader can skim the decisions and read the
-  reasons only where they doubt one. `_None._` when there was nothing to deliberate, which is a real
-  answer
 
-A **`Ladder details`** area follows them: one subsection per rung, the closing included, headed by
-the rung's exact title. Each opens at laddering with an abstract-sized intent statement (the rung's
-problem and solution in a sentence or two) and completes at the rung's landing with the conceptual
-delta: design points, consequences, deferrals, never a restatement of the landed commit body. The
-closing rung's opens with the stub "Closing out the cycle." and completes at close-out with what
-closing taught, in problem/solution form, or `_None._`.
+The ladder heads the **rung subsections**, one per rung under it, the closing included, headed by
+the rung's exact title, so the ladder is their index. Each opens at laddering with an abstract-sized
+intent statement (the rung's problem and solution in a sentence or two) and completes at the rung's
+landing with the conceptual delta: design points, consequences, deferrals, never a restatement of
+the landed commit body. The closing rung's opens with the stub "Closing out the cycle." and
+completes at close-out with what closing taught, in problem/solution form, or `_None._`.
 
 A rung is `- [<title>][M] (marker)` and carries no detail beyond that: the title links to the rung's
 subsection. A step is identified by its title (prose.md's [Steps are named, not
@@ -150,9 +150,9 @@ numbered](prose.md#steps-are-named-not-numbered)), so a title carries no number,
 SHA. The version-of-record still bumps for every rung and its suffix still encodes the stage, but
 that encoding belongs to the manifest and appears nowhere in prose.
 
-A single-step cycle's ladder is one unlinked rung, `- <cycle title> (marker)`, and the block has no
-`Ladder details` area: a subsection headed by the title would collide with the title heading's
-anchor ([Cycle shape](../AGENTS.md#cycle-shape)).
+A single-step cycle's ladder is one unlinked rung, `- <cycle title> (marker)`, with no subsection
+under it: a subsection headed by the title would collide with the title heading's anchor ([Cycle
+shape](../AGENTS.md#cycle-shape)).
 
 The block is the cycle's only record. A design finding that must outlive the cycle goes into a
 `notes/` file by the rung that made it ([Cycle-record](../AGENTS.md#cycle-record)).
