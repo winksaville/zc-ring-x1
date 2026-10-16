@@ -88,10 +88,10 @@ acquaint because every later step reads files a conflict may have left holding b
 
 ## Sync
 
-One section holds the command (wink, 2026-10-13) because it is run at three steps, and a command
-written three times is changed in two. The steps are the three that depend on `main`: an acquaint
-reads the records a stale `main` holds, an opening creates the cycle's bookmark on it, and Land
-moves it.
+One section holds the command (wink, 2026-10-13) because it is run at several steps, and a
+command written three times is changed in two. The steps are the ones that depend on `main`: an
+acquaint reads the records a stale `main` holds, an opening creates the cycle's bookmark on it, a
+rung is built on it, and Land moves it.
 
 - Acquaint looks and does not sync so that "left as found" has no exception: the user hears of a
   repo that is behind before anything moves. The first form was a `jj git fetch` and a look, and
@@ -107,8 +107,20 @@ moves it.
   from a `main` since passed. How to recover is left to the first time it happens.
 - The flags `--force` and `--rebase` are the user's because sync holds a repo back exactly when
   following the remote would tangle local work, and overriding that is a rewrite.
-- Cycle starts and no oftener: "when a repo has not been synced in a while" was weighed and left
-  out, "a while" being nothing an agent can check.
+- A rung syncs at its step 0 (wink, 2026-10-15) because a rung's start is the cheapest moment to
+  take in a moved `main`: the working copy is empty, a rebase of the bookmark carries only pushed
+  rungs, and the sync never moves the bookmark, so it cannot hurt the rung. The closing's is
+  required because its record and version are what lands, and the opening's is the opening's
+  first step already.
+  - The moment weighed first was before the push, since every push lands on the agent-repo's
+    `main` directly, the agent-repo having no bookmark. Step 0 leaves a long rung's push open to
+    an agent-repo `main` moved meanwhile, a cost accepted: one session writes the agent-repo, so
+    its remote rarely moves, and a re-run push is safe.
+- A rung's sync between is optional, the agent's or the user's call, because a rung pushes to its
+  own bookmark and Land catches a moved work-repo `main` anyway, so it buys only an earlier
+  warning, worth having on a long cycle or with another session pushing. "When a repo has not
+  been synced in a while" was weighed as a required moment and left out, "a while" being nothing
+  an agent can check.
 - The cycle's bookmark is looked at and never synced because a rebase of a pushed bookmark is a
   remote rewrite at its next push.
 
@@ -208,10 +220,20 @@ route, so a changed check is one of the things the deliberation exists to justif
 
 ### The per-rung flow
 
-**Validate at every commit, doc-only ones included**, because step 4 changed the version, and
+**Validate at every commit, doc-only ones included**, because step 2 changed the version, and
 running the validation is how that is verified. **No validation while a review iterates** because a
 formatter mutates files in ways that interact badly with the user's mid-review edits, so it runs
 once, on the settled state, after the last edit.
+
+**A failure is read before validation runs again** (wink, 2026-10-15) because a pass on the second
+run says nothing of why the first failed, and a failure that comes and goes is a defect the retry
+hides: a race, an order dependence, state one test leaves for another. A cause named first is
+tested by the run that follows, and a run made first is taken as the answer. **A failure that does
+not repeat is a finding** because its output is the only evidence of such a defect, and the next
+run replaces it, so it is reported and given a Todo entry before it is lost. The case (2026-10-11):
+a full validation failed once with no code changed, the retry passed and was reported as the
+result, and the cause, found later, was a test that changed a process-wide environment variable
+while another test read it.
 
 **The work-review stop carries no description** because a description beside the work review
 collapses two stops into one and describes work the review may still change.

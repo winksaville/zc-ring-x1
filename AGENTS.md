@@ -73,8 +73,8 @@ silently.
 - Read custom.md first: read [custom.md](custom.md), whose rules override all others.
 - Acquaint before work: a session acquaints first, and what its repo check finds is reported and
   left as found until the user says how to proceed ([Acquaint](#acquaint)).
-- Sync where `main` matters: a look at acquaint and a sync at the opening and at Land, each
-  reported, and a repo held back stops the step ([Sync](#sync)).
+- Sync where `main` matters: a look at acquaint and a sync at the opening, the closing, and Land,
+  each reported, and a repo held back stops the step ([Sync](#sync)).
 - A session's rules are its own agent-files: the ones it started in, binding in every repo it
   writes, and another repo's rules bind only by delegation ([A session's rules are its own
   agent-files](#a-sessions-rules-are-its-own-agent-files)).
@@ -136,15 +136,19 @@ in this order ([why](agent-data/rationale.md#acquaint)):
 ## Sync
 
 One command, `vc-x1 sync --scope=both`, brings both repos up to date, each `main` at the commit
-its remote's `main` is at. It runs at the three moments a cycle depends on `main`, and what it
-prints is reported ([why](agent-data/rationale.md#sync)):
+its remote's `main` is at. It runs at the moments a cycle depends on `main`, and what it prints
+is reported ([why](agent-data/rationale.md#sync)):
 
 - Acquaint looks: with `--dry-run`, which moves nothing, so each repo is reported as found.
-- Opening syncs: as its first step, so the cycle's bookmark is created on an up-to-date `main`.
+- Opening syncs: as its first step, which is its rung's step 0, so the cycle's bookmark is
+  created on an up-to-date `main`.
+- Closing syncs: at its rung's step 0, so the record and version it carries are made from an
+  up-to-date `main`. A rung between may sync at its step 0, the agent's or the user's call.
 - Land syncs: as its first step, and a `main` the sync moved stops the Land.
 
-A sync that fails or holds a repo back stops the step until the user says how to proceed, and
-`--force` and `--rebase` are the user's to ask for.
+A sync that fails or holds a repo back stops the step until the user says how to proceed, as does
+one at a rung's step 0 that moved a `main`, and `--force` and `--rebase` are the user's to ask
+for.
 
 ## Cycle protocol
 
@@ -242,6 +246,8 @@ bookends are the cycle title plus " opening" and " closing" ([Cycle bookend titl
 Every commit (opening, each rung between, closing) goes through these steps, read from here
 immediately before acting ([why](agent-data/rationale.md#the-per-rung-flow)):
 
+0. Sync: sync both repos ([Sync](#sync)), required at the opening and the closing, optional
+   between, the agent's or the user's call.
 1. Mark current: mark the rung `(current)` in `TODO.md > ## In Progress`, as the first edit.
 2. Bump: bump the version-of-record to this commit's version ([Suffix
    scheme](agent-data/versioning.md#suffix-scheme)), the agent-files version beside it in an
@@ -251,7 +257,9 @@ immediately before acting ([why](agent-data/rationale.md#the-per-rung-flow)):
 4. Rung subsection: write what this rung changed, conceptually, into its subsection under the
    ladder. The rung stays `(current)` until step 7.
 5. Validate: `vc-x1 validate` before every review, doc-only commits included. The full run rewrites
-   files (`cargo fmt`), so use `--fast` while a review iterates.
+   files (`cargo fmt`), so use `--fast` while a review iterates. A failure is read and its cause
+   named before validation runs again, and a failure that does not repeat is a finding, reported
+   and given a Todo entry.
 6. Work review: stop before writing any description and say "please review", as its own message with
    no title or body. Iterate until the user says "continue" / "go". The review is of the
    working-copy diff ([jj basics](agent-data/jj.md#jj-basics)).

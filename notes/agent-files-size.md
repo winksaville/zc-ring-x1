@@ -24,12 +24,13 @@ so the table is the history of the count and nothing else. Rows before 2026-09-1
 | 2026-09-11 | agent-files(adoption): v0.2.4 | 10 | 2315 | vc-x1's set at e378ce9ee494, the version file renamed and one clause of `custom.md` reworded, so the count holds |
 | 2026-09-16 | agent-files(proposal): v0.2.5 | 9 | 1774 | a size row only when an agent-file changed, and `rationale.md` out of the count, so the files drop to 9 and the total from 2315 less its 541 |
 | 2026-10-13 | agent-files(adoption): v0.2.8 | 10 | 1873 | vc-x1's set at 1139c742b8d4, v0.2.6 and v0.2.7 with it: `## Acquaint` and `## Sync` in `AGENTS.md`, `session-lock.md` new, two lines in `custom.md` |
+| 2026-10-15 | agent-files(adoption): v0.2.9 | 10 | 1879 | vc-x1's set at 12a73d7135ab: a step 0 sync in the per-rung flow and a validation failure read before it runs again, in `AGENTS.md`, and the session lock line gone from `custom.md` |
 
 Per file at the last row, replaced at each close-out, the history being in the commits:
 
 ```
-   430 AGENTS.md
-    17 custom.md
+   438 AGENTS.md
+    15 custom.md
     94 agent-data/code.md
     42 agent-data/commit-model.md
     74 agent-data/cycle-model.md
@@ -38,5 +39,5 @@ Per file at the last row, replaced at each close-out, the history being in the c
    405 agent-data/prose.md
     45 agent-data/session-lock.md
    208 agent-data/versioning.md
-  1873 total
+  1879 total
 ```

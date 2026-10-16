@@ -9,9 +9,10 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- Owed after the Land of `agent-files(adoption): v0.2.8`, both in `../vc-x1-messages`: a reply on
-  `m-9` saying the set is taken whole, both `custom.md` lines included, linking the landed commit
-  by sha, and a `done` on `m-7`, which iiac-perf's `m-7-4` leaves ready to close.
+- Owed after the Land of `agent-files(adoption): v0.2.9`, all in `../vc-x1-messages`: one reply
+  on `m-11` saying the set is taken whole, `custom.md` included, linking the landed commit by sha,
+  and that `m-9`, which it replaces, is answered with it, a `done` on `m-9`, and a `done` on `m-7`,
+  which iiac-perf's `m-7-4` leaves ready to close.
 - Scratch left for the user to keep or delete: `~/tmp/zc-v4` on the 7600X and the Pi 5, and
   `target/lto` here, from this cycle. `~/tmp/zc-ab` on the 7600X and the Pi, source trees and
   `tp-stream` builds, the Pi's demo build and test build, from before.
@@ -722,74 +723,54 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### agent-files(adoption): v0.2.8
+### agent-files(adoption): v0.2.9
 
 #### Problem
 
-The family's agreed set is v0.2.8 and ours was v0.2.5, three proposals behind, so
-`vc-x1 agent-files diff -c ../vc-x1` named most of the set. vc-x1 asked for the adoption on the
-thread `m-9` in `../vc-x1-messages`, its set at `1139c742b8d4`. What the three bring:
+The family's agreed set is v0.2.9 and ours is v0.2.8, one proposal behind. vc-x1 asked for the
+adoption on the thread `m-11` in `../vc-x1-messages`, its set at `12a73d7135ab`, replacing the
+v0.2.8 request on `m-9`. What v0.2.9 brings:
 
-- v0.2.6: the In Progress block's ladder sits below the deliberation and heads the rung
-  subsections, with no `#### Ladder details` heading.
-- v0.2.7: `## Acquaint` in `AGENTS.md`, a session's first steps in order, with a repo check of four
-  findings.
-- v0.2.8: `## Sync` in `AGENTS.md`, one command, `vc-x1 sync --scope=both`, a look at an acquaint
-  and a sync when a cycle opens and when it lands.
+- The per-rung flow gains a step 0, a sync of both repos at the rung's start, required at the
+  opening and the closing, optional between, and `## Sync` lists the closing among its moments.
+- The Validate step gains a rule: a failure is read and its cause named before validation runs
+  again, and a failure that does not repeat is a finding, reported and given a Todo entry.
+- The session lock line leaves `custom.md`. The lock stays off, and `agent-data/session-lock.md`
+  still says how to turn it on.
 
 #### Solution
 
 A single-step adoption, the source's set taken whole by `vc-x1 agent-files copy -c ../vc-x1`:
-`agent-data/agent-files-v0.2.5` renamed to `agent-data/agent-files-v0.2.8`, eight agent-files
-changed, `agent-data/session-lock.md` new, and `custom.md` taken as the family's, with its two new
-lines. Done as stated, and the diff against `../vc-x1` reports nothing differing.
+`agent-data/agent-files-v0.2.8` renamed to `agent-data/agent-files-v0.2.9`, `AGENTS.md` and
+`rationale.md` changed, and `custom.md` taken as the family's, its session lock line gone.
 
 #### Acceptance check
 
 `vc-x1 agent-files diff -c ../vc-x1` reports 0 of 12 differing, `vc-x1 agent-files version` prints
-`v0.2.8`, and `agent-data` holds no `agent-files-v0.2.5`.
+`v0.2.9`, and `agent-data` holds no `agent-files-v0.2.8`.
 
-Passed (2026-10-13): the diff reports all twelve files the same, the version prints `v0.2.8`, and
-`ls agent-data` lists `agent-files-v0.2.8` alone among the version files.
+Passed (2026-10-15): the diff reports all twelve files the same, the version prints `v0.2.9`, and
+`ls agent-data` lists `agent-files-v0.2.9` alone among the version files.
 
 #### Deliberation
 
 - Single-step: a copy and no design, so one commit carrying the bare version and no dev rename, as
-  the v0.2.3 and v0.2.4 adoptions did.
-- One adoption for three proposals: v0.2.6 and v0.2.7 were never adopted here on their own, and the
-  set is copied whole, so the version file goes from v0.2.5 to v0.2.8 in one rename.
+  the v0.2.8 adoption did.
 - Adoptions copy and bump nothing: the version file is the source's ([Agent-files
   version](agent-data/versioning.md#agent-files-version)).
-- Both new `custom.md` lines are taken as vc-x1 wrote them, the user's call (2026-10-13), so the
-  `-c` stays on the copy and the diff.
-  - The messages fetch: a session does the messages README's Fetch action at an acquaint and at
-    every cycle start, the user's permission standing.
-  - The session lock is off, and `agent-data/session-lock.md` holds how to turn it on.
-- The copy was already in the working copy when this session acquainted, with no continuation note
-  naming it, so the acquaint reported it as uncommitted work and the user said to adopt it. The
-  session did not make the copy. It checked it, by the diff against `../vc-x1`, and ran the cycle
-  around it.
-- The reference checkout, `../vc-x1`, was at `20ab9235e3a5` when the diff ran, past the
-  `1139c742b8d4` that `m-9` names, and its set is still v0.2.8.
-- The installed `vc-x1` is 0.84.31, past the 0.84.30 that `m-9` asks for, since the Sync rule relies
-  on `sync --dry-run` and on sync holding a repo back.
-- The Todo `Cycle block: the ladder last, above its rung subsections` retires into this cycle: it
-  asked for the order as an `agent-files` proposal, vc-x1 proposed it as v0.2.6, and this adoption
-  brings it. Its text, for the record: the user's preference (2026-09-26) was problem, solution,
-  acceptance check, deliberation, then `#### Ladder` directly above the rung subsections.
-- The size row is written by hand: `vc-x1 agent-files size` counts the set, 10 files and 1873
-  lines, and slides a table headed `| File |`, which `notes/agent-files-size.md` here does not
-  have, its per-file counts being a code block. Reshaping that file to the tool's table is not
-  this cycle's.
-- The continuation notes: the two the working copy had already dropped, the `feat: mpsc v4` Land
-  and the line owed on `m-8`, were done, `main` at that cycle's closing and `m-8` closed after
-  `m-8-7`. The `m-7` note goes too, since iiac-perf's reply arrived as `m-7-4`. The ones open for
-  the user stay, and one is added for the two lines owed after Land.
+- `custom.md` is taken as vc-x1 wrote it, so the `-c` stays on the copy and the diff: the one change
+  drops the session lock line, and the lock was already off.
+- The reference checkout, `../vc-x1`, was at `12a73d7135ab` when the copy ran, the commit `m-11`
+  names, its set v0.2.9. The installed `vc-x1` is 0.85.0, past the 0.84.30 that `m-11` asks for.
+- This cycle ran under the v0.2.8 rules it replaces, so its opening had no step 0 by that name. Its
+  opening sync was the same act.
+- The messages owed wait for the Land, so the reply on `m-11` links the landed commit, and one reply
+  answers `m-9` and `m-11` both, since `m-11` replaces `m-9`.
 - `## Waiting` is `_None._`, nothing to promote.
 
 #### Ladder
 
-- agent-files(adoption): v0.2.8 (done)
+- agent-files(adoption): v0.2.9 (done)
 
 # References
 
