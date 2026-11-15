@@ -10,7 +10,7 @@ open question. Ephemeral, never a record. Written before a restart or when a ses
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
 - Scratch left for the user to keep or delete: `~/tmp/zc-v4` on the 7600X and the Pi 5, and
-  `target/lto` here, from this cycle. `~/tmp/zc-ab` on the 7600X and the Pi, source trees and
+  `target/lto` here, from `feat: mpsc v4`. `~/tmp/zc-ab` on the 7600X and the Pi, source trees and
   `tp-stream` builds, the Pi's demo build and test build, from before.
 - Open for the user: `take_over_*(dead, id)` and a holder query, left as `take_over_*(id)`, with no
   Todo entry.
@@ -20,6 +20,9 @@ lose context, read first at acquaint, acted on, and reset to `_None._` by the re
 - Open for the user: whether the Parameters doc form, every parameter documented including `self`,
   becomes a rule in `agent-data/code.md`, its own cycle, with no Todo entry yet. And the ranks of
   the Todos the last two cycles added, placed by the agent.
+- After the Land of `chore: tag landed versions`, check: `git ls-remote --tags origin` lists
+  `v0.19.5`, `v0.19.6`, and `v0.19.7`, the cycle's acceptance check passed on them, and `m-12` in
+  `../vc-x1-messages` has our reply naming the tags, or the reply is still owed.
 
 ## In Progress
 
@@ -641,6 +644,15 @@ borrow those three fields of the handle and `ConsumerState` could go, the guard'
 - Raised in the deliberation of `refactor: make mpsc v3 producer and consumer states private`,
   2026-10-02.
 
+### Propose a tag step for every Land
+
+Every Land here tags its version, a step `custom.md` adds to the set's Land for io-uring-x1's git
+dependency. We think every adopter with a dependent wants the same, so it could be a step of the
+set's [Land](agent-data/jj.md#cycle-bookmarks-create-and-land), with `vc-x1 cycle --land` tagging
+by default and `--no-tag` skipping it, as an `agent-files` proposal cycle.
+
+- Raised in the deliberation of `chore: tag landed versions`, 2026-11-15.
+
 ## Ideas
 
 Unranked, not yet solid enough for `## Todo`. Triaged at an opening: promoted to `## Todo` or
@@ -719,57 +731,58 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### agent-files(adoption): v0.3.1-13
+### chore: tag landed versions
 
 #### Problem
 
-Our set is v0.2.9, and vc-x1's `main` carries v0.3.1-13, the draft of its open `v0.3.1` proposal,
-at `bd1d20bf1131`. The user asked for the adoption ahead of a request on the messages repo. What
-the draft brings:
-
-- A cycle's commits are made by `vc-x1 cycle`, its stages its flags, and stay on this machine
-  until the Land unless the user decides otherwise.
-- The ladder moves to a new `zTOC.md` beside `TODO.md`, made by the tool from the rung headings
-  under `#### Rungs`, so no marker is typed.
-- Claude Code hooks ship in `agent-data/`: `bash-guard.sh` denies a masked exit status,
-  `bash-allow.sh` skips the prompt for `cargo`, `jj`, and `vc-x1`, and `inhibit-sleep.sh` keeps the
-  machine awake, installed by `hooks.sh`, the user's to run.
-- A Long output rule: a long command keeps its output in `tmp/last.log` and shows its tail.
-- No maintainer and no template repository, only adopters and proposers, and `custom.md` is no
-  longer an agent-file but the workspace's own layer.
+zc-ring-x1 has no tags, so a dependent can pin it only by a path to a sibling checkout or by a raw
+commit hash, neither saying which version it took. io-uring-x1 asks, on `m-12-0` in
+`../vc-x1-messages`, for a tag per landed version, `v0.19.5` at `e705b50d` to start, the commit it
+was built against, so it can write `tag = "v0.19.5"` in its git dependency.
 
 #### Solution
 
-A single-step adoption, the set copied by `vc-x1 agent-files copy --from ../vc-x1`, with
-`custom.md` kept as ours. `custom.md` gains a Long output entry naming this workspace's long
-commands, and `zTOC.md` is added, its ladder this cycle's one rung.
+Tag the two versions already landed, `v0.19.5` at `e705b50d` and `v0.19.6` at `4f8dc885`, and from
+here on tag each Land's version on the commit `main` moves to, this cycle's `v0.19.7` the first,
+unless the user says "no tag" at that Land's go.
+The tags are made with `jj tag set` and published with `jj git push --tag` at the Land, beside
+`main`, and a `custom.md` entry makes the tag a step of every Land. A reply on `m-12` names the
+tags once they are published.
 
 #### Acceptance check
 
-`vc-x1 agent-files diff --from ../vc-x1` reports every set file the same, `vc-x1 agent-files
-version` prints `v0.3.1-13`, `agent-data` holds no `agent-files-v0.2.9`, and `bash
-agent-data/hooks.sh check` reports the hooks installed and registered.
+`jj git push` has published the three tags, so `git ls-remote --tags origin` lists `v0.19.5` at
+`e705b50d`, `v0.19.6` at `4f8dc885`, and `v0.19.7` at this cycle's landed commit, and a scratch
+crate in `tmp/` depending on `zc-ring-x1 = { git = "https://github.com/winksaville/zc-ring-x1",
+tag = "v0.19.5" }` passes `cargo check`.
 
-Passed (2026-11-15): the diff reports 0 of 15 differing, the version prints `v0.3.1-13`, `ls
-agent-data` lists `agent-files-v0.3.1-13` alone among the version files, and the check reports 3
-hooks installed and registered.
+The check needs the tags published, which is the Land's act, so it runs after the Land, as the
+test of the closed cycle, and its result is reported then and in the reply on `m-12`, the record
+being closed before it.
 
 #### Deliberation
 
-- Single-step: a copy and no design, so one commit carrying the bare version and no dev rename, as
-  the v0.2.9 adoption did.
-- A draft taken: the set's version carries its suffix, so the copy says on its face that the
-  proposal is unfinished, and a later adoption of the bare `v0.3.1` replaces it.
-- `custom.md` kept as ours, no `-c`: vc-x1's now holds lines about vc-x1 alone, its own draft note
-  and its own long commands, and the new set makes `custom.md` the workspace's layer.
-- `.vc-config.md` unchanged: vc-x1's new tables, `[version]`, `[opening]`, `[closing]`, and its
-  build and install tables, are optional, and adding them is its own decision.
-- This cycle ran under the v0.2.9 rules it replaces, the session's own, so its commit is made by
-  `vc-x1 push`, while its record and `zTOC.md` take the new shapes, so the landed tree is
-  consistent with the set it carries.
-- The hooks were already installed and registered on this machine, so the check passed before the
-  copy.
+- Single-step: the tree changes only by this record, the `custom.md` entry, and the version, and
+  the tags are refs made at the Land, so one commit holds it all.
+- Lightweight tags by jj, not annotated tags by git: jj 0.46 sets and pushes tags, `jj tag set`
+  and `jj git push --tag`, so the jj-not-git rule holds, and jj makes lightweight tags only. A
+  dependent's `tag =` resolves either kind, and the commit already carries the title and date.
+- `v0.19.6` tagged too, though `m-12` names only `v0.19.5`: it is landed, its code the same as
+  `v0.19.5`'s, and skipping it would leave a gap the moment the rule starts.
+- Tag by default, "no tag" to skip: every Land is tagged unless the user says otherwise at its go
+  (the user, at the review, 2026-11-15), so a dependent finds every version, and a Land not worth
+  a tag is the exception said aloud.
+- No backfill before `v0.19.5`: no dependent asks for an older version, and the per-commit versions
+  of earlier cycles would need each landmark found by hand.
+- Tags published at the Land, not before: a cycle is local by default, and a tag on an unlanded
+  commit names a version that may never land.
+- The rule in `custom.md`: it is this project's because io-uring-x1 depends on it, and the set's
+  Land has no tag step. We think a tag at every Land suits the family, which is an `agent-files`
+  proposal and its own cycle, so it goes to `## Todo` rather than into `jj.md` here.
+- The reply on `m-12` waits for the Land and for the messages clone's owner: `owner` shows a `take`
+  by vc-x1 with no release after it, so writing the reply is the user's call when the time comes.
 - `## Waiting` is `_None._`, nothing to promote.
+- No size row: `custom.md` is no longer an agent-file under v0.3.1-13, and no agent-file changed.
 
 # References
 
