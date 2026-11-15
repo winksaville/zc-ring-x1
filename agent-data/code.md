@@ -1,11 +1,7 @@
 # Code conventions
 
 Conventions for source code. Read this before writing code. The Rust-specific sections apply
-wherever the medium is a Rust crate (see [custom.md](../custom.md) for the project's medium).
-
-Universal file, shared with the template repository. A proposed change is edited here and converges
-at the template ([Changing the agent-files](../AGENTS.md#changing-the-agent-files)). Project-local
-content goes in [custom.md](../custom.md).
+wherever the medium is a Rust crate.
 
 ## Line width
 

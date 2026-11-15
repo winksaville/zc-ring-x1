@@ -1,18 +1,16 @@
 # The session lock
 
-An optional rule, off unless a project's [custom.md](../custom.md) turns it on: an agent session
-holds an exclusive `flock` on `.agent-running` at the workspace root for as long as it runs, so a
-second session started in the same workspace stops at its acquaint.
-
-Universal file, shared with the template repository. A proposed change is edited here and converges
-at the template ([Changing the agent-files](../AGENTS.md#changing-the-agent-files)). Project-local
-content goes in [custom.md](../custom.md).
+An experiment, not a rule of the set: an agent session holds an exclusive `flock` on
+`.agent-running` at the workspace root for as long as it runs, so a second session started in the
+same workspace stops at its acquaint. It was tried and it works, but the added complication is not
+worth it (wink, 2026-10-18), so the set does not use it. A workspace that wants it is welcome to
+have its `custom.md` point at this file or carry the instruction below.
 
 ## The instruction
 
-Turning the lock on is two edits: this entry goes into
-`custom.md > ## Project conventions and overrides`, first in its list and in place of the entry
-that says the lock is off, and `/.agent-running` goes into the work-repo's `.gitignore`.
+Turning the lock on is two edits: the workspace's `custom.md` carries this entry, or a pointer to
+it, first among what it asks for at acquaint, and `/.agent-running` goes into the work-repo's
+`.gitignore`.
 
 ```
 - Lock: at acquaint, before anything else, a session runs `flock -xn .agent-running true` at the
@@ -26,7 +24,7 @@ that says the lock is off, and `/.agent-running` goes into the work-repo's `.git
   workspace, so two cannot push or amend at once.
 ```
 
-Turning it off is putting back the entry that says the lock is off and points here.
+Turning it off is taking the entry, or the pointer, out of `custom.md`.
 
 ## What is known
 

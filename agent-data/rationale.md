@@ -2,12 +2,8 @@
 
 The why behind the agent-files, one entry per rule that has one. AGENTS.md holds the rule and its
 boundaries, and a session needs only that. The argument is for whoever would change a rule, and for
-the maintainer at convergence, and it is kept so a rule is not simplified away by an editor who
-does not know its cost.
-
-Universal file, shared with the template repository. A proposed change is edited here and converges
-at the template ([Changing the agent-files](../AGENTS.md#changing-the-agent-files)). Project-local
-content goes in [custom.md](../custom.md).
+whoever reviews a proposal, and it is kept so a rule is not simplified away by an editor who does
+not know its cost.
 
 ## How to read this file
 
@@ -50,8 +46,23 @@ differently next time.
 ## Terminology
 
 **Retired names.** "Bot repo" (2026-08-21), when the code respelled the side `agent`. "Instruction
-files", which named the agent-files back when `custom.md` was the only editable one. "Ladder
-(sub-cycle)" for a local ladder, under [Local ladders](#local-ladders).
+files", an earlier name for the agent-files. "Ladder (sub-cycle)" for a local ladder, under [Local
+ladders](#local-ladders). "Project layer" (2026-10-18), the project's own agent-files, retired when
+the one file it named became local ([custom.md](#custommd)). "Trunk" (2026-11-10), the one bookmark
+every cycle was assumed to land on, `[cycle] trunk` else `main`, retired for the target, named on
+the command each time. "`--onto`" (2026-11-11), the closing's flag for the target, retired with
+`commit --closing` for `cycle --close --trapezoid <target>` and `cycle --land <target>`.
+
+**No target is assumed** (wink, 2026-11-10) because a bookmark made is likely, not certainly, the
+one a cycle lands on, and a release branch is a target as much as `main` is. A default would guess,
+and naming it costs one word per Land. It is stored nowhere, the cycle's bookmark being its
+title's slug and its branch the commits no other bookmark reaches (wink + agent, 2026-11-11). What
+is history, which `squash` and `trailers` refuse to rewrite without `--ignore-immutable`, is jj's
+`immutable()`, configured in jj, so vc-x1 keeps no list of shared lines, and pushing a cycle's
+bookmark for a backup does not make its rungs history: pushing is not dangerous in itself.
+
+**Two kinds of push are named** (wink + agent, 2026-11-11) because "push" meant both a backup of a
+draft and the act that makes a cycle permanent, and only the second ends a cycle.
 
 ## The dual-repo model
 
@@ -85,6 +96,15 @@ which act, so a change they do not account for has no owner the agent can name a
 to place. Work off `main` gets a suggestion and not a rebase because rebasing a pushed bookmark
 is a remote rewrite at its next push, which takes approval like any push. Conflicts stop the
 acquaint because every later step reads files a conflict may have left holding both sides.
+
+The hooks check (wink, 2026-10-27) comes before the repo check because its guard is on the
+commands the repo check runs. A machine that lacks the hooks, a second one or a fresh clone, is
+found the first time a session starts there, and the install is the user's because it writes their
+settings, which every session on the machine reads.
+
+The tools check (wink, 2026-11-09) comes before the repo check because the repo check runs the
+tools, and a session that learns at its first commit which build it should have run has already
+stamped that commit ([Tools the session runs](#tools-the-session-runs)).
 
 ## Sync
 
@@ -136,7 +156,7 @@ A cycle that pushes `main` directly makes every correction a coordinated force-p
 history. Landing costs one command and buys free rewrites for the whole cycle. A single-step cycle
 gets a bookmark for the same reason: a one-commit line is exactly where a pre-landing rewrite is
 cheapest. "Development is not done on `main`" is stated outright because the trapezoid recipe once
-allowed "a docs interlude between cycles" on the trunk line, and five docs commits went to `main`
+allowed "a docs interlude between cycles" on `main`'s line, and five docs commits went to `main`
 that way before a sixth was caught mid-draft and run as a cycle (2026-08-22). The owners will
 sometimes cheat, and the rule is still the rule.
 
@@ -148,33 +168,41 @@ intact and lets the `ochid:` trailers ride along: they carry change ids, which s
 
 ### Cycle shape
 
-The `ochid:` trailers are change ids, and that is why squash is not a close-out shape and the
-shape is fixed at the first push.
+The tool tells the shapes apart by counting, with no title to read, and a cycle need not decide its
+shape before its first commit: it is single-step until a second commit makes it a ladder. A dead end
+lands because its commits are named by agent-repo trailers, and landing keeps every rung reachable.
 
-- Squashing a work-repo ladder keeps one chid and drops the rest, so every agent-repo commit that
-  pointed at a dropped rung is left with a dangling link (`vc-x1 validate-desc` reports
-  `not found`).
-- Repairing that means re-describing N agent-repo commits, which [No re-describe without
-  coordinating](jj.md#re-describing-coordinate-first-and-keep-the-trailer) forbids.
-- Squashing the agent-repo to match discards the per-rung session narrative the agent-repo exists
-  to keep.
-- Since the remaining shapes keep every rung, the one-commit-or-ladder choice has to be made before
-  the first push writes the first trailer.
-- The one exception, promoting a pushed single-step commit to an opening, is a coordinated
-  re-describe: the change id and the trailer survive it, which is what a squash cannot offer.
-- Trapezoid already gives `main` a one-commit-per-cycle read under `git log --first-parent`, which
-  is what squash was buying.
+**One command, its stages flags** (wink, 2026-11-11): `commit` made a rung, an opening, a closing
+that was a merge or a rewrite in place, moved the record, landed, pushed, and described an older
+commit, and most of the flow's surprises were in how those flags combined. `cycle --open`,
+`--commit`, `--close`, and `--land` take the cycle's acts out of it, flags and not subcommands
+because every `vc-x1` command is `command --options`, and the opening is the first commit, seen
+and not flagged, since `--open` and `--opening` differed by three letters and meant two things.
+
+**Every cycle has an opening and a closing** (wink, 2026-11-11), and in a single-step cycle the
+closing is squashed into the opening, so there is one flow and the shape picks the commits.
+
+**The shape is named, the count checks it** (wink, 2026-11-13), where the count alone had decided
+it since 2026-11-11. The count is unambiguous over no commit and over two or more, and over one it
+guessed: a single-step cycle whose opening was committed early and a ladder with only its opening
+made are the same branch, and the guess squashed the second's closing into its opening, retitling
+it. Named at the closing, the shape is still decided only when it is known, and the count turns a
+wrong name into a refusal. Found testing in `~/tmp/wt-21-6`.
+
+**Linear is the user's to ask for**: a trapezoid joins a target that moved and keeps one commit per
+cycle on the first-parent line, so the rules close with `--trapezoid`, and the flag being the
+trapezoid's is wink's design (2026-11-10), a closing without it being a plain commit.
 
 ### Unplanned work
 
-The docs interlude, a commit landed on the trunk line between cycles, is retired (2026-08-27). A
+The docs interlude, a commit landed on `main`'s line between cycles, is retired (2026-08-27). A
 single-step cycle is the same one commit with a bookmark, a record, and a landing, and the five
 docs commits that went to `main` as interludes are the case against the exception ([Cycles run on
 a bookmark](#cycles-run-on-a-bookmark)). The choice between a rung and an entry is the user's
 because it depends on what they want from the running cycle at that moment, which no rule can
 know.
 
-The patch-aside sentence (2026-09-05): a rename arrived while the working copy held the next rung's
+The set-aside sentence (2026-09-05, a patch then, a jj commit since a cleanup of `tmp/` lost two patches): a rename arrived while the working copy held the next rung's
 guide edit, and the inserted rung would have carried both. Setting the edit aside as a patch and
 re-applying it after the push is what was done, and it was invented on the spot.
 
@@ -197,14 +225,33 @@ the agent-repo, reached from the commit by its `ochid:` trailer, which we hope t
 to soon. `tmp/` was considered and rejected because it is gitignored, which is the no-tree loss
 again.
 
+
+**The ladder is `zTOC.md`'s alone** (wink, 2026-11-04) because two copies, one in the block and one
+in the index, were kept in step by hand at every rung, and zed's markdown preview follows a link to
+another file but not one within the same file, so only the index's ladder could be clicked through.
+The closing keeps it because the landmark should hold the finished ladder beside the finished block,
+as `## Closed` is deleted by the next opening rather than by the closing.
+
+**The ladder is made, not typed** (wink + agent, 2026-11-11): a rung was written twice, a line in
+`zTOC.md` and a heading in `TODO.md`, and its markers flipped by hand, so the two could differ and
+a marker be wrong. The heading is the one place, and the markers are computed from the commits.
+The ladder stays markdown because `zTOC.md`'s purpose is that it is clickable, so its grammar is
+strict and the tool enforces it, a coding requirement being a higher bar than a naming protocol:
+every commit of a cycle matches a rung, or the tool errors.
+
 ### Opening
 
 `## Waiting` is checked at the opening because that is the moment a choice is being made, and a
 blocked entry cannot hold a place in the order: the first entry means "next", and a blocked entry
 there would say "do this" to every reader when the answer is "cannot" (wink, 2026-08-27).
 
-**The bookmark create is a push** because `vc-x1 push` requires the bookmark's remote refs to be
-tracked, so the create has to publish, and a publish takes push approval.
+**The bookmark is made first, by `vc-x1 cycle --open`** (wink, 2026-11-10, `vc-x1 open` until
+2026-11-11), because the record, the
+ladder, and the bump are a cycle's first edits, and made before its bookmark they sit on no branch,
+a single-step cycle's included. It goes on `@`, so it follows the change into the opening, and a
+command makes it rather than `jj bookmark create` for the name, the title's slug by the anchor
+algorithm, which is fiddly by hand. It refuses only a name in use, the one thing it could break, and
+the opening's push publishes it, a rung's push.
 
 **The solution statement is provisional** because it is written before the work.
 
@@ -218,10 +265,20 @@ Being provisional,
 the check can also be revised *toward* what was achieved, which is the same failure by a slower
 route, so a changed check is one of the things the deliberation exists to justify.
 
+**Deliberation comes before the opening commit** (wink, 2026-11-11), so the opening carries the
+plan and its review is of the plan, before any work. The cost is a working copy uncommitted while
+the plan is talked through, so the user is free to commit the setup first. `cycle --open` writes
+the record's mechanical parts, whose shape the agent-files define, so the tool knows them without
+knowing the work.
+
 ### The per-rung flow
 
 **Validate at every commit, doc-only ones included**, because step 2 changed the version, and
-running the validation is how that is verified. **No validation while a review iterates** because a
+running the validation is how that is verified. **The dev build is installed before the review**
+(wink, 2026-11-09) because a review that runs the previous rung's build tests code that is not the
+diff: installed only after the commit, the reviewer's `vc-x1-dev` was one rung behind, 0.85.21-1
+during the review of 0.85.21-2. The install after the commit stays, so the next rung runs a build
+of the committed tree rather than of a working copy. **No validation while a review iterates** because a
 formatter mutates files in ways that interact badly with the user's mid-review edits, so it runs
 once, on the settled state, after the last edit.
 
@@ -243,13 +300,39 @@ reshape the work the marker would claim.
 
 **Never `jj edit -r @-` to view a past commit**: it marks the commit mutable and shifts `@`.
 
+**The version is the project's** (wink, 2026-11-11): `vc-x1` manages cycles and not the work, and
+a version's file and form are the work's, so it never bumps one, now or later. It can still notice
+a rung committed without its bump, by a file and a pattern the config names, which needs no
+knowledge of the manifest. The flag that commits anyway is named, `--same-version`, and not
+`--yes`, which is the user's approval of a forced push and would become a switch for any question.
+The marker steps left the flow with the ladder becoming the tool's.
+
 ### Committing vs pushing
 
-Push's commit stages commit both repos and stamp each new commit's `ochid:` trailer, so a
-pre-committed rung leaves `@` empty and push mints a stamped empty duplicate (the empty-`@` push
-minting orphan agent-repo commits was measured 2026-08-15, in the "docs: trial the iiac-perf
-convergence proposals" chores section). **No checks of the project's own** because vc-x1 assumes
-nothing about a repo beyond `.jj` and its config.
+A local commit can be reworked and a push cannot easily be taken back, so the safe act is the one done
+by doing nothing, and publishing has one place to gate.
+
+#### A cycle is local by default
+
+Local is the default because the Land is where the decision is, so one approval belongs there.
+Nothing published can name a rung, so reshaping a ladder costs nothing, and a link names a change
+id, which a reshape keeps. The first cycle run this way changed its ladder several times at no cost.
+
+**The user decides when each side commits and publishes** (wink, 2026-11-03) because the user is
+always in control: the per-rung pairs came first, the local cycle after, and neither is the only
+shape, so the rules say what each shape needs rather than choosing one.
+
+**A rung commits as a pair** (wink, 2026-11-09) because nothing now needs the agent-repo still.
+While `ocid:` pinned the agent commit's SHA, a work commit could name it only once that SHA was
+final, so one agent commit a cycle, made at the Land, was the obvious shape. With change ids that
+holds no longer, and a pair per rung keeps each rung's transcript beside its work, one `ochid:`
+away, and splits a cycle's transcript rung by rung rather than into one large commit.
+
+**No trailer holds a SHA** (wink, 2026-11-09) because a SHA changes with every rewrite. `ocid:`
+pinned the agent commit's, so an agent commit was never folded into and the order of commits was
+forced, and `pcid:` repeated git's parents and made a describe rewrite every commit above it.
+Neither repo could be left clean. `orepo:` with `ochid:` says where the partner is and survives a
+squash-push. Lost: GitHub's one click to the agent commit, and the transcript pinned by a hash.
 
 ### Commit description
 
@@ -280,16 +363,41 @@ delegated cycle that skipped a record would leave the deferred reviewer nothing 
 a coordinated force-push of history someone else may already hold. Approval is the one moment the
 user can still say no at no cost.
 
-#### At rest: push, stop, squash-push
+#### At rest
 
-The agent-repo is a live journal, so everything after a `vc-x1 push` invocation, its own
-record and any closing words, lands in the agent-repo's `@` as a trailing tail. That tail is why the
-agent cannot squash-push the agent-repo: the squash-push is itself an action that adds to the tail,
-so it never reaches a fixed point. Thus the user must do the squash-push in the agent-repo anytime
-the agent acts visibly or behind the scenes. Importantly, a squash-push does not alter the change id
-in the agent-repo commit, so the `ochid` in the work-repo commit continues to resolve.
+The agent-repo is a live journal, so everything after a publishing command, its own record included,
+lands after it, and the agent cannot bring its own `@` to a fixed point. So the session's tail is
+folded by the user after the session, the one moment the journal is still, by a squash-push into
+the last agent commit, which keeps the change id the `ochid:`s name (wink, 2026-11-09). An archive
+wants both repos clean. After a Land the agent published, the tail rides the next opening.
+
+A forced push asks rather than refuses (wink, 2026-11-09). A topic bookmark has few readers or
+none until it is published for merging, and even then a mistake found after the push wants an
+amend, so a rewrite is the user's choice, made each time. Only the `--yes` flag answers in
+advance, since a configured default is set once and then protects nothing. The agent-repo is
+personal but public, observed rather than cloned, so its forced update moves no one's history.
+`push` asks as `squash-push` does, one rule for a forced push, and `cycle` and `commit` refuse one,
+since theirs are fast-forwards and a forced one is a surprise (wink, 2026-11-09). jj-lib forces
+every push, with a lease, so the bookmark push under them all refuses a forced push its caller did
+not ask about, and none is made silently.
+
+Either order is correct (wink, 2026-11-09). The agent-repo went first while `ocid:` pinned the
+agent commit's SHA, so the work commit naming it was pushed only once that SHA was final. With
+`orepo:` and `ochid:` each side names the other by change id, which neither push changes, so one
+`squash-push -s b` publishes both.
+
+Work first is preferred (wink, 2026-11-09): the work-repo is the shared one, so its push is the one
+a concurrent push refuses, and refused first it leaves nothing published. The agent-repo, usually
+one user's, rarely refuses, and published first it would name a work commit no one else can see
+while the work side is repaired.
 
 ### Close-out
+
+Continuation notes go in the closing because notes written after the Land have no clean home: a commit
+after it puts a non-cycle commit on the target after the hard stop, and a squash into the closing
+rewrites the landmark just landed and verified. The cost, notes written before the Land they describe,
+suits a close-out. The shape is in the closing so it is in the commit that was reviewed, rather than a
+reshape at Land made after it.
 
 Each close-out step exists because a close-out once went wrong without it.
 
@@ -326,6 +434,19 @@ Each close-out step exists because a close-out once went wrong without it.
   a row found bullets whose facts had no other home, a host's clock episode among them, and the
   rule as written told the reader to destroy the only copy.
 
+**The acceptance check runs at both ends of the closing** (wink, 2026-11-11): first, so the closing
+commit has a result to record, and last, on the closed tree, which is the tree that lands when the
+Land is a fast-forward. Every work rung then has its own test and no more, where the last work
+rung carrying the check made one rung unlike the others.
+
+**The way back from a fault is the user's choice** (wink, 2026-11-11): reopen, fix inside, fix on
+top, or their own, since the test itself may be what is wrong. So the rule is to stop and ask, and
+the tool's part is to refuse none of them.
+
+**A Land fast-forwards by default and may merge** (wink, 2026-11-11): the fast-forward lands the
+tree that was tested, and a merge at the Land makes a commit no rung validated, which the user
+accepts by asking for it.
+
 ### Local ladders
 
 Retired name: "Ladder (sub-cycle)", which collided with the working record's `#### Ladder`. That
@@ -344,7 +465,27 @@ command piped into `tail` / `grep` reports the filter's success, not its own. A 
 `; echo "exit=$?"` prints the status while the invocation itself still exits 0, so the failure is
 visible only to whoever reads the text. `failed=$rc` stays unquoted because it has no spaces to
 protect, and the quotes can stop a harness permission rule from matching a command it would
-otherwise allow (wink, 2026-08-05).
+otherwise allow (wink, 2026-08-05). One form, bare and last, since the Bash tool reports a nonzero
+exit itself, so a printed status is never needed, and one form is easier to keep than three
+(wink, 2026-10-27).
+
+**Hooks guard the exit-status rule** (wink, 2026-10-27): the rule held on paper and was broken
+through a whole session by a trailing `; echo rc=${PIPESTATUS[0]}`, because nothing failed when it
+slipped and the user caught it by reading. `bash-guard.sh` makes the slip fail, with two text
+matches, each a deny whose reason is the rule's form. Joins are left to the rule, since the
+agent's commands carry heredocs and quoted programs whose `;` only a shell parser tells apart, and
+a guard that stops legitimate scripts gets removed. Matching hooks run in parallel and `deny` wins
+over `bash-allow.sh`'s `allow` (https://code.claude.com/docs/en/hooks, PreToolUse decision
+control). The hooks are in the set so they travel with the rules they serve.
+
+**Long output keeps a file and shows a tail** (wink + agent, 2026-11-11): a validation printed
+every compile line and 869 test lines, the Bash tool returned its first part, and the agent, not
+seeing the line that said it passed, ran the whole validation again, a minute spent on a result the
+exit status had already given. The named commands are the rule and "in doubt" only its fallback,
+since a judgment is skipped exactly when the agent is confident and wrong, and the names a project
+adds are in its `custom.md` because the set names no project. The file is what makes one run
+enough: a tail alone shows the verdict and loses the failing test above it, so a failure would
+still be run twice.
 
 **Use https remotes, not ssh.** Unconditional rather than "when the agent is sandboxed" because the
 remote is chosen at clone time and whether a sandboxed agent will ever touch the repo is not
@@ -382,42 +523,62 @@ _None recorded._
 
 ## Changing the agent-files
 
-An adopter's diff against the template repository's payload is what that adopter has proposed, so
-drift is a diff, not a mystery: the proposal set needs no maintenance and cannot go stale.
+An adopter's diff against the copy it started from is what a proposal is made of and what its
+review reads, so drift is a diff, not a mystery: the review's input needs no maintenance and cannot
+go stale. The adopter's own changes live in that copy too, each a cycle like any other (wink,
+2026-10-18), so a change every clone needs is committed where the rule lives and nothing marks it as
+the project's.
 
-**A correction goes straight into the payload** because a wrong fact has no second opinion to
-gather, and leaving it in place misleads every adopter on first read.
+**A new repo starts from an adopter's set** (wink, 2026-11-03) because an adopter carries the set
+already, so a template repository is a second copy to keep in step. **Its working copy's by
+default** (wink, 2026-11-04) because the rules being worked on are the ones a test repo is made to
+try, the obvious source, and `--landed` takes `main`'s when those are wanted.
 
-**An agent-file change is its own commit** so `git log -- AGENTS.md agent-data/` reads as a list of
-rule changes rather than unrelated feature titles, and the commit's `ochid:` trailer links the
-agent-repo session that reasoned it out. The diff says what differs now. The history says when, by
-whom, and why.
+**An experiment comes before a proposal** because a rule is argued best by having been run, and
+the diff against the copy it started from keeps the trial visible while it runs.
 
-**Convention work runs as its own cycle** because rung by rung, rule changes bury a feature cycle's
-records under work its title never promised.
+**A proposal is one set of diffs, to the rules or beyond them** (wink, 2026-10-18) because a set
+of files and a diff are what two repos can compare without talking, and because a proposal is not
+limited to the set: what one adopter asks of another may be anything.
 
-**A rule adopted ahead lives in the agent-file, never a holding section**, because an adopter that
-collects adopted-ahead rules in `custom.md` hides them from the one review that decides them, and a
-session that skips the project layer misses binding behavior. Both measured, 2026-08-19 to
-2026-08-21, when one member's project layer (`custom-family.md`) held the family's messaging rules
-and the validation commands, retired by the 0.80.0 cycle, chores-17's [docs: empty custom-family
-into the pinned set and
-config](https://github.com/winksaville/vc-x1/blob/2dc8d969c3f3/notes/chores/chores-17.md#docs-empty-custom-family-into-the-pinned-set-and-config).
+**Acceptance is negotiated, never owed** (wink, 2026-10-18) because the adopters are peers who
+chose the set, and there is no maintainer above them. A no that carries its why, or the change that
+would turn it, teaches the proposer something either way, so the goal is everyone accepting the
+same thing and the requirement is only that each says where it stands. An adopter that keeps its
+own way is a diff the review already tolerates, one that leaves takes its copy with it, and a rule
+that said otherwise would be the one absolute in a set whose rules all bend
+([Rules](../AGENTS.md#rules)).
+
+**No agent-file carries a banner saying it is shared** (wink, 2026-10-18) because `AGENTS.md` is
+read first, and this section covers every agent-file, so a banner atop each `agent-data/` file
+restated it seven times, and the two files without one never missed it.
+
+Until v0.3.0 this section also made a correction a direct edit of the payload, an agent-file change
+its own commit, convention work its own cycle, and a rule adopted ahead a resident of its agent-file
+rather than a holding file (measured 2026-08-19 to 2026-08-21, chores-17's [docs: empty
+custom-family into the pinned set and
+config](https://github.com/winksaville/vc-x1/blob/2dc8d969c3f3/notes/chores/chores-17.md#docs-empty-custom-family-into-the-pinned-set-and-config)).
+The cycle **agent-files(proposal): v0.3.0** retired them, the proposal bullet covering what they
+guarded (wink, 2026-10-18).
 
 ## custom.md
 
-It ships holding nothing but its own shape so a project that changes nothing still has a valid one.
-Overriding and editing are both named (wink, 2026-08-27) because the earlier text read as if every
-adopter put its changes here, when custom.md alone is not always capable enough: while the set
-itself is being defined, its first adopters edit the agent-files directly, and the diff against the
-payload is the review that decides each change, which an override here would hide from exactly
-that review. An adopter with no such reason overrides here, its honest record of where it departs,
-and keeping its other agent-files identical to the payload's is what lets it re-sync by copying.
-No agent-file is special: anyone can change any of them, and custom.md is only a convention that
-makes overriding simpler than editing, and one file the place to distribute a project's changes
-when that is practical. A pointer entry owes no
-justification because it supersedes nothing, and holding a wider context behind one pointer keeps
-the rest of the file identical to the payload's.
+**custom.md is local and optional** (wink, 2026-10-18) because a committed one hands every clone of
+a public repo one machine's layer, its sibling paths and its standing permissions, and whoever
+clones it shares neither. So it is untracked, and the agent reads it when there is one.
+
+**It is read first and overrides** because it is the workspace's own word, and **it holds what is
+local to the workspace** because a change every clone needs is a cycle on the agent-file it belongs
+in, so what is left is one machine's: its paths, its permissions, a lock switch. The session lock is
+named there as an experiment, not an example (wink, 2026-10-18), since the intention was real, and
+because nothing else in the set linked `session-lock.md` once `custom.md` stopped pointing at it.
+
+**The rule is stated once**, in `AGENTS.md`, because a line in each `agent-data/` file's
+boilerplate restated it and added nothing.
+
+Until v0.3.0 `custom.md` was committed, the project's layer: it shipped holding its own shape, took
+overrides and pointers, and kept the other agent-files identical to the payload's so a re-sync was
+a copy. The cycle **agent-files(proposal): v0.3.0** retired that.
 
 ## code.md
 
@@ -448,6 +609,11 @@ dialect needs a decoder. Old transcripts and notes written under that gloss deco
 text written since teaches only jj's.
 
 ### Cross-repo linking (ochid trailers)
+
+An `ochid:` always means the other repo, so a label or URL in it told a tool nothing, and a change id
+survives a rewrite where a SHA goes stale. The repo is said once, by `orepo:` above the `ochid:`s
+it covers, so an agent commit naming partners in several repos can group them, and a reader on
+either side knows where to look.
 
 **Trailers are stamped by push, never hand-written**, because the change id a trailer names does
 not exist until push makes the paired commit: an agent-repo ochid names `@-` after the push, and an
@@ -533,11 +699,11 @@ renumber of published versions turns every prose mention, transcript and pasted 
 that needs a decoder to read. A renumber cannot touch a title.
 
 **The `agent-files` title is the exception** (wink, 2026-09-01) because the agent-files version is
-not a build stamp: it names an agreed text, the family converging on that number is the point, and a
-renumber is the failure the version exists to prevent, not a thing history is free to do. The title
-needed a unique token, the member-list-and-date grammar ran past the title cap (59 and 61 characters
-against 50, reported by an adopter) and repeated the message record's fields, and the version is
-unique by the discipline the artifact version already keeps, one bump per cycle.
+not a build stamp: it names an agreed text, the adopters converging on that number is the point,
+and a renumber is the failure the version exists to prevent, not a thing history is free to do. The
+title needed a unique token, the member-list-and-date grammar ran past the title cap (59 and 61
+characters against 50, reported by an adopter) and repeated the message record's fields, and the
+version is unique by the discipline the artifact version already keeps, one bump per cycle.
 
 ### Agent-files name no project
 
@@ -579,6 +745,15 @@ multi-dash version outright, and the PEP 440 reference parser (`packaging` 26.2,
 silently becomes the post-release `1.2.3.post1`. The one-dash dotted grammar is the largest form
 every medium accepts.
 
+### Tools the session runs
+
+**A dev build newer than the plain one is asked about** (wink, 2026-11-09) because the agent-files
+can be ahead of the installed tool. A session under v0.3.1-3 ran the plain `vc-x1` 0.85.20, whose
+banner named v0.3.1-3 while its commit stamped the `ocid:` and `pcid:` trailers the set had
+retired, and only `vc-x1-dev` 0.85.21-2 stamped the `orepo:` form the set describes. The plain
+build's banner names the set it embeds, not the behavior the set expects, so the versions are
+compared and the choice is the user's.
+
 ### Agent-files version
 
 **An empty file named by the version** (wink, 2026-09-01) because a listing then shows the number
@@ -604,12 +779,17 @@ taken from a draft bookmark needs to say on its face.
 while an adoption takes a text that already has its number: the same title in two repos then reads
 as the copy and its origin.
 
-**An adoption copies `custom.md` and ends on a diff** (wink, 2026-10-13) because the family's
-members hold the same `custom.md`, so a line added to it, the messages repo's fetch being the
-case that raised this, reaches an adopter only if the copy takes the file. The diff is the proof
-that the copy is whole, and it fails on a file an adopter edited after copying. The `-c` is
-dropped by an adopter that disagrees with a line, since `custom.md` is still a project's own
-layer.
+**An adoption is a copy and ends on a diff** (wink, 2026-10-13) because the diff is the proof that
+the copy is whole, and it fails on a file an adopter edited after copying. Until v0.3.0 the copy
+took the adopters' shared project layer too, under `-c`, and it stopped when that layer became local
+([custom.md](#custommd)). Since v0.3.0 the diff may be non-empty and still pass the adoption,
+printing the differences, because acceptance may differ from the proposal ([Changing the
+agent-files](../AGENTS.md#changing-the-agent-files)).
+
+**A version names the text as proposed** (wink, 2026-10-18) because a number that named what each
+adopter agreed to would name a different text in each repo once acceptance may differ from the
+proposal. So the number says what was offered, the adopter's diff says what it kept, and the
+version is read from a listing while the differences are read from the diff.
 
 **Patch by default, with digit limits** (wink, 2026-09-07) because the earlier rule, patch for a
 correction and minor for a rule change, would have moved the minor at nearly every proposal: a set

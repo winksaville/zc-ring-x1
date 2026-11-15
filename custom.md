@@ -13,3 +13,8 @@ supersedes.
   - Fetch: at an acquaint and at every cycle start the session does that README's Fetch action
     first, under its guards. Wink's permission for it is standing (2026-10-09), so it is not
     asked for.
+- Long output: the commands this workspace adds to [Working
+  practices](AGENTS.md#working-practices)' Long output rule, each run in its form.
+  - `vc-x1 validate`, full and `--fast`
+  - `cargo test`, `cargo clippy`, and `cargo build`
+  - `jj log` without `-n`, and `jj diff` or `jj show` of a rung

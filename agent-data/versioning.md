@@ -1,13 +1,9 @@
 # Versioning
 
 How this project versions its commits and the running artifact. The scheme, meaning the cycle suffix
-spelling and the unique-per-commit aim, is generic and shared across projects: this file is copied
-**verbatim**, with [Recording the version-of-record](#recording-the-version-of-record) covering each
-medium by conditional rather than per-project edits.
-
-Universal file, shared with the template repository. A proposed change is edited here and converges
-at the template ([Changing the agent-files](../AGENTS.md#changing-the-agent-files)). Project-local
-content goes in [custom.md](../custom.md).
+spelling and the unique-per-commit aim, is generic and shared across projects, with [Recording the
+version-of-record](#recording-the-version-of-record) covering each medium by conditional rather than
+per-project edits.
 
 ## Terms
 
@@ -80,7 +76,7 @@ Two reservations keep the remap sound:
   history. Comparing the public triple alone (e.g. a version gate) is unaffected.
 - **`+` is reserved** for the PEP 440 remap: no SemVer build-metadata use in Rust repos even though
   Cargo allows it, since spending `+` there breaks the bijection with the Python spelling. A repo
-  that truly needs it declares the deviation in its `custom.md`.
+  that truly needs it declares the deviation here, in its own copy of this file.
 
 ## Recording the version-of-record
 
@@ -105,29 +101,25 @@ case that fits your medium:
 
 ## Dev artifact name
 
-When other projects consume the built artifact (e.g. the installed CLI) while this repo is under
-active development, the dev build installs under a separate name so a mid-cycle install never
-clobbers the binary consumers are running:
+When other projects, or this cycle's own later rungs, run the built artifact while this repo is
+under active development, the dev build installs under a separate name, so a mid-cycle install never
+clobbers the binary consumers are running. The package keeps its plain name throughout a cycle.
 
-- **Name**: the manifest's package name carries a `-dev` suffix (`<name>` -> `<name>-dev`). If Rust,
-  `[package].name`, so the per-commit flow's `cargo install` produces `<name>-dev` and leaves plain
-  `<name>` untouched.
-- **Constant, not per-step**: the step already lives in the version-of-record (`<name>-dev -V`
-  reports the exact rung). A per-step name would churn the manifest every commit and litter the
-  install dir with stale binaries.
-- **Promotion**: plain `<name>` updates only by an explicit act: a separate clone built at the
-  chosen commit with the plain name (or a copy of the dev binary), never by the per-commit flow's
-  install.
-
-**Single-name variant**: a repo striving to release makes the package name the binary's name, plain
-`<name>` on `main` only:
-
-- **The opening renames**: its bump sets `<name>-dev` beside the suffixed version, and every rung
-  and the closing build under the dev name, the closing over the bare version.
-- **Land restores**: the rename back to `<name>` is Land's act, so the stable name is only ever
-  installed from what `main` will carry.
-- **A build script guards the pairing** on every cargo verb: a suffixed version under the stable
-  name fails the build, so no mid-cycle install can clobber the consumers' binary.
+- **Name**: the `[profile.<name>]` table's `suffix` in `.vc-config.md`, `-dev` for the dev profile,
+  so `vc-x1 install --profile dev` installs `<name>-dev` beside `<name>`.
+- **When**: before a rung's review, from the working copy, so the review runs the code under review,
+  and again after its commit, so the next rung runs the committed tree ([The per-rung
+  flow](../AGENTS.md#the-per-rung-flow)).
+- **Which build runs**: for this project's artifact or another project's tool the session runs,
+  `vc-x1` the common one, acquaint reports `<tool> -V` and `<tool>-dev -V`. A dev build newer than
+  the plain name is the user's to choose, and the choice holds for the session, since the
+  agent-files may describe what only the dev build does. Otherwise the session runs the plain name,
+  since a dev build no newer is one an earlier cycle left behind
+  ([why](rationale.md#tools-the-session-runs)).
+- **Promotion**: plain `<name>` updates only at Land, by `vc-x1 install`, from what is on the
+  target.
+- **Which binary**: `vc-x1 install` with no `--profile` is the release build, so a dev binary
+  installs itself only with `--profile dev`.
 
 ## Unique per commit (preference, not requirement)
 
@@ -175,7 +167,9 @@ Disambiguation:
 
 Bump the version-of-record at the start of every step (the per-commit checklist carries the step),
 so the manifest always records the commit it will be part of and, per the preference above, every
-commit carries a distinct version.
+commit carries a distinct version. The bump is the project's, by its own tool, and `vc-x1` never
+writes a version: with `[version] file` and `pattern` in the config it refuses a commit that
+leaves the version's line unchanged, and `--same-version` commits it as it is.
 
 ## Agent-files version
 
@@ -197,12 +191,11 @@ unique by construction ([Project-declared types](prose.md#project-declared-types
   scheme](#suffix-scheme) beside the artifact's version, `-0`, `-1`, then bare at the close-out, so
   a set copied from a draft bookmark says on its face that it is unfinished. An adoption copies the
   source's bare file and bumps nothing.
-- **An adoption is a copy and a check**: `vc-x1 agent-files copy -c <src>` takes the set and the
-  family's `custom.md` with it, and `vc-x1 agent-files diff -c <src>` is the adoption's last act,
-  exiting zero when the two copies are the same. An adopter that keeps a `custom.md` of its own
-  drops the `-c` from both, which is its prerogative.
-- **Agreed**: the payload's number is the family's agreed version. An adopter ahead of it is
-  proposing, one behind has not re-synced, and two proposers claiming one number are settled by the
-  maintainer at convergence, the loser re-proposing under the next.
+- **An adoption is a copy and a check**: `vc-x1 agent-files copy --from <src>` takes the set, and
+  `vc-x1 agent-files diff --from <src>` is the adoption's last act, exiting zero when the two copies
+  are the same and printing the differences the acceptance agreed to when they are not.
+- **Named by the proposal**: a version names the text as proposed. An adopter that accepts with
+  changes carries them as its diff against that text, and two proposers claiming one number are
+  two proposals, the later re-proposing under the next.
 - **Which digit**: tend toward the patch digit, kept to one digit and rolled over into the minor.
-  We think the minor stays within two digits and major increments when the family decides.
+  We think the minor stays within two digits and major increments when a proposal says so.

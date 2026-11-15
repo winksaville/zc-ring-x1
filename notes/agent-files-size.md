@@ -25,19 +25,20 @@ so the table is the history of the count and nothing else. Rows before 2026-09-1
 | 2026-09-16 | agent-files(proposal): v0.2.5 | 9 | 1774 | a size row only when an agent-file changed, and `rationale.md` out of the count, so the files drop to 9 and the total from 2315 less its 541 |
 | 2026-10-13 | agent-files(adoption): v0.2.8 | 10 | 1873 | vc-x1's set at 1139c742b8d4, v0.2.6 and v0.2.7 with it: `## Acquaint` and `## Sync` in `AGENTS.md`, `session-lock.md` new, two lines in `custom.md` |
 | 2026-10-15 | agent-files(adoption): v0.2.9 | 10 | 1879 | vc-x1's set at 12a73d7135ab: a step 0 sync in the per-rung flow and a validation failure read before it runs again, in `AGENTS.md`, and the session lock line gone from `custom.md` |
+| 2026-11-15 | agent-files(adoption): v0.3.1-13 | 10 | 2007 | vc-x1's draft set at bd1d20bf1131: `vc-x1 cycle` and the ladder in `zTOC.md`, hooks and a Long output rule in `AGENTS.md`, and a Long output entry in our own `custom.md` |
 
 Per file at the last row, replaced at each close-out, the history being in the commits:
 
 ```
-   438 AGENTS.md
-    15 custom.md
-    94 agent-data/code.md
-    42 agent-data/commit-model.md
-    74 agent-data/cycle-model.md
-   392 agent-data/jj.md
-   166 agent-data/notes.md
-   405 agent-data/prose.md
-    45 agent-data/session-lock.md
-   208 agent-data/versioning.md
-  1879 total
+   570 AGENTS.md
+    20 custom.md
+    90 agent-data/code.md
+    35 agent-data/commit-model.md
+   141 agent-data/cycle-model.md
+   332 agent-data/jj.md
+   191 agent-data/notes.md
+   384 agent-data/prose.md
+    43 agent-data/session-lock.md
+   201 agent-data/versioning.md
+  2007 total
 ```

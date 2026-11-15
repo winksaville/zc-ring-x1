@@ -9,10 +9,6 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- Owed after the Land of `agent-files(adoption): v0.2.9`, all in `../vc-x1-messages`: one reply
-  on `m-11` saying the set is taken whole, `custom.md` included, linking the landed commit by sha,
-  and that `m-9`, which it replaces, is answered with it, a `done` on `m-9`, and a `done` on `m-7`,
-  which iiac-perf's `m-7-4` leaves ready to close.
 - Scratch left for the user to keep or delete: `~/tmp/zc-v4` on the 7600X and the Pi 5, and
   `target/lto` here, from this cycle. `~/tmp/zc-ab` on the 7600X and the Pi, source trees and
   `tp-stream` builds, the Pi's demo build and test build, from before.
@@ -723,54 +719,57 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### agent-files(adoption): v0.2.9
+### agent-files(adoption): v0.3.1-13
 
 #### Problem
 
-The family's agreed set is v0.2.9 and ours is v0.2.8, one proposal behind. vc-x1 asked for the
-adoption on the thread `m-11` in `../vc-x1-messages`, its set at `12a73d7135ab`, replacing the
-v0.2.8 request on `m-9`. What v0.2.9 brings:
+Our set is v0.2.9, and vc-x1's `main` carries v0.3.1-13, the draft of its open `v0.3.1` proposal,
+at `bd1d20bf1131`. The user asked for the adoption ahead of a request on the messages repo. What
+the draft brings:
 
-- The per-rung flow gains a step 0, a sync of both repos at the rung's start, required at the
-  opening and the closing, optional between, and `## Sync` lists the closing among its moments.
-- The Validate step gains a rule: a failure is read and its cause named before validation runs
-  again, and a failure that does not repeat is a finding, reported and given a Todo entry.
-- The session lock line leaves `custom.md`. The lock stays off, and `agent-data/session-lock.md`
-  still says how to turn it on.
+- A cycle's commits are made by `vc-x1 cycle`, its stages its flags, and stay on this machine
+  until the Land unless the user decides otherwise.
+- The ladder moves to a new `zTOC.md` beside `TODO.md`, made by the tool from the rung headings
+  under `#### Rungs`, so no marker is typed.
+- Claude Code hooks ship in `agent-data/`: `bash-guard.sh` denies a masked exit status,
+  `bash-allow.sh` skips the prompt for `cargo`, `jj`, and `vc-x1`, and `inhibit-sleep.sh` keeps the
+  machine awake, installed by `hooks.sh`, the user's to run.
+- A Long output rule: a long command keeps its output in `tmp/last.log` and shows its tail.
+- No maintainer and no template repository, only adopters and proposers, and `custom.md` is no
+  longer an agent-file but the workspace's own layer.
 
 #### Solution
 
-A single-step adoption, the source's set taken whole by `vc-x1 agent-files copy -c ../vc-x1`:
-`agent-data/agent-files-v0.2.8` renamed to `agent-data/agent-files-v0.2.9`, `AGENTS.md` and
-`rationale.md` changed, and `custom.md` taken as the family's, its session lock line gone.
+A single-step adoption, the set copied by `vc-x1 agent-files copy --from ../vc-x1`, with
+`custom.md` kept as ours. `custom.md` gains a Long output entry naming this workspace's long
+commands, and `zTOC.md` is added, its ladder this cycle's one rung.
 
 #### Acceptance check
 
-`vc-x1 agent-files diff -c ../vc-x1` reports 0 of 12 differing, `vc-x1 agent-files version` prints
-`v0.2.9`, and `agent-data` holds no `agent-files-v0.2.8`.
+`vc-x1 agent-files diff --from ../vc-x1` reports every set file the same, `vc-x1 agent-files
+version` prints `v0.3.1-13`, `agent-data` holds no `agent-files-v0.2.9`, and `bash
+agent-data/hooks.sh check` reports the hooks installed and registered.
 
-Passed (2026-10-15): the diff reports all twelve files the same, the version prints `v0.2.9`, and
-`ls agent-data` lists `agent-files-v0.2.9` alone among the version files.
+Passed (2026-11-15): the diff reports 0 of 15 differing, the version prints `v0.3.1-13`, `ls
+agent-data` lists `agent-files-v0.3.1-13` alone among the version files, and the check reports 3
+hooks installed and registered.
 
 #### Deliberation
 
 - Single-step: a copy and no design, so one commit carrying the bare version and no dev rename, as
-  the v0.2.8 adoption did.
-- Adoptions copy and bump nothing: the version file is the source's ([Agent-files
-  version](agent-data/versioning.md#agent-files-version)).
-- `custom.md` is taken as vc-x1 wrote it, so the `-c` stays on the copy and the diff: the one change
-  drops the session lock line, and the lock was already off.
-- The reference checkout, `../vc-x1`, was at `12a73d7135ab` when the copy ran, the commit `m-11`
-  names, its set v0.2.9. The installed `vc-x1` is 0.85.0, past the 0.84.30 that `m-11` asks for.
-- This cycle ran under the v0.2.8 rules it replaces, so its opening had no step 0 by that name. Its
-  opening sync was the same act.
-- The messages owed wait for the Land, so the reply on `m-11` links the landed commit, and one reply
-  answers `m-9` and `m-11` both, since `m-11` replaces `m-9`.
+  the v0.2.9 adoption did.
+- A draft taken: the set's version carries its suffix, so the copy says on its face that the
+  proposal is unfinished, and a later adoption of the bare `v0.3.1` replaces it.
+- `custom.md` kept as ours, no `-c`: vc-x1's now holds lines about vc-x1 alone, its own draft note
+  and its own long commands, and the new set makes `custom.md` the workspace's layer.
+- `.vc-config.md` unchanged: vc-x1's new tables, `[version]`, `[opening]`, `[closing]`, and its
+  build and install tables, are optional, and adding them is its own decision.
+- This cycle ran under the v0.2.9 rules it replaces, the session's own, so its commit is made by
+  `vc-x1 push`, while its record and `zTOC.md` take the new shapes, so the landed tree is
+  consistent with the set it carries.
+- The hooks were already installed and registered on this machine, so the check passed before the
+  copy.
 - `## Waiting` is `_None._`, nothing to promote.
-
-#### Ladder
-
-- agent-files(adoption): v0.2.9 (done)
 
 # References
 
