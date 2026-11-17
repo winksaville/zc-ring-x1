@@ -45,7 +45,8 @@
 //!   stopped, and [`Ring::take_over_producer`] or
 //!   [`Ring::take_over_consumer`] replaces a dead holder from its
 //!   last switch and a scan of one segment's seq words. Nothing on
-//!   the message path pays for either.
+//!   the message path pays for either. The takeover is
+//!   provisional: its API may change or go.
 //! - How to use it, from a pool to two threads and to a second
 //!   process, is the user guide, `notes/user-guide.md`, and what
 //!   happens to the segments over a run is the design note's
@@ -871,6 +872,8 @@ impl<'a> Ring<'a> {
     /// Take the producer role over for holder `id`, replacing its
     /// holder, whom the caller vouches is gone.
     ///
+    /// - Provisional: the takeover's API may change or go, as the
+    ///   design note's "Takeover deferred" says.
     /// - The crate never judges whether a holder is alive: the
     ///   takeover is the app's call, a supervisor's, and replacing
     ///   a live holder breaks the ring's one-producer contract.
@@ -895,6 +898,7 @@ impl<'a> Ring<'a> {
     /// Take the consumer role over for holder `id`, the
     /// counterpart of [`take_over_producer`](Ring::take_over_producer).
     ///
+    /// - Provisional, as it is: the API may change or go.
     /// - The replacement loses nothing: a message its holder read
     ///   and never released is still committed, and is read again.
     pub fn take_over_consumer(&self, id: u32) -> Result<Consumer<'a>, Error> {

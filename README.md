@@ -145,6 +145,10 @@ claim word and filling it through a closure:
 - Roles are counted, not named: one consumer and producers up to a most, each claimed and
   released by one CAS, and a holder that dies is recovered by restarting the set the ring
   belongs to, not by a takeover.
+- A known limit: a producer that dies, or whose closure panics, inside a send leaves its slot
+  unfinished, the consumer stops there, and no producer's later message is delivered until that
+  restart. The design note's [Takeover deferred](notes/ring-buffer-design.md#takeover-deferred)
+  has what a fix would take.
 - Producers send with `send_spin`, spinning on a full ring for up to a time, `send_spin_sleep`,
   spinning and then sleeping, or `send`, under a `SendPolicy` of the caller's, which decides at a
   full ring and hears of each lost claim race. Times are `Ticks`, made once by
@@ -358,7 +362,9 @@ process](notes/user-guide.md#joining-from-another-process).
   where it stopped, and `take_over_producer(id)` or
   `take_over_consumer(id)` replaces a holder the app vouches is
   dead, losing at most the one slot it reserved and never
-  committed.
+  committed. The takeover is provisional: its API may change or
+  go, as the design note's [Takeover
+  deferred](notes/ring-buffer-design.md#takeover-deferred) says.
 
 ### Two processes by hand
 
@@ -404,7 +410,8 @@ guide's [MPSC v3](notes/user-guide.md#mpsc-v3-joining-counted-roles-and-waiting)
 - Counted roles: one consumer and producers up to a most, each claimed and released by one CAS on
   a roles word, with no holder ids. The consumer's release saves where it stopped for the next.
 - A restart, not a takeover: a holder that dies leaves its role held, and the set the ring
-  belongs to restarts. `release_ring` gives a ring no role holds back to its pool.
+  belongs to restarts. A producer that dies inside a send stops the ring for every producer
+  until then. `release_ring` gives a ring no role holds back to its pool.
 - Two modes chosen at compile time: `Single`, one segment and the fastest MPSC ring with slack,
   and `Multi`, v2's switching.
 - Waiting: `send_spin_sleep` and `reserve_slot_wait` sleep on a full or empty ring through a

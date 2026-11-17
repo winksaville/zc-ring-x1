@@ -3298,6 +3298,72 @@ already owes ([Message header shape](#message-header-shape)), and a sweeper that
 buffers of a holder the app declares dead. It follows shared allocation, since a pool with one
 allocator has one owner to sweep for, and it waits on the header's layout.
 
+#### Takeover deferred
+
+Decided by the user on 2026-11-17, in the cycle `docs: defer takeover, record findings`: we do
+not know enough about errant producers and consumers to say what the crate owes them, so takeover
+is not extended, to MPSC or within SPSC, and nothing below is built. SPSC v4's
+`take_over_producer` and `take_over_consumer` stay as built and are provisional: the API may
+change or go. What follows is what that day's discussion found, kept so the question reopens
+where it stopped.
+
+- What reopens it: a dependent that needs a ring to outlive a crashed holder, or one that meets
+  MPSC's jam below. Either brings a real supervisor, which every option here guesses at. Until
+  then no user asks: io-uring-x1, the one dependent, uses the default `Ring`, `spsc::v3`, which
+  has no takeover.
+- The first question, still open: takeover, or a ring that dies with its consumer. What recovery
+  does not guarantee, in [SPSC v4](#spsc-v4-attachable-segments), ends on the narrower contract
+  of [The inbox model](#the-inbox-model):
+  a dead consumer's ring dies with it and its producers join the replacement's new ring, and a
+  dead producer is replaced by a new one. It keeps `release` and handoff and drops takeover, at
+  the price of the messages in flight, and its answer says which of the parts below are built.
+- Two paths that the names do not tell apart. Cooperating holders hand off, `release` then a
+  claim, which loses nothing and which the crate enforces, and that is the path for a holder
+  replaced while alive, an upgrade for one. Takeover is the forced path, for a holder that cannot
+  release, and `take_over_*` does not say so: `force_take_over_*` or `seize_*` would.
+- A holder taken over is never told. Nothing on the message path reads the role word, so a live
+  holder replaced keeps running beside its replacement.
+  - A role-lost check would have an endpoint compare the role word with its own id on the switch
+    path, which already writes a checkpoint, never per message, and stop with an error when they
+    differ.
+  - A holder taken over still runs until its next switch, so the check bounds the damage and does
+    not remove it, and it relies on ids never being reused.
+- The holder id is the app's, a `u32` the crate records and never interprets, so nothing prevents
+  two holders sharing one.
+  - A duplicate breaks `release`, a CAS from the holder's own id: a holder taken over by one of
+    the same id frees its replacement's role.
+  - How likely one is depends on the app: a counter bumped at each claim gives none, a pid one
+    rarely, and a fixed name per job, kept across restarts, one for certain.
+  - We think the crate could assign the id, a generation it bumps at every claim and takeover,
+    so a duplicate cannot happen before the word wraps. The cost is the app's own meaning for
+    the word, a pid for one, unless the word is split or a second is added.
+- A `dead` argument, `take_over_*(dead, id)`: the takeover succeeds only while `dead` still holds
+  the role, so a supervisor acting on stale news does not replace a live successor. With a
+  generation for the id it reads "take over from generation N". The API was left as
+  `take_over_*(id)` by `feat: mpsc v4`'s continuation note.
+- A holder query: which id holds a role, so a supervisor knows whom to check and what to pass as
+  `dead`.
+- We think a one-step handoff, `release_to(new_id)`, only that id then able to claim, is not
+  worth building until an app needs it, since `release` then a claim already loses nothing.
+- MPSC v4 has no holder ids and no takeover, and its exposure is the worse.
+  - The jam: a producer that dies between taking a slot and committing it leaves the consumer
+    stopped there and every other producer's later messages undelivered, as the test
+    `a_panicking_fill_jams_the_ring` records. In SPSC a dead producer stops only itself. It is a
+    present limit and no takeover feature, needed under either answer to the first question, and
+    the README and the guide state it.
+  - The consumer cannot tell a slow producer from a dead one, so the app would vouch, as with a
+    takeover, and the consumer skip the slot. We think that needs the slot to record who took
+    it, a write on the message path, whose cost is measured before it is chosen.
+  - A dead producer keeps its place: the roles word counts producers and names none, so the
+    count is never given back and enough deaths reach the ring's most. Giving a place back
+    needs the ring to know its producers, a table of ids where there is a count.
+  - A producer keeps no state, so there is nothing of one to take over, and a replacement just
+    calls `producer()`.
+  - The consumer is the shape of SPSC's, one holder. It has no id, the role being one bit, and
+    writes its checkpoint only at `release`, so a dead consumer leaves the role held for good
+    and nothing recent to continue from. An id, a checkpoint at each switch, and a forced
+    takeover would carry over from SPSC v4.
+
 ### Overflow FIFO (future)
 
 When a queue's ring is Full, the sender appends the message to

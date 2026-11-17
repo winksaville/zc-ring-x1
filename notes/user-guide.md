@@ -283,7 +283,10 @@ let mut producer = ring.claim_producer(new_id)?;
 ### Replacing a dead holder
 
 A process that dies holding a role never releases it. Replacing it is the app's call, made by
-whatever decides the holder is gone, a supervisor that restarted it or a check of its pid:
+whatever decides the holder is gone, a supervisor that restarted it or a check of its pid. The
+takeover is provisional: its API may change or go, and a holder replaced while alive hands off by
+`release` and a claim, above, never by a takeover (the design note's [Takeover
+deferred](ring-buffer-design.md#takeover-deferred)):
 
 ```rust
 // The supervisor's judgment, not the crate's: the old holder is dead.
@@ -363,9 +366,9 @@ let msg = consumer.reserve_slot_wait::<Msg>(|attempt| attempt < 100)?;
   later `attach` is `Error::BadMagic`. A role held is `Error::RingInUse`. Anyone holding the ring
   may call it, and the creator decides when.
 - There is no takeover and no unwind guard: a producer that dies, or panics, between its claim and
-  its commit leaves its slot claimed, and the consumer waits there. The recovery is restarting the
-  set the ring belongs to. `zcr-test-ipm`'s MPSC mode and `tests/ipm.rs` show roles coming and
-  going between processes.
+  its commit leaves its slot claimed, and the consumer waits there, so no producer's later
+  message is delivered. The recovery is restarting the set the ring belongs to. `zcr-test-ipm`'s
+  MPSC mode and `tests/ipm.rs` show roles coming and going between processes.
 
 ## MPSC v4: matching sends and receives, and a choice of waits
 
@@ -439,7 +442,8 @@ consumer.release();
   `SpinOrSleep<Futex>` are one protocol, and `SpinOnly` is another. A v3 ring and a v4 ring refuse
   each other's `attach`.
 - As v3, there is no takeover and no unwind guard: a producer that dies, or whose closure panics,
-  while its slot is being written leaves that slot unfinished, and the consumer waits there. A
+  while its slot is being written leaves that slot unfinished, and the consumer waits there, so
+  no producer's later message is delivered until the set the ring belongs to restarts. A
   `recv` whose closure panics leaves its message in the slot, and the next `recv` reads it again.
 
 ## Errors and panics

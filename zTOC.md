@@ -4,7 +4,7 @@ The workspace's index, in [zTOC format](agent-data/notes.md#ztoc-format).
 
 ## Ladder
 
-- 0 (done) chore: tag landed versions
+- 0 (done) docs: defer takeover, record findings
 
 ## The TOC
 

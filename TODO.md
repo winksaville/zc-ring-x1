@@ -9,20 +9,12 @@ Where the agent was, for the agent that comes next: working copy state, the step
 open question. Ephemeral, never a record. Written before a restart or when a session is about to
 lose context, read first at acquaint, acted on, and reset to `_None._` by the reader.
 
-- Scratch left for the user to keep or delete: `~/tmp/zc-v4` on the 7600X and the Pi 5, and
-  `target/lto` here, from `feat: mpsc v4`. `~/tmp/zc-ab` on the 7600X and the Pi, source trees and
-  `tp-stream` builds, the Pi's demo build and test build, from before.
-- Open for the user: `take_over_*(dead, id)` and a holder query, left as `take_over_*(id)`, with no
-  Todo entry.
-- The consumer's v3 methods' docs are still in the old form, not the Parameters form the
-  producer's sends use. v4's consumer docs are in the Parameters form.
-- Open for the user: an overview page for reviewers of the v3 sends, now that the API is final.
-- Open for the user: whether the Parameters doc form, every parameter documented including `self`,
-  becomes a rule in `agent-data/code.md`, its own cycle, with no Todo entry yet. And the ranks of
-  the Todos the last two cycles added, placed by the agent.
-- After the Land of `chore: tag landed versions`, check: `git ls-remote --tags origin` lists
-  `v0.19.5`, `v0.19.6`, and `v0.19.7`, the cycle's acceptance check passed on them, and `m-12` in
-  `../vc-x1-messages` has our reply naming the tags, or the reply is still owed.
+- After the Land of `docs: defer takeover, record findings`, check: each `main` is at the cycle's
+  commit and matches its remote, the bookmark `docs-defer-takeover-record-findings` is gone here
+  and on `origin`, `git ls-remote --tags origin` lists `v0.19.8` at that commit, and the installed
+  `zc-ring-x1-demo` is that build.
+- In `../vc-x1-messages`, `m-14`, tag at Land, and `m-15`, a clone per member, wait on vc-x1's
+  replies, both ours to read at the next acquaint.
 
 ## In Progress
 
@@ -38,7 +30,17 @@ Important work that cannot start yet. Each entry names what it waits on, in a fo
 checked, and the rank it takes in `## Todo` once unblocked. Every opening checks each condition
 and promotes what is met ([Opening](AGENTS.md#opening)).
 
-_None._
+### Holders: takeover, holder ids, and MPSC's jam
+
+What the crate owes a ring whose holder died, deferred on 2026-11-17 with what was found in the
+design note's [Takeover deferred](notes/ring-buffer-design.md#takeover-deferred).
+
+- Waits on a dependent that needs a ring to outlive a crashed holder, or one that meets MPSC's
+  jam, a producer dead inside a send stopping the ring. Checked by asking: has a message in
+  `../vc-x1-messages` or the user raised either?
+- Its rank once met is the first of `## Todo`, each part being a public API change, cheapest
+  before v4 has users.
+- The pool half is its own entry, `### Pool buffers survive their holders`.
 
 ## Todo
 
@@ -46,6 +48,47 @@ Entries are in priority order, the first highest, and reprioritizing is moving a
 `###` heading, so a citation is a link to its anchor. Long-tail entries live in
 [todo-backlog.md](notes/todo-backlog.md). Use the [Prose form](agent-data/prose.md#prose-form).
 Deeper detail goes in a `notes/` design file (link via `[N]` ref).
+
+### Defaults at the latest versions
+
+The crate's defaults trail its latest rings: `MpscRing` is `mpsc::v1` and `Ring` is `spsc::v3`,
+where v4 is the latest of each, and the README recommends `mpsc::v3` without weighing v4. A user
+who takes the crate root's names gets neither the ring that processes join and leave nor the
+consumer that receives as a producer sends.
+
+- Decide the default of each, `MpscRing` and `Ring`, with v4 the candidate, and repoint the
+  re-exports in `src/mpsc/mod.rs` and `src/spsc/mod.rs`, the README's lines following.
+- The bar is the verdict of 2026-09-15: a segmented default matches the one it replaces where no
+  switch happens, measured in the tools, since one that does not costs every path that never
+  needs a second segment. The design note's [MPSC v4
+  measured](notes/ring-buffer-design.md#mpsc-v4-measured) has v4's rows.
+- Replaces the entry `MPSC v2 as the default`, which the design note's verdicts of 2026-09-15 and
+  2026-09-27 name, and which v3 and v4 overtook. What it recorded of v2 against v1, the round
+  trip's receive up to 30% slower, is in the first of those verdicts.
+- Rewritten 2026-11-17, at the user's question of why work was aimed at v3.
+
+### Overview page for reviewers of the MPSC v4 sends and receives
+
+MPSC v4 is the current MPSC ring and a reviewer has no one page that lays its API out: the sends,
+the receives, the policy each takes, and how they relate are spread over the doc comments and the
+guide.
+
+- An overview page for a reviewer of v4's sends and receives. We think it belongs in `notes/`,
+  linked from the guide.
+- The continuation note of `feat: mpsc v4` asked for one of the v3 sends, written before v4 was
+  built from them. v3 stays as built, to measure against, so the page is v4's. Filed 2026-11-17.
+
+### Propose the Parameters doc form as a rule
+
+The Parameters form, a `# Parameters` section documenting every parameter of a function, `self`
+included, is used by the newer code here and stated nowhere, so whether a new function uses it
+depends on which file its author read last.
+
+- State it in `agent-data/code.md`, beside [Doc
+  comments](agent-data/code.md#doc-comments-on-every-file-function-and-method), as an
+  `agent-files` proposal cycle.
+- The user decides whether it becomes a rule, at that cycle's opening.
+- From a continuation note of `feat: mpsc v4`, filed 2026-11-17.
 
 ### Measurement builds and the producer-consumer rhythm
 
@@ -530,22 +573,6 @@ measured](notes/ring-buffer-design.md#mpsc-v3-measured) and the user's `-p 10` r
   the others are weighed against.
 - A protocol change, so its own cycle, from `feat: attachable MPSC v3` on 2026-09-27.
 
-### MPSC v2 as the default
-
-`MpscRing` is v1 while `Ring` is v3, so the crate's SPSC default is segmented and its MPSC default
-is not. Flip the re-export to `mpsc::v2` once v2 matches v1 where no switch happens, measured in the
-tools, since the v3 verdict on 2026-09-15 was that a segmented default that does not match costs
-every path that never needs a second segment.
-
-- Where v2 stands on 2026-09-15, both machines: it streams two to five times faster than v1 from
-  depth 8 up and pulls half the lines, its send matches v1's everywhere but the SMT pair, and its
-  receive in the round trip runs up to 30% slower from depth 8 up on the 3900X and around depth 64
-  on the 7600X. We think the seq word in the slot line is the cause: the consumer spins on the line
-  the producer then writes twice, the body and the seq, where v1's producer fills the slot line
-  unwatched and stores the seq beside it. The one-thread loop also carries 3 ns over v1 not yet
-  found. Both are the fast-path work this entry waits on, and the switch's own cost is the entry
-  `Cheaper segment switches`.
-
 ### Cheaper segment switches
 
 The demo's segment stress table prices one switch at depth 1 across cores at 140 ns for spsc-v3
@@ -731,58 +758,70 @@ opening ([Cycle-record](AGENTS.md#cycle-record)). Earlier cycles are in the land
 of this section, and the cycles before the rule in the frozen [notes/chores/](notes/chores) and
 [notes/done.md](notes/done.md).
 
-### chore: tag landed versions
+### docs: defer takeover, record findings
 
 #### Problem
 
-zc-ring-x1 has no tags, so a dependent can pin it only by a path to a sibling checkout or by a raw
-commit hash, neither saying which version it took. io-uring-x1 asks, on `m-12-0` in
-`../vc-x1-messages`, for a tag per landed version, `v0.19.5` at `e705b50d` to start, the commit it
-was built against, so it can write `tag = "v0.19.5"` in its git dependency.
+A holder that dies costs more than its own work, in both v4 rings, and we do not know enough about
+errant producers and consumers to say what the crate owes them. SPSC v4 has a takeover, built
+before its own design note doubted the requirement behind it, and its docs present it as settled.
+MPSC v4 has none, and one producer dying inside a send stops the ring for every producer, which
+the guide says in passing and the README does not. The session of 2026-11-17 worked through the questions, who
+assigns a holder's id, a forced takeover against a handoff, a check that a role was lost, and
+MPSC's jam, and its findings are in no durable place but this block.
 
 #### Solution
 
-Tag the two versions already landed, `v0.19.5` at `e705b50d` and `v0.19.6` at `4f8dc885`, and from
-here on tag each Land's version on the commit `main` moves to, this cycle's `v0.19.7` the first,
-unless the user says "no tag" at that Land's go.
-The tags are made with `jj tag set` and published with `jj git push --tag` at the Land, beside
-`main`, and a `custom.md` entry makes the tag a step of every Land. A reply on `m-12` names the
-tags once they are published.
+Nothing was built, and what is known was written down.
+
+- The findings are in the design note's [Takeover
+  deferred](notes/ring-buffer-design.md#takeover-deferred), under Holders and recovery, with the
+  decision of 2026-11-17: takeover is not extended, to MPSC or within SPSC, until a user's need
+  says what it must do, and the section names what reopens the question.
+- SPSC v4's takeover stays as built and is marked provisional where it is described, the source's
+  module and method docs, the README, and the guide: its API may change or go.
+- MPSC's jam is stated as a known limit where a user reads: the README gained it for v3 and v4,
+  and the guide, which had the consumer waiting, says what that costs the other producers.
+- A `## Waiting` entry, `### Holders: takeover, holder ids, and MPSC's jam`, replaced the Todo,
+  naming what reopens the question.
 
 #### Acceptance check
 
-`jj git push` has published the three tags, so `git ls-remote --tags origin` lists `v0.19.5` at
-`e705b50d`, `v0.19.6` at `4f8dc885`, and `v0.19.7` at this cycle's landed commit, and a scratch
-crate in `tmp/` depending on `zc-ring-x1 = { git = "https://github.com/winksaville/zc-ring-x1",
-tag = "v0.19.5" }` passes `cargo check`.
+A reader of each of the four places finds what it owes, checked by reading them:
 
-The check needs the tags published, which is the Land's act, so it runs after the Land, as the
-test of the closed cycle, and its result is reported then and in the reply on `m-12`, the record
-being closed before it.
+- The design note's Holders and recovery holds the decision, its date, each finding below, and
+  what reopens the question.
+- Each place that describes `take_over_producer` and `take_over_consumer` says the takeover is
+  provisional: the module docs and the two methods' docs in `src/spsc/v4/mod.rs`, the README's
+  "Built to survive its holders", and the guide's "Replacing a dead holder". `rg -n provisional`
+  over the three files shows the five.
+- The README and the guide each say that an MPSC producer dying inside a send stops the ring.
+- `## Waiting` holds the entry and `## Todo` no longer holds one on takeover.
+
+`vc-x1 validate` passes, and no test changes, since no code does.
+
+Passed on 2026-11-17, each place read and the five marks found, before the closing.
 
 #### Deliberation
 
-- Single-step: the tree changes only by this record, the `custom.md` entry, and the version, and
-  the tags are refs made at the Land, so one commit holds it all.
-- Lightweight tags by jj, not annotated tags by git: jj 0.46 sets and pushes tags, `jj tag set`
-  and `jj git push --tag`, so the jj-not-git rule holds, and jj makes lightweight tags only. A
-  dependent's `tag =` resolves either kind, and the commit already carries the title and date.
-- `v0.19.6` tagged too, though `m-12` names only `v0.19.5`: it is landed, its code the same as
-  `v0.19.5`'s, and skipping it would leave a gap the moment the rule starts.
-- Tag by default, "no tag" to skip: every Land is tagged unless the user says otherwise at its go
-  (the user, at the review, 2026-11-15), so a dependent finds every version, and a Land not worth
-  a tag is the exception said aloud.
-- No backfill before `v0.19.5`: no dependent asks for an older version, and the per-commit versions
-  of earlier cycles would need each landmark found by hand.
-- Tags published at the Land, not before: a cycle is local by default, and a tag on an unlanded
-  commit names a version that may never land.
-- The rule in `custom.md`: it is this project's because io-uring-x1 depends on it, and the set's
-  Land has no tag step. We think a tag at every Land suits the family, which is an `agent-files`
-  proposal and its own cycle, so it goes to `## Todo` rather than into `jj.md` here.
-- The reply on `m-12` waits for the Land and for the messages clone's owner: `owner` shows a `take`
-  by vc-x1 with no release after it, so writing the reply is the user's call when the time comes.
-- `## Waiting` is `_None._`, nothing to promote.
-- No size row: `custom.md` is no longer an agent-file under v0.3.1-13, and no agent-file changed.
+- Defer, not decide: takeover is neither extended nor removed, the user's call on 2026-11-17.
+  - Every option weighed that day rests on a guess at how a real supervisor behaves, and a real
+    one settles it faster than more discussion.
+  - No user asks: io-uring-x1, the one dependent, uses the default `Ring`, `spsc::v3`, which has
+    no takeover.
+  - Removing SPSC v4's takeover was weighed and left: it is real work and discards a tested
+    mechanism before we know whether [The inbox model](notes/ring-buffer-design.md#the-inbox-model)
+    replaces it. The cost accepted is a public API that says "provisional".
+- The design note, not a Todo: a Todo is a promise of work and this is reasoning to keep, so the
+  entry written earlier that day became this cycle's findings and a `## Waiting` entry.
+- MPSC's jam is a limit stated, not a fix planned: it is a present failure and no takeover
+  feature, so it is said to users now, and its fix waits with the rest.
+- Single-step, the user's call at the plan's review: the note, the marks, and the limit lines say
+  one thing in four places, so the plan and the work are one commit. The plan had laddered one
+  work rung between an opening and a closing.
+- The cycle carries the session's other `TODO.md` edits, made at the acquaint before it opened:
+  the continuation notes reset, `### Defaults at the latest versions` in place of `MPSC v2 as the
+  default`, the overview page of v4, and the Parameters rule's entry, in the user's order.
 
 # References
 
